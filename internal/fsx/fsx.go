@@ -150,94 +150,103 @@ const (
 type Dir struct {
 	fd   int
 	path string
+	open bool
 }
 
 // OpenBase opens a trusted base directory. path must be absolute and already
 // resolved (see Realpath); the base itself may be reached through symlinks
 // that were resolved once at protect/integrate time (SPEC §11.4), but must be
 // owned by the current uid.
-func OpenBase(path string) (*Dir, error) { panic("unimplemented: fsx.OpenBase") }
+func OpenBase(path string) (*Dir, error) { return openBase(path) }
 
 // Path returns the absolute path the Dir was opened at (informational).
-func (d *Dir) Path() string { panic("unimplemented: fsx.Dir.Path") }
+func (d *Dir) Path() string {
+	if d == nil {
+		return ""
+	}
+	return d.path
+}
 
 // Close releases the handle.
-func (d *Dir) Close() error { panic("unimplemented: fsx.Dir.Close") }
+func (d *Dir) Close() error { return d.close() }
 
 // OpenDir opens the directory rel below d without following symlinks. With
 // create, missing components are created with mode 0700.
 func (d *Dir) OpenDir(rel string, create bool) (*Dir, error) {
-	panic("unimplemented: fsx.Dir.OpenDir")
+	return d.openDir(rel, create)
 }
 
 // Open opens the regular file rel for reading with
 // O_RDONLY|O_NOFOLLOW|O_NONBLOCK, then requires fstat to be a regular file.
-func (d *Dir) Open(rel string) (*os.File, Stat, error) { panic("unimplemented: fsx.Dir.Open") }
+func (d *Dir) Open(rel string) (*os.File, Stat, error) { return d.openFile(rel) }
 
 // Lstat returns the Stat of rel without following symlinks anywhere.
-func (d *Dir) Lstat(rel string) (Stat, error) { panic("unimplemented: fsx.Dir.Lstat") }
+func (d *Dir) Lstat(rel string) (Stat, error) { return d.lstat(rel) }
 
 // ReadDir lists the entries of rel (lstat semantics, no following).
-func (d *Dir) ReadDir(rel string) ([]Entry, error) { panic("unimplemented: fsx.Dir.ReadDir") }
+func (d *Dir) ReadDir(rel string) ([]Entry, error) { return d.readDir(rel) }
 
 // Walk visits every entry below rel in lexical order without following
 // symlinks. Hazardous entries are passed to fn with Hazard set and are never
 // descended into. fn returning fs.SkipDir skips a directory.
 func (d *Dir) Walk(rel string, fn func(WalkEntry) error) error {
-	panic("unimplemented: fsx.Dir.Walk")
+	if fn == nil {
+		return errors.New("fsx: Walk needs a visit function")
+	}
+	return d.walk(rel, fn)
 }
 
 // CreateTemp creates a new 0600 file in the directory dirRel (created 0700
 // if missing) with O_CREAT|O_EXCL|O_NOFOLLOW and returns it with its name
 // relative to d.
 func (d *Dir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
-	panic("unimplemented: fsx.Dir.CreateTemp")
+	return d.createTemp(dirRel, pattern)
 }
 
 // Rename renames oldRel to newRel (both relative to d) and fsyncs the
 // affected directories.
 func (d *Dir) Rename(oldRel, newRel string, mode RenameMode) error {
-	panic("unimplemented: fsx.Dir.Rename")
+	return d.renameTo(oldRel, d, newRel, mode)
 }
 
 // RenameTo renames oldRel in d to newRel in dst (same file system), then
 // fsyncs both directories.
 func (d *Dir) RenameTo(oldRel string, dst *Dir, newRel string, mode RenameMode) error {
-	panic("unimplemented: fsx.Dir.RenameTo")
+	return d.renameTo(oldRel, dst, newRel, mode)
 }
 
 // Link creates a hard link newRel to oldRel (used to hold an inode alive
 // during history rotation, SPEC §7.1.4).
-func (d *Dir) Link(oldRel, newRel string) error { panic("unimplemented: fsx.Dir.Link") }
+func (d *Dir) Link(oldRel, newRel string) error { return d.link(oldRel, newRel) }
 
 // UnlinkIfUnchanged removes rel only if its current lstat is Unchanged
 // relative to expect and Nlink == 1; otherwise it returns ErrChanged or
 // ErrHardlink and leaves the file alone. The parent directory is fsynced.
 func (d *Dir) UnlinkIfUnchanged(rel string, expect Stat) error {
-	panic("unimplemented: fsx.Dir.UnlinkIfUnchanged")
+	return d.unlinkIfUnchanged(rel, expect)
 }
 
 // Remove removes rel (a file, or an empty directory) unconditionally. Used
 // only for precinto-owned temporaries and staging.
-func (d *Dir) Remove(rel string) error { panic("unimplemented: fsx.Dir.Remove") }
+func (d *Dir) Remove(rel string) error { return d.remove(rel) }
 
 // RemoveEmptyDirs removes rel and its now-empty parents up to (excluding)
 // stopAt; non-empty directories are left alone.
 func (d *Dir) RemoveEmptyDirs(rel, stopAt string) error {
-	panic("unimplemented: fsx.Dir.RemoveEmptyDirs")
+	return d.removeEmptyDirs(rel, stopAt)
 }
 
 // Chtimes sets the mtime (and atime) of rel without following symlinks.
-func (d *Dir) Chtimes(rel string, mtime time.Time) error { panic("unimplemented: fsx.Dir.Chtimes") }
+func (d *Dir) Chtimes(rel string, mtime time.Time) error { return d.chtimes(rel, mtime) }
 
 // Chmod sets permission bits of rel (masked with 0o700) without following.
-func (d *Dir) Chmod(rel string, perm fs.FileMode) error { panic("unimplemented: fsx.Dir.Chmod") }
+func (d *Dir) Chmod(rel string, perm fs.FileMode) error { return d.chmod(rel, perm) }
 
 // Sync fsyncs the directory itself.
-func (d *Dir) Sync() error { panic("unimplemented: fsx.Dir.Sync") }
+func (d *Dir) Sync() error { return d.sync() }
 
 // Device returns the st_dev of the directory.
-func (d *Dir) Device() (uint64, error) { panic("unimplemented: fsx.Dir.Device") }
+func (d *Dir) Device() (uint64, error) { return d.device() }
 
 // FullSync flushes f to stable storage (F_FULLFSYNC on darwin, falling
 // back to fsync on volumes that do not support it; fsync on linux).
@@ -387,24 +396,24 @@ func openAppend(path string) (*os.File, bool, error) {
 
 // MkdirPrivate creates path and missing parents with mode 0700 and checks
 // that the final directory is owned by the current uid and not a symlink.
-func MkdirPrivate(path string) error { panic("unimplemented: fsx.MkdirPrivate") }
+func MkdirPrivate(path string) error { return mkdirPrivate(path) }
 
 // CheckPrivateDir requires path to be a directory (not a symlink) owned by
 // the current uid with no group/other permission bits (D6 socket dir rule).
-func CheckPrivateDir(path string) error { panic("unimplemented: fsx.CheckPrivateDir") }
+func CheckPrivateDir(path string) error { return checkPrivateDir(path) }
 
 // Realpath resolves symlinks in an existing absolute path once (protect and
 // integrate time) and returns the cleaned result.
-func Realpath(path string) (string, error) { panic("unimplemented: fsx.Realpath") }
+func Realpath(path string) (string, error) { return realpath(path) }
 
 // Contains reports whether p is root or below root. It compares (dev, ino)
 // of p's existing ancestors with root, so it is correct on case- and
 // normalization-insensitive volumes; for non-existent tails it falls back to
 // a component-wise comparison (case-folded on darwin).
-func Contains(root, p string) (bool, error) { panic("unimplemented: fsx.Contains") }
+func Contains(root, p string) (bool, error) { return contains(root, p) }
 
 // SameDevice reports whether a and b live on the same file system.
-func SameDevice(a, b string) (bool, error) { panic("unimplemented: fsx.SameDevice") }
+func SameDevice(a, b string) (bool, error) { return sameDevice(a, b) }
 
 // Lock is a held flock(2) lock. Lock files are never deleted (SPEC §10.2).
 type Lock struct {
@@ -481,10 +490,10 @@ func (l *Lock) File() *os.File { return l.file }
 // own lock and lease files: harness writer locks (Codex
 // thread-writer-locks) are checked with platform.ProcTable.OpenFilesUnder,
 // never by flocking them (HA17).
-func ProbeHeld(path string) (held bool, err error) { panic("unimplemented: fsx.ProbeHeld") }
+func ProbeHeld(path string) (held bool, err error) { return probeHeld(path) }
 
 // Space reports available and total bytes of the file system holding path.
-func Space(path string) (avail, total uint64, err error) { panic("unimplemented: fsx.Space") }
+func Space(path string) (avail, total uint64, err error) { return spaceOf(path) }
 
 // Floor is the free-space reserve kept after an operation (D12, D38).
 type Floor struct {
@@ -497,7 +506,7 @@ var DefaultFloor = Floor{MinBytes: 2 << 30, MinFraction: 0.05}
 
 // CheckSpace returns ErrNoSpace unless need bytes fit on path's volume while
 // keeping the floor free.
-func CheckSpace(path string, need int64, floor Floor) error { panic("unimplemented: fsx.CheckSpace") }
+func CheckSpace(path string, need int64, floor Floor) error { return checkSpace(path, need, floor) }
 
 // Staging is a 0700 directory on the same file system as a restore target,
 // removed when the operation completes (D12).
@@ -510,14 +519,19 @@ type Staging struct {
 // NewStaging creates <preferred>/<id> if preferred is on the same device as
 // target, else <target volume root>/.precinto-staging/<id>.
 func NewStaging(preferred, target, id string) (*Staging, error) {
-	panic("unimplemented: fsx.NewStaging")
+	return newStaging(preferred, target, id)
 }
 
 // OpenStaging reopens an existing staging directory during journal recovery.
-func OpenStaging(path string) (*Staging, error) { panic("unimplemented: fsx.OpenStaging") }
+func OpenStaging(path string) (*Staging, error) { return openStaging(path) }
 
 // Remove deletes the staging directory and everything in it.
-func (s *Staging) Remove() error { panic("unimplemented: fsx.Staging.Remove") }
+func (s *Staging) Remove() error {
+	if s == nil {
+		return nil
+	}
+	return removeStaging(s)
+}
 
 // Class is the coarse classification of an I/O error used by the error
 // table in SPEC §17.
@@ -537,4 +551,4 @@ const (
 )
 
 // Classify maps err to a Class. EPERM/EACCES are never treated as missing.
-func Classify(err error) Class { panic("unimplemented: fsx.Classify") }
+func Classify(err error) Class { return classify(err) }

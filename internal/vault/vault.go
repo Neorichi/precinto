@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"filippo.io/age"
@@ -128,12 +129,12 @@ type Store struct {
 
 // OpenStore returns the store rooted at the given directories.
 func OpenStore(vaultsDir, verifiedDir, factorsDir string) *Store {
-	panic("unimplemented: vault.OpenStore")
+	return &Store{VaultsDir: vaultsDir, VerifiedDir: verifiedDir, FactorsDir: factorsDir}
 }
 
 // Initialized reports whether init has run (recovery recipient and global
 // vault exist).
-func (s *Store) Initialized() (bool, error) { panic("unimplemented: vault.Store.Initialized") }
+func (s *Store) Initialized() (bool, error) { return s.initialized() }
 
 // InitOptions configures Init.
 type InitOptions struct {
@@ -146,7 +147,7 @@ type InitOptions struct {
 // wrapped to every factor, and returns the recovery identity once, in a
 // locked buffer, for the caller to show or write per D7.
 func (s *Store) Init(ctx context.Context, o InitOptions) (*memguard.LockedBuffer, error) {
-	panic("unimplemented: vault.Store.Init")
+	return s.init(ctx, o)
 }
 
 // Create creates the vault id (a new root, D1): generates an X25519
@@ -154,31 +155,31 @@ func (s *Store) Init(ctx context.Context, o InitOptions) (*memguard.LockedBuffer
 // recipient, writes vault.toml with the recipients MAC and the verified
 // copy, and returns the identity (the daemon keeps it as an unlocked grant).
 func (s *Store) Create(ctx context.Context, id, rootPath string, ui UI) (*memguard.LockedBuffer, error) {
-	panic("unimplemented: vault.Store.Create")
+	return s.create(ctx, id, rootPath, ui)
 }
 
 // List returns every vault id.
-func (s *Store) List() ([]string, error) { panic("unimplemented: vault.Store.List") }
+func (s *Store) List() ([]string, error) { return s.list() }
 
 // Open loads vaults/<id>/vault.toml.
-func (s *Store) Open(id string) (*Vault, error) { panic("unimplemented: vault.Store.Open") }
+func (s *Store) Open(id string) (*Vault, error) { return s.open(id) }
 
 // Recipients returns the sealing recipients {vault, recovery} of id and the
 // recipients fingerprint, without any secret. It returns
 // ErrRecipientsChanged if vault.toml differs from the verified copy (D5).
 func (s *Store) Recipients(id string) ([]age.Recipient, string, error) {
-	panic("unimplemented: vault.Store.Recipients")
+	return s.recipients(id)
 }
 
 // Verify checks that identity matches the vault recipient and that the
 // recipients MAC is valid, then (re)writes the verified copy (D5).
 func (s *Store) Verify(v *Vault, identity *memguard.LockedBuffer) error {
-	panic("unimplemented: vault.Store.Verify")
+	return s.verify(v, identity)
 }
 
 // Remove deletes vaults/<id> and its verified copy (unprotect, after every
 // capsule of the root was restored or explicitly forgotten).
-func (s *Store) Remove(id string) error { panic("unimplemented: vault.Store.Remove") }
+func (s *Store) Remove(id string) error { return s.remove(id) }
 
 // RepairOptions configures Store.Repair (D53).
 type RepairOptions struct {
@@ -209,103 +210,104 @@ type RepairResult struct {
 // typed confirmation on a TTY; the caller then audits capsules sealed
 // since LastAudit and reports foreign fingerprints as exposed.
 func (s *Store) Repair(v *Vault, o RepairOptions) (RepairResult, error) {
-	panic("unimplemented: vault.Store.Repair")
+	return s.repair(v, o)
 }
 
 // Unwrap performs exactly one user-presence unwrap of the vault identity
 // with the named factor ("" picks the best factor usable with ui: SE or GUI
 // plugin when !ui.Interactive(), D27). Plugins run from their pinned path.
 func (v *Vault) Unwrap(ctx context.Context, factor string, ui UI) (*memguard.LockedBuffer, error) {
-	panic("unimplemented: vault.Vault.Unwrap")
+	return v.unwrap(ctx, factor, ui)
 }
 
 // UsableFactors returns the factors that can prompt in a context with the
 // given capabilities (tty, gui).
 func (v *Vault) UsableFactors(tty, gui bool) []Factor {
-	panic("unimplemented: vault.Vault.UsableFactors")
+	return v.usableFactors(tty, gui)
 }
 
 // AddFactor wraps identity to a new factor and updates vault.toml
 // atomically (requires the vault unlocked).
 func (v *Vault) AddFactor(ctx context.Context, identity *memguard.LockedBuffer, spec FactorSpec, ui UI) error {
-	panic("unimplemented: vault.Vault.AddFactor")
+	return v.addFactor(ctx, identity, spec, ui)
 }
 
 // RemoveFactor removes a factor file; ErrLastFactor if it is the last
 // non-recovery factor. Backed-up copies stay valid (SPEC §19).
-func (v *Vault) RemoveFactor(name string) error { panic("unimplemented: vault.Vault.RemoveFactor") }
+func (v *Vault) RemoveFactor(name string) error { return v.removeFactor(name) }
 
 // Keyring holds unlocked identities, one memguard enclave per vault id (D4).
 // Only the daemon creates a Keyring.
 type Keyring struct {
+	mu       sync.RWMutex
 	enclaves map[string]*memguard.Enclave
 }
 
 // NewKeyring returns an empty keyring.
-func NewKeyring() *Keyring { panic("unimplemented: vault.NewKeyring") }
+func NewKeyring() *Keyring { return newKeyring() }
 
 // Put takes ownership of identity (the buffer is destroyed) for vault id.
 func (k *Keyring) Put(id string, identity *memguard.LockedBuffer) error {
-	panic("unimplemented: vault.Keyring.Put")
+	return k.put(id, identity)
 }
 
 // Has reports whether vault id is unlocked.
-func (k *Keyring) Has(id string) bool { panic("unimplemented: vault.Keyring.Has") }
+func (k *Keyring) Has(id string) bool { return k.has(id) }
 
 // Drop wipes vault id.
-func (k *Keyring) Drop(id string) { panic("unimplemented: vault.Keyring.Drop") }
+func (k *Keyring) Drop(id string) { k.drop(id) }
 
 // DropAll wipes every identity.
-func (k *Keyring) DropAll() { panic("unimplemented: vault.Keyring.DropAll") }
+func (k *Keyring) DropAll() { k.dropAll() }
 
 // IDs returns the unlocked vault ids.
-func (k *Keyring) IDs() []string { panic("unimplemented: vault.Keyring.IDs") }
+func (k *Keyring) IDs() []string { return k.ids() }
 
 // FileKey opens vault id's enclave, parses the identity, unwraps the
 // detached age header with age.DecryptHeader, and returns the 16-byte file
 // key in a locked buffer. The parsed identity is dropped before returning.
 func (k *Keyring) FileKey(id string, header []byte) (*memguard.LockedBuffer, error) {
-	panic("unimplemented: vault.Keyring.FileKey")
+	return k.fileKey(id, header)
 }
 
 // MAC returns hex HMAC-SHA256(HKDF-SHA256(identity of vault id, info),
 // data) without exposing the identity (info: InfoRecipients, InfoPolicy).
 // ErrLocked if the vault is not unlocked.
 func (k *Keyring) MAC(id, info string, data []byte) (string, error) {
-	panic("unimplemented: vault.Keyring.MAC")
+	return k.mac(id, info, data)
 }
 
 // WithIdentity runs fn with a parsed identity of vault id (vault creation,
 // factor enrollment, MAC computation). fn must not retain it.
 func (k *Keyring) WithIdentity(id string, fn func(age.Identity, *memguard.LockedBuffer) error) error {
-	panic("unimplemented: vault.Keyring.WithIdentity")
+	return k.withIdentity(id, fn)
 }
 
 // ParseRecoveryKey reads a recovery identity (AGE-SECRET-KEY-1…, optionally
 // grouped with spaces or dashes) from a locked buffer.
 func ParseRecoveryKey(b *memguard.LockedBuffer) (age.Identity, error) {
-	panic("unimplemented: vault.ParseRecoveryKey")
+	return parseRecoveryKey(b)
 }
 
 // VerifyRecovery checks that the recovery identity unwraps header (a fresh
 // capsule header), for `precinto recover --verify` (D7).
 func VerifyRecovery(recovery *memguard.LockedBuffer, header []byte) error {
-	panic("unimplemented: vault.VerifyRecovery")
+	return verifyRecovery(recovery, header)
 }
 
 // Diceware generates a passphrase of words from the embedded EFF list
 // (7 words ≈ 90 bits; S9).
-func Diceware(words int) (*memguard.LockedBuffer, error) { panic("unimplemented: vault.Diceware") }
+func Diceware(words int) (*memguard.LockedBuffer, error) { return diceware(words) }
 
 // EstimateBits estimates the entropy of a user-chosen passphrase; the
 // policy requires ≥ 80 bits and ≥ 12 characters (D3, S9).
-func EstimateBits(p *memguard.LockedBuffer) float64 { panic("unimplemented: vault.EstimateBits") }
+func EstimateBits(p *memguard.LockedBuffer) float64 { return estimateBits(p) }
 
 // CalibrateScrypt returns the scrypt logN that takes about target on this
 // machine, clamped to [19, 22] (D3: 2^20 default).
-func CalibrateScrypt(target time.Duration) int { panic("unimplemented: vault.CalibrateScrypt") }
+func CalibrateScrypt(target time.Duration) int { return calibrateScrypt(target) }
 
 // FormatRecoveryKey groups a recovery key for display (groups of 6, UX5).
 func FormatRecoveryKey(b *memguard.LockedBuffer) (*memguard.LockedBuffer, error) {
-	panic("unimplemented: vault.FormatRecoveryKey")
+	return formatRecoveryKey(b)
 }

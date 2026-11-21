@@ -203,27 +203,27 @@ type Sealed struct {
 // Name; fsync Out. Journaling, the capsule-log append, receipts and
 // deletion of plaintext are the caller's (internal/sweep) steps. The
 // ephemeral identity is never serialized. Seal never deletes plaintext.
-func Seal(ctx context.Context, r SealRequest) (*Sealed, error) { panic("unimplemented: capsule.Seal") }
+func Seal(ctx context.Context, r SealRequest) (*Sealed, error) { return seal(ctx, r) }
 
 // CheckHeader parses the age header of r and requires exactly want X25519
 // stanzas and no other stanza types.
-func CheckHeader(r io.Reader, want int) error { panic("unimplemented: capsule.CheckHeader") }
+func CheckHeader(r io.Reader, want int) error { return checkHeader(r, want) }
 
 // ReadHeader returns the detached age header of the capsule file name in dir
 // (age.ExtractHeader), opening it with O_NOFOLLOW, plus its SHA-256.
 func ReadHeader(dir *fsx.Dir, name string) (header []byte, headerSHA256 string, err error) {
-	panic("unimplemented: capsule.ReadHeader")
+	return readHeader(dir, name)
 }
 
 // HashFile returns the SHA-256 and size of a capsule file.
 func HashFile(dir *fsx.Dir, name string) (sha256 string, size int64, err error) {
-	panic("unimplemented: capsule.HashFile")
+	return hashFile(dir, name)
 }
 
 // OpenManifest decrypts only up to the first tar member using fileKey
 // (age.NewInjectedFileKeyIdentity) and returns the manifest.
 func OpenManifest(r io.Reader, fileKey []byte) (Manifest, error) {
-	panic("unimplemented: capsule.OpenManifest")
+	return openManifest(r, fileKey)
 }
 
 // Limits bounds extraction (SPEC §5 rule 3, §11.5).
@@ -258,7 +258,7 @@ type ExtractOptions struct {
 // SHA-256, and fsyncs staging. All-or-nothing: on error staging is left for
 // the caller to remove.
 func Extract(ctx context.Context, r io.Reader, o ExtractOptions) (Manifest, []Staged, error) {
-	panic("unimplemented: capsule.Extract")
+	return extract(ctx, r, o)
 }
 
 // GenName returns the capsule file name of generation n ("g%06d.pcap";
@@ -301,10 +301,10 @@ func UnitKey(salt []byte, parts ...string) string {
 
 // LoadSalt reads <state>/name.salt, creating 32 random bytes (0600) if
 // missing.
-func LoadSalt(path string) ([]byte, error) { panic("unimplemented: capsule.LoadSalt") }
+func LoadSalt(path string) ([]byte, error) { return loadSalt(path) }
 
 // RecipientsFingerprint is SHA-256 over the canonical recipient set
 // (sorted recipient strings joined by '\n', prefixed by the family) (D5).
 func RecipientsFingerprint(family string, recipients []string) string {
-	panic("unimplemented: capsule.RecipientsFingerprint")
+	return recipientsFingerprint(family, recipients)
 }
