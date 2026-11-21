@@ -2,6 +2,8 @@ package claude
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -113,6 +115,22 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	} else {
 		plan.Notices = append(plan.Notices, msgSettingsKept) // SPEC §7.1.5, CC-38
 	}
+	// D107: a fresh launch starts a session whose id precinto knows before
+	// exec — the one the user named with --session-id, else one chosen
+	// here — so the wrapper records it as the child's (and managed) before
+	// any hook runs, and the seal after exit, which takes every session
+	// the child owns, finds it without hooks.
+	freshSID := ""
+	if plan.Resume.Kind == harness.ResumeNone && !plan.Resume.Fork {
+		sid, inject, err := freshSessionID(args)
+		if err != nil {
+			return harness.LaunchPlan{}, err
+		}
+		if inject {
+			final = append(final, flagSessionID, sid)
+		}
+		freshSID = sid
+	}
 	final = append(final, args...)
 	if hasArg(args, "--bare") {
 		plan.Confirm = msgBareWarning
@@ -199,6 +217,11 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		plan.Background = []harness.Selector{recent}
 	}
 	plan.Argv = final
+	// The new session is named for the wrapper to record (D107), not in
+	// the seal scope: like a fork's, the scope stays every session the
+	// child owns (Scope.Procs, added by the backend), so the sessions it
+	// switches to (/clear, /resume) are sealed too, whoever recorded them.
+	plan.SessionID = freshSID
 	plan.SealScope.RootIDs = rootIDs(plan.Roots)
 	return plan, nil
 }
@@ -326,4 +349,90 @@ func (a *adapter) openElsewhere(e harness.Env, h home, sid string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// flagSessionID is Claude's option that names the id of the session a
+// launch starts (a UUID; Claude refuses it with --continue or --resume
+// unless --fork-session is given).
+const flagSessionID = "--session-id"
+
+// nonSessionVerbs are Claude subcommands under which the process starts no
+// new session of its own (they manage other sessions, the installation or
+// a server): a fresh launch whose first positional argument is one gets no
+// session id (D107). Passthrough commands never reach PlanLaunch's fresh
+// branch; they are listed too, so the rule holds whatever the inventory.
+var nonSessionVerbs = []string{
+	"agents", "attach", "auth", "auto-mode", "config", "daemon", "doctor", "gateway", "import", "install",
+	"kill", "logs", "mcp", "migrate-installer", "plugin", "plugins", "purge", "rc", "remote-control",
+	"respawn", "rm", "self-hosted-runner", "setup-token", "stop", "ultrareview", "update",
+}
+
+// noSessionFlags are options under which a launch starts no new local
+// session in this process (a background agent, a shell job, the desktop
+// app, a cloud or teleported session, the PR session picker, hooks only,
+// or a session never written to disk): no session id is chosen (D107).
+var noSessionFlags = []string{
+	"--bg", "--background", "--exec", "--desktop", "--cloud", "--remote", "--environment", "--teleport",
+	"--from-pr", "--init-only", "--no-session-persistence",
+}
+
+// freshSessionID returns the id of the session a fresh launch with args
+// starts (D107): the UUID the user passed with --session-id (kept as
+// given, inject false), else a new random one (version 4) for PlanLaunch
+// to pass (inject true). It returns "" for launches that start no new
+// session here (nonSessionVerbs, noSessionFlags, an invalid --session-id
+// value, which Claude refuses itself). Parsing stops at "--".
+func freshSessionID(args []string) (sid string, inject bool, err error) {
+	positional := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			break
+		}
+		if v, ok := strings.CutPrefix(a, flagSessionID+"="); ok {
+			return userSessionID(v), false, nil
+		}
+		if a == flagSessionID {
+			if i+1 < len(args) {
+				return userSessionID(args[i+1]), false, nil
+			}
+			return "", false, nil
+		}
+		name, _, _ := strings.Cut(a, "=")
+		if oneOf(name, noSessionFlags) {
+			return "", false, nil
+		}
+		if !positional && a != "" && !strings.HasPrefix(a, "-") {
+			positional = true
+			if oneOf(a, nonSessionVerbs) {
+				return "", false, nil
+			}
+		}
+	}
+	id, err := newSessionUUID()
+	if err != nil {
+		return "", false, fmt.Errorf("claude: choose a session id: %w", err)
+	}
+	return id, true, nil
+}
+
+// userSessionID is the session id a user's --session-id value names, in
+// lower case; "" when it is not a UUID.
+func userSessionID(v string) string {
+	if !isUUID(v) {
+		return ""
+	}
+	return strings.ToLower(v)
+}
+
+// newSessionUUID returns a random version-4 UUID in canonical lower case.
+func newSessionUUID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = b[6]&0x0f | 0x40 // version 4
+	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
+	h := hex.EncodeToString(b[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32], nil
 }

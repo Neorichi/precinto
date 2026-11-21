@@ -275,14 +275,16 @@ const (
 	MsgStartLockedUser    MsgID = "C3.start.user"      // precinto: {folder} is locked. Your first message will ask you to unlock.
 	MsgCodexWrongHome     MsgID = "C3.codexhome"       // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
 	MsgOverlayTitle       MsgID = "C4.title"           // Locked by precinto
-	MsgOverlayLine        MsgID = "C4.line"            // {folder} · locked after {reason}
+	MsgOverlayLine        MsgID = "C4.line"            // {folder} · {reason}
 	MsgOverlayPaused      MsgID = "C4.paused"          // Your session is paused, not closed. It continues where it was.
 	MsgOverlayKeys        MsgID = "C4.keys"            // Enter   unlock ({factor})          Ctrl-D   end session and seal it
 	MsgOverlayKeysPlain   MsgID = "C4.keys.plain"      // Enter   unlock          Ctrl-D   end session and seal it
 	MsgOverlayBusy        MsgID = "C4.busy"            // {harness} is finishing its current step. New messages wait until you unlock.
-	MsgOverlayEnding      MsgID = "C4.ending"          // Ending session... sealed.
-	MsgEnded              MsgID = "C5.ended"           // precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}
+	MsgOverlayEnding      MsgID = "C4.ending"          // Ending session...
+	MsgEnded              MsgID = "C5.ended"           // precinto: locked {folder} ({reason}) and ended {n} session(s). Resume with: {resume}
 	MsgSealedOK           MsgID = "C6.ok"              // precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.
+	MsgSealedLocked       MsgID = "C6.sealed"          // precinto: sealed this session ({sid} · {files} files · {size}).
+	MsgSealNone           MsgID = "C6.none"            // precinto: no file of this session was found to seal. If it saved a conversation, seal it with: {command}
 	MsgSealDeferred       MsgID = "C6.deferred"        // precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).
 	MsgSealFailed         MsgID = "C6.failed"          // precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.
 	MsgResumeOlder        MsgID = "C7.older"           // precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick
@@ -294,7 +296,7 @@ const (
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
 	MsgCodexModified      MsgID = "C9.codexmodified"   // precinto: the trust Codex keeps for precinto's hooks doesn't match the hooks precinto ships: they changed since you trusted them, or this Codex version records trust differently. If /hooks in Codex shows them as changed, Codex skips them and won't pause prompts when this folder locks: trust "precinto" again there. Your history is still sealed when Codex exits. Start anyway? [Y/n]
 	MsgCodexNoPlugin      MsgID = "C9.codexplugin"     // precinto: this folder's Codex doesn't have precinto's plugin enabled, so it won't pause prompts when the folder locks. Your history is still sealed when Codex exits. Run precinto integrate codex (if it is installed already: precinto codex sync-config --root {folder}). Start anyway? [Y/n]
-	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
+	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks), so its prompts weren't paused while the folder was locked.
 	MsgBareWarning        MsgID = "C9.bare"            // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
 	MsgUngatedSession     MsgID = "C9.ungated"         // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
 	MsgCodexOutside       MsgID = "C9.codexoutside"    // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
@@ -332,6 +334,7 @@ const (
 	MsgNotInitialized     MsgID = "E.notinit"          // precinto is not set up yet. Run: precinto init
 	MsgAgentDownAll       MsgID = "E.agentdown"        // the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock
 	MsgNeedTerminal       MsgID = "E.needtty"          // {command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.
+	MsgHomeUnregistered   MsgID = "E.unregistered"     // precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code
 	MsgShimFailed         MsgID = "D.shim"             // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
 )
 
@@ -363,14 +366,16 @@ var catalog = map[MsgID]string{
 	MsgStartLockedUser:    "precinto: {folder} is locked. Your first message will ask you to unlock.",
 	MsgCodexWrongHome:     "precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.",
 	MsgOverlayTitle:       "Locked by precinto",
-	MsgOverlayLine:        "{folder} · locked after {reason}",
+	MsgOverlayLine:        "{folder} · {reason}",
 	MsgOverlayPaused:      "Your session is paused, not closed. It continues where it was.",
 	MsgOverlayKeys:        "Enter   unlock ({factor})          Ctrl-D   end session and seal it",
 	MsgOverlayKeysPlain:   "Enter   unlock          Ctrl-D   end session and seal it",
 	MsgOverlayBusy:        "{harness} is finishing its current step. New messages wait until you unlock.",
-	MsgOverlayEnding:      "Ending session... sealed.",
-	MsgEnded:              "precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}",
+	MsgOverlayEnding:      "Ending session...",
+	MsgEnded:              "precinto: locked {folder} ({reason}) and ended {n} session(s). Resume with: {resume}",
 	MsgSealedOK:           "precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.",
+	MsgSealedLocked:       "precinto: sealed this session ({sid} · {files} files · {size}).",
+	MsgSealNone:           "precinto: no file of this session was found to seal. If it saved a conversation, seal it with: {command}",
 	MsgSealDeferred:       "precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).",
 	MsgSealFailed:         "precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.",
 	MsgResumeOlder:        "precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick",
@@ -382,7 +387,7 @@ var catalog = map[MsgID]string{
 	MsgCodexUntrusted:     "precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust \"precinto\". Start anyway? [Y/n]",
 	MsgCodexModified:      "precinto: the trust Codex keeps for precinto's hooks doesn't match the hooks precinto ships: they changed since you trusted them, or this Codex version records trust differently. If /hooks in Codex shows them as changed, Codex skips them and won't pause prompts when this folder locks: trust \"precinto\" again there. Your history is still sealed when Codex exits. Start anyway? [Y/n]",
 	MsgCodexNoPlugin:      "precinto: this folder's Codex doesn't have precinto's plugin enabled, so it won't pause prompts when the folder locks. Your history is still sealed when Codex exits. Run precinto integrate codex (if it is installed already: precinto codex sync-config --root {folder}). Start anyway? [Y/n]",
-	MsgClaudeNoHooks:      "precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.",
+	MsgClaudeNoHooks:      "precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks), so its prompts weren't paused while the folder was locked.",
 	MsgBareWarning:        "precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]",
 	MsgUngatedSession:     "precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}",
 	MsgCodexOutside:       "precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex",
@@ -420,6 +425,7 @@ var catalog = map[MsgID]string{
 	MsgNotInitialized:     "precinto is not set up yet. Run: precinto init",
 	MsgAgentDownAll:       "the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock",
 	MsgNeedTerminal:       "{command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.",
+	MsgHomeUnregistered:   "precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code",
 	MsgShimFailed:         "precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor",
 }
 

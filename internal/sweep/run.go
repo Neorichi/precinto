@@ -49,6 +49,8 @@ type run struct {
 	quietMu    sync.Mutex
 	quietTried bool
 	quietDone  bool
+	// onQuiet is Options.OnQuietWait of the operation (D113).
+	onQuiet func(time.Duration)
 
 	// dec holds the final result of every unit the run decided.
 	dec decisions

@@ -36,6 +36,7 @@ const (
 	codeTooLarge      = "too-large"
 	codeNotLogged     = "not-logged"
 	codeUnitKey       = "unit-key"
+	codeUnregistered  = "unregistered" // no registered home: a configuration gap, exit 1, never 5 (D109)
 	codeKeyDenied     = "key-denied"
 	codeNoSpace       = "no-space"
 	codeInaccessible  = "inaccessible"
@@ -59,6 +60,7 @@ var codeErrors = map[string]error{
 	codeTooLarge:      capsule.ErrTooLarge,
 	codeNotLogged:     ErrNotLogged,
 	codeUnitKey:       harness.ErrUnitKey,
+	codeUnregistered:  harness.ErrUnregistered,
 	codeKeyDenied:     ErrKeyDenied,
 	codeNoSpace:       ErrNoSpace,
 	codeInaccessible:  ErrInaccessible,
@@ -138,7 +140,9 @@ func failureCode(err error) (string, fsx.Class) {
 		return codeUnsafe, fsx.ClassUnsafe
 	case errors.Is(err, capslog.ErrNotLogged):
 		return codeNotLogged, fsx.ClassOther
-	case errors.Is(err, harness.ErrUnitKey), errors.Is(err, harness.ErrUnregistered):
+	case errors.Is(err, harness.ErrUnregistered):
+		return codeUnregistered, fsx.ClassOther
+	case errors.Is(err, harness.ErrUnitKey):
 		return codeUnitKey, fsx.ClassOther
 	case errors.Is(err, ErrKeyDenied):
 		return codeKeyDenied, fsx.ClassOther

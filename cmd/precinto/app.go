@@ -17,6 +17,7 @@ import (
 	"github.com/precinto/precinto/internal/agent"
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
@@ -203,13 +204,43 @@ func (a *app) setConfig(c config.Config) {
 	a.eng, a.engErr, a.engDone = nil, nil, false
 }
 
-// saveConfig validates and writes config.toml and roots.list (D22).
+// saveConfig validates and writes config.toml and roots.list (D22), under
+// the config lock (D114).
 func (a *app) saveConfig(c config.Config) error {
+	return a.editConfig(func(paths.Layout) (config.Config, error) { return c, nil })
+}
+
+// configLockWait bounds how long a config.toml edit waits for another
+// process's edit to end (each holds the lock for a read and two small
+// atomic writes).
+var configLockWait = 10 * time.Second
+
+// editConfig holds state/locks/config.lock — an exclusive flock that every
+// edit of config.toml and roots.list takes (D114) — while next computes
+// the configuration to save, and saves it. An edit that reads config.toml
+// inside next (registerHomes) never overwrites what another process (a
+// protect, an integrate, a background seal registering a home) saved
+// between its read and its write.
+func (a *app) editConfig(next func(l paths.Layout) (config.Config, error)) error {
 	l, err := a.layout()
 	if err != nil {
 		return err
 	}
 	if err := l.EnsureDirs(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), configLockWait)
+	defer cancel()
+	lk, err := fsx.WaitLock(ctx, l.LockFile("config"), false)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("config.toml stayed locked by another precinto process; try again")
+	}
+	if err != nil {
+		return err
+	}
+	defer lk.Unlock()
+	c, err := next(l)
+	if err != nil {
 		return err
 	}
 	if err := config.Save(l.ConfigFile, c); err != nil {

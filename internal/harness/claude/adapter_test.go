@@ -945,8 +945,10 @@ func TestPlanLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(plan.Argv, " ") != bin+" --settings "+settings {
-		t.Errorf("argv = %q", plan.Argv)
+	// D107: a fresh launch passes the session id precinto chose
+	// (LaunchPlan.SessionID); its seal scope names no session.
+	if plan.SessionID == "" || len(plan.SealScope.SIDs) != 0 || strings.Join(plan.Argv, " ") != bin+" --settings "+settings+" --session-id "+plan.SessionID {
+		t.Errorf("argv = %q, session id %q, seal scope %+v", plan.Argv, plan.SessionID, plan.SealScope)
 	}
 	if plan.Mode != harness.LaunchInteractive || len(plan.Roots) != 1 || plan.Roots[0].ID != "root-acme" ||
 		strings.Join(plan.Env, " ") != "CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0" || plan.Confirm != "" {
@@ -991,7 +993,7 @@ func TestPlanLaunch(t *testing.T) {
 	}
 	// The user's own --settings wins; --bare asks first.
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "--settings", "{}", "--bare"})
-	if strings.Join(plan.Argv, " ") != bin+" --settings {} --bare" || plan.Confirm != "C9.bare" {
+	if plan.SessionID == "" || strings.Join(plan.Argv, " ") != bin+" --session-id "+plan.SessionID+" --settings {} --bare" || plan.Confirm != "C9.bare" {
 		t.Errorf("user settings / bare: %+v", plan)
 	}
 	// Passthrough and direct modes.
@@ -1484,6 +1486,12 @@ func TestPlanLaunchSealScopeOfAKnownTarget(t *testing.T) {
 		if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, args); len(plan.SealScope.SIDs) != 0 {
 			t.Errorf("%q: seal scope %+v, want no session ids", args, plan.SealScope)
 		}
+	}
+	// D107: a fresh launch names the session id it passes for the wrapper
+	// to record, outside its seal scope.
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude"}); plan.SessionID == "" ||
+		!slices.Contains(plan.Argv, plan.SessionID) {
+		t.Errorf("fresh launch: session id %q argv %q", plan.SessionID, plan.Argv)
 	}
 	// C7.twice opens a copy (a fork): no session ids either.
 	start := time.Now().Add(-time.Minute)

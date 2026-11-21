@@ -851,14 +851,18 @@ type fakeBackend struct {
 	lease       *fakeLease
 	restoreSync func(ctx context.Context, abort <-chan struct{}) (wrapper.RestoreSummary, error)
 	restoreBG   func(ctx context.Context, abort <-chan struct{})
+	watch       func(ctx context.Context, child platform.ProcID) // WatchSessions; nil returns at once
 	srv         *fakeServer
 	daemonErr   error
 	seal        wrapper.SealSummary
 	sealErr     error
 	hooksSeen   bool
-	launched    platform.ProcID
-	sealed      platform.ProcID
-	finishCode  atomic.Int64
+	// sealArchives makes a seal forget the hooks it saw, as the real seal
+	// moves the session's ledger into the capsule (S13).
+	sealArchives bool
+	launched     platform.ProcID
+	sealed       platform.ProcID
+	finishCode   atomic.Int64
 }
 
 var _ wrapper.Backend = (*fakeBackend)(nil)
@@ -942,8 +946,11 @@ func (b *fakeBackend) RestoreBackground(ctx context.Context, plan harness.Launch
 
 func (b *fakeBackend) Daemon(ctx context.Context) (wrapper.Daemon, error) {
 	b.record("Daemon")
-	if b.daemonErr != nil {
-		return nil, b.daemonErr
+	b.mu.Lock()
+	derr := b.daemonErr
+	b.mu.Unlock()
+	if derr != nil {
+		return nil, derr
 	}
 	b.srv.mu.Lock()
 	b.srv.dials++
@@ -957,6 +964,21 @@ func (b *fakeBackend) RecordLaunch(ctx context.Context, plan harness.LaunchPlan,
 	b.launched = child
 	b.mu.Unlock()
 	return nil
+}
+
+// failDials makes every later Daemon call fail with err (a daemon that
+// stopped answering), safely while Run's goroutines dial.
+func (b *fakeBackend) failDials(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.daemonErr = err
+}
+
+func (b *fakeBackend) WatchSessions(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) {
+	b.record("WatchSessions")
+	if b.watch != nil {
+		b.watch(ctx, child)
+	}
 }
 
 // waitLaunched waits until Run reported the started child: everything Run
@@ -978,12 +1000,17 @@ func (b *fakeBackend) SealAfterExit(ctx context.Context, plan harness.LaunchPlan
 	b.record("SealAfterExit")
 	b.mu.Lock()
 	b.sealed = child
+	if b.sealArchives {
+		b.hooksSeen = false
+	}
 	b.mu.Unlock()
 	return b.seal, b.sealErr
 }
 
 func (b *fakeBackend) HooksSeen(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) (bool, error) {
 	b.record("HooksSeen")
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.hooksSeen, nil
 }
 

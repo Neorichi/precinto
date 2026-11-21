@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
@@ -74,6 +77,16 @@ type engine interface {
 	AcquireLease(keys []string, l live.Lease) (wrapper.Lease, error)
 	AppendLedger(events ...ledger.Event) error
 	HooksSeen(h harness.ID, child platform.ProcID) (bool, error)
+	// LatestSessions returns the sessions the ledger says child started,
+	// or was launched into, most recently (ledger.ByProc, D20): the session
+	// it ran last, whoever recorded it (the wrapper's launch events, the
+	// hooks' start events).
+	LatestSessions(h harness.ID, child platform.ProcID) ([]string, error)
+	// ChildSessions returns the session ids the harness's live-session
+	// registry in configDir names for the running process child (Claude:
+	// sessions/<pid>.json written by that process, D107); nil for harnesses
+	// without one.
+	ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID) ([]string, error)
 	EnqueueSeal(r queue.Request) error
 
 	// Codex per-folder homes (D31).
@@ -97,12 +110,38 @@ var registerBuiltins = sync.OnceValue(func() []harness.Adapter {
 // sweepEngine is the production engine.
 type sweepEngine struct {
 	layout   paths.Layout
-	cfg      config.Config
-	henv     harness.Env
-	senv     sweep.Env
 	ledger   *ledger.Ledger
 	adapters []harness.Adapter
 	invs     []harness.Inventory
+	// register saves homes in config.toml (D109; app.registerHomes).
+	register func(add []config.Home) (config.Config, error)
+
+	// mu guards the configuration and the environments built from it: a
+	// seal or sweep registers the homes it meets (D109) while other
+	// goroutines of the same `precinto run` restore or record.
+	mu   sync.Mutex
+	cfg  config.Config
+	henv harness.Env
+	senv sweep.Env
+}
+
+// envs returns the current configuration and environments.
+func (e *sweepEngine) envs() (config.Config, harness.Env, sweep.Env) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg, e.henv, e.senv
+}
+
+// sweepEnv is the current sweep.Env.
+func (e *sweepEngine) sweepEnv() sweep.Env {
+	_, _, s := e.envs()
+	return s
+}
+
+// harnessEnv is the current harness.Env.
+func (e *sweepEngine) harnessEnv() harness.Env {
+	_, h, _ := e.envs()
+	return h
 }
 
 // newSweepEngine builds the production engine: precinto's directories,
@@ -170,6 +209,7 @@ func newSweepEngine(ctx context.Context, a *app, experimental bool) (engine, err
 		ledger:   led,
 		adapters: adapters,
 		invs:     invs,
+		register: a.registerHomes,
 	}
 	e.senv = sweep.Env{
 		Cfg:      cfg,
@@ -218,17 +258,30 @@ func withErr(r *sweep.Report, err error) (*sweep.Report, error) {
 }
 
 func (e *sweepEngine) Sweep(ctx context.Context, o sweep.Options) (*sweep.Report, error) {
-	return withErr(sweep.Sweep(ctx, e.senv, o))
+	if !o.DryRun {
+		e.registerSeenHomes(ctx)
+	}
+	return withErr(sweep.Sweep(ctx, e.sweepEnv(), o))
 }
 
 func (e *sweepEngine) Seal(ctx context.Context, hs []harness.ID, scope harness.Scope, o sweep.Options) (*sweep.Report, error) {
+	// D106: `seal --adopt` asks the adapters for the sessions they find
+	// only by their transcripts' cwd (S6), as sweep.scanAll does for
+	// sweeps; the scope a caller passes may not carry the flag.
+	if o.Adopt || o.Scope.Adopt {
+		scope.Adopt = true
+	}
+	if !o.DryRun {
+		e.registerSeenHomes(ctx)
+	}
+	henv := e.harnessEnv()
 	var units []harness.Unit
 	var scanErr error
 	for _, ad := range e.adapters {
 		if len(hs) > 0 && !slices.Contains(hs, ad.ID()) {
 			continue
 		}
-		us, err := ad.Scan(ctx, e.henv, scope)
+		us, err := ad.Scan(ctx, henv, scope)
 		if err != nil {
 			// A harness whose scan failed keeps its plaintext; the others
 			// are still sealed (fail closed per harness).
@@ -240,66 +293,126 @@ func (e *sweepEngine) Seal(ctx context.Context, hs []harness.ID, scope harness.S
 	if len(units) == 0 {
 		return &sweep.Report{}, scanErr
 	}
-	r, err := withErr(sweep.Seal(ctx, e.senv, units, o))
+	r, err := withErr(sweep.Seal(ctx, e.sweepEnv(), units, o))
 	return r, errors.Join(scanErr, err)
 }
 
 func (e *sweepEngine) DrainQueue(ctx context.Context, o sweep.Options) (*sweep.Report, error) {
-	return withErr(sweep.DrainQueue(ctx, e.senv, o))
+	if !o.DryRun {
+		e.registerSeenHomes(ctx)
+	}
+	return withErr(sweep.DrainQueue(ctx, e.sweepEnv(), o))
+}
+
+// registerSeenHomes implements SPEC §7.0 for the processes that seal
+// (D109): every Claude home a seal, sweep or queue worker visits that
+// config.toml does not register — a config dir the ledger saw (hooks run in
+// Claude's own environment), the default home of this environment — and
+// that exists is registered before anything is sealed from it, realpath'd
+// as the adapter resolved it, with its tmp and cache bases. Only
+// registered homes are restore targets, so a session sealed from a home
+// registered nowhere could never be restored. Adding a home is a
+// strengthening edit that applies at once (D48); config.toml is read again
+// right before the write, so edits made since this process loaded it are
+// kept. A failure leaves config.toml as it was: the seal goes on, and the
+// next one tries again.
+func (e *sweepEngine) registerSeenHomes(ctx context.Context) {
+	if e.register == nil {
+		return
+	}
+	ad, err := e.adapter(harness.ClaudeCode)
+	if err != nil {
+		return
+	}
+	cfg, henv, _ := e.envs()
+	homes, err := ad.Homes(ctx, henv)
+	if err != nil {
+		return
+	}
+	known := map[string]bool{}
+	for _, h := range cfg.Harness[string(harness.ClaudeCode)].Homes {
+		known[filepath.Clean(h.Dir)] = true
+	}
+	var add []config.Home
+	for _, h := range homes {
+		dir := h.Bases[capsule.BaseClaudeConfig]
+		if !filepath.IsAbs(dir) || known[filepath.Clean(dir)] {
+			continue
+		}
+		if st, err := fsx.Lstat(dir); err != nil || !st.IsDir() {
+			continue // never seen on disk: nothing is sealed from it
+		}
+		known[filepath.Clean(dir)] = true
+		add = append(add, config.Home{Dir: filepath.Clean(dir), Tmp: h.Bases[capsule.BaseClaudeTmp],
+			Cache: h.Bases[capsule.BaseClaudeCache], SeenAt: e.sweepEnv().Clock.Now().UTC(), Default: h.Default})
+	}
+	if len(add) == 0 {
+		return
+	}
+	next, err := e.register(add)
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cfg = next
+	e.henv.Cfg = next
+	e.senv.Cfg = next
+	e.senv.Harness.Cfg = next
 }
 
 func (e *sweepEngine) Restore(ctx context.Context, keys sweep.KeySource, r sweep.RestoreRequest) (*sweep.Report, error) {
-	return withErr(sweep.Restore(ctx, e.senv, keys, r))
+	return withErr(sweep.Restore(ctx, e.sweepEnv(), keys, r))
 }
 
 func (e *sweepEngine) RestoreMarkdown(ctx context.Context, keys sweep.KeySource, root config.Root) (*sweep.Report, error) {
-	return withErr(sweep.RestoreMarkdown(ctx, e.senv, keys, root))
+	return withErr(sweep.RestoreMarkdown(ctx, e.sweepEnv(), keys, root))
 }
 
 func (e *sweepEngine) MergeHistory(ctx context.Context, keys sweep.KeySource, rootID string) (*sweep.Report, error) {
-	return withErr(sweep.MergeHistory(ctx, e.senv, keys, rootID))
+	return withErr(sweep.MergeHistory(ctx, e.sweepEnv(), keys, rootID))
 }
 
 func (e *sweepEngine) List(ctx context.Context, o sweep.ListOptions) ([]sweep.UnitInfo, error) {
-	return sweep.List(ctx, e.senv, o)
+	return sweep.List(ctx, e.sweepEnv(), o)
 }
 
 func (e *sweepEngine) PlaintextSummary(ctx context.Context) ([]sweep.Plaintext, error) {
-	return sweep.PlaintextSummary(ctx, e.senv)
+	return sweep.PlaintextSummary(ctx, e.sweepEnv())
 }
 
 func (e *sweepEngine) OpenNotes(ctx context.Context, keys sweep.KeySource, markers []string) (*sweep.Report, error) {
-	return withErr(sweep.OpenNotes(ctx, e.senv, keys, markers))
+	return withErr(sweep.OpenNotes(ctx, e.sweepEnv(), keys, markers))
 }
 
 func (e *sweepEngine) CatNote(ctx context.Context, keys sweep.KeySource, marker string, w io.Writer) error {
-	return sweep.CatNote(ctx, e.senv, keys, marker, w)
+	return sweep.CatNote(ctx, e.sweepEnv(), keys, marker, w)
 }
 
 func (e *sweepEngine) ParseMarker(path string) (string, error) { return sweep.ParseMarker(path) }
 
 func (e *sweepEngine) Resolve(ctx context.Context, keys sweep.KeySource, path, keep string) (*sweep.Report, error) {
-	return withErr(sweep.Resolve(ctx, e.senv, keys, path, keep))
+	return withErr(sweep.Resolve(ctx, e.sweepEnv(), keys, path, keep))
 }
 
 func (e *sweepEngine) Forget(ctx context.Context, unit string) (*sweep.Report, error) {
-	return withErr(sweep.Forget(ctx, e.senv, unit))
+	return withErr(sweep.Forget(ctx, e.sweepEnv(), unit))
 }
 
 func (e *sweepEngine) Prune(ctx context.Context, o sweep.PruneOptions) (*sweep.Report, error) {
-	return withErr(sweep.Prune(ctx, e.senv, o))
+	return withErr(sweep.Prune(ctx, e.sweepEnv(), o))
 }
 
 func (e *sweepEngine) Generations(unit string) ([]sweep.Generation, error) {
-	return sweep.Generations(e.senv, unit)
+	return sweep.Generations(e.sweepEnv(), unit)
 }
 
 func (e *sweepEngine) ReconcileCodex(ctx context.Context, keys sweep.KeySource, rootID string, prefer sweep.CodexPrefer) (*sweep.Report, error) {
-	return withErr(sweep.ReconcileCodex(ctx, e.senv, keys, rootID, prefer))
+	return withErr(sweep.ReconcileCodex(ctx, e.sweepEnv(), keys, rootID, prefer))
 }
 
 func (e *sweepEngine) LatestCapsuleHeader() ([]byte, bool, error) {
-	entries, err := e.senv.Log.All()
+	entries, err := e.sweepEnv().Log.All()
 	if err != nil {
 		return nil, false, err
 	}
@@ -343,11 +456,11 @@ func (e *sweepEngine) Homes(ctx context.Context, h harness.ID) ([]harness.Home, 
 	if err != nil {
 		return nil, err
 	}
-	return ad.Homes(ctx, e.henv)
+	return ad.Homes(ctx, e.harnessEnv())
 }
 
 func (e *sweepEngine) UnitKey(k capsule.Kind, h harness.ID, homeID, rootID, unitID string) (string, error) {
-	return harness.UnitKeyFor(e.henv.Salt, k, h, homeID, rootID, unitID)
+	return harness.UnitKeyFor(e.harnessEnv().Salt, k, h, homeID, rootID, unitID)
 }
 
 func (e *sweepEngine) CleanupPeriodDays(configDir string) (int, error) {
@@ -359,7 +472,7 @@ func (e *sweepEngine) PlanLaunch(ctx context.Context, h harness.ID, cwd string, 
 	if err != nil {
 		return harness.LaunchPlan{}, err
 	}
-	henv := e.henv
+	henv := e.harnessEnv()
 	henv.Host = host
 	return ad.PlanLaunch(ctx, henv, cwd, argv)
 }
@@ -430,23 +543,108 @@ func (e *sweepEngine) HooksSeen(h harness.ID, child platform.ProcID) (bool, erro
 	return false, nil
 }
 
+func (e *sweepEngine) LatestSessions(h harness.ID, child platform.ProcID) ([]string, error) {
+	ss, err := e.ledger.ByProc(string(h), child)
+	if err != nil {
+		if errors.Is(err, ledger.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, s.SID)
+	}
+	return out, nil
+}
+
+// registryStartSlack is how much later than a registry entry's startedAt
+// the process may have started and still be its writer (the Claude
+// adapter's D18 rule).
+const registryStartSlack = 2 * time.Second
+
+// sidRE matches a session id as ChildSessions returns it (a lowercase UUID).
+var sidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func (e *sweepEngine) ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID) ([]string, error) {
+	if h != harness.ClaudeCode || !filepath.IsAbs(configDir) || child.IsZero() {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := claude.ReadRegistry(configDir)
+	if err != nil {
+		return nil, err
+	}
+	start := platform.StartTime(child)
+	var out []string
+	for _, r := range entries {
+		if r.PID != child.PID || !r.Valid {
+			continue
+		}
+		// Written by this process, not left behind by an earlier one with
+		// the same pid: its startedAt is at most registryStartSlack before
+		// the child's start, else its mtime is not before it (an unknown
+		// start time trusts the pid, which the child holds while it runs).
+		switch {
+		case start.IsZero():
+		case !r.StartedAt.IsZero():
+			if start.After(r.StartedAt.Add(registryStartSlack)) {
+				continue
+			}
+		case !r.Mtime.IsZero() && r.Mtime.Before(start):
+			continue
+		}
+		if sid := strings.ToLower(r.SessionID); sidRE.MatchString(sid) && !slices.Contains(out, sid) {
+			out = append(out, sid)
+		}
+	}
+	return out, nil
+}
+
 func (e *sweepEngine) EnqueueSeal(r queue.Request) error {
 	_, err := queue.Enqueue(e.layout.QueueDir, r)
 	return err
 }
 
 func (e *sweepEngine) WrongHomeRollouts(ctx context.Context) (map[string]int, error) {
-	user, err := codex.UserHome(e.henv.Host)
+	user, err := codex.UserHome(e.harnessEnv().Host)
 	if err != nil {
 		return nil, err
 	}
-	return codex.WrongHomeRollouts(ctx, user, e.cfg)
+	cfg, _, _ := e.envs()
+	return codex.WrongHomeRollouts(ctx, user, cfg)
 }
 
 func (e *sweepEngine) PrepareCodexHome(ctx context.Context, rootID string, forceConfig bool) error {
-	user, err := codex.UserHome(e.henv.Host)
+	user, err := codex.UserHome(e.harnessEnv().Host)
 	if err != nil {
 		return err
 	}
 	return codex.PrepareHome(ctx, codex.Seed{UserHome: user, RootHome: e.layout.CodexHome(rootID), ForceConfig: forceConfig})
+}
+
+// registerHomes adds homes to [harness.claude-code].homes of config.toml
+// as the file is on disk under the config lock (not this process's cached
+// copy, D114) and returns the configuration it saved (D109; addHome
+// deduplicates by directory).
+func (a *app) registerHomes(add []config.Home) (config.Config, error) {
+	var next config.Config
+	err := a.editConfig(func(l paths.Layout) (config.Config, error) {
+		disk, err := config.Load(l.ConfigFile)
+		if err != nil {
+			return config.Config{}, err
+		}
+		next = disk
+		next.Harness = cloneHarness(disk.Harness)
+		for _, h := range add {
+			addHome(next.Harness, string(harness.ClaudeCode), h)
+		}
+		return next, nil
+	})
+	if err != nil {
+		return config.Config{}, err
+	}
+	return next, nil
 }

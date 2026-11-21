@@ -542,6 +542,9 @@ type fakeEngine struct {
 	lease     *fakeLease
 	ledgerEvs []ledger.Event
 	hooksSeen bool
+	childSIDs []string // ChildSessions
+	childAsks int
+	latest    []string // LatestSessions
 	enqueued  []queue.Request
 	prepared  []string
 	header    []byte
@@ -779,6 +782,19 @@ func (f *fakeEngine) AppendLedger(events ...ledger.Event) error {
 
 func (f *fakeEngine) HooksSeen(h harness.ID, child platform.ProcID) (bool, error) {
 	return f.hooksSeen, nil
+}
+
+func (f *fakeEngine) LatestSessions(h harness.ID, child platform.ProcID) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.latest...), nil
+}
+
+func (f *fakeEngine) ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.childAsks++
+	return append([]string(nil), f.childSIDs...), nil
 }
 
 func (f *fakeEngine) EnqueueSeal(r queue.Request) error {

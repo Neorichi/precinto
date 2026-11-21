@@ -87,6 +87,11 @@ type Options struct {
 	Lock     bool             // sealing on behalf of a lock (status reason "lock")
 	Dormant  string           // generic inventories: seal this harness once (D33)
 	Deadline time.Time
+	// OnQuietWait, when set, is called once, just before the run's single
+	// quiet-window wait (D63), with the wait's length, so a command run
+	// from a terminal can say why it pauses (D113). It never runs for a
+	// run that does not wait.
+	OnQuietWait func(d time.Duration)
 }
 
 // Outcome of one unit.
@@ -211,6 +216,11 @@ type Receipt struct {
 	Gen        uint64        `json:"gen"`
 	RestoredAt time.Time     `json:"restored_at"`
 	Files      []ReceiptFile `json:"files"`
+	// Kept marks a receipt the seal of Gen rewrote for files it left as
+	// plaintext (SPEC §10.3 step 8); a restore's receipt never has it.
+	// Plaintext still equal to a kept receipt is "remove-failed"; equal to
+	// a restore's, it waits for the next sweep of its locked folder (D110).
+	Kept bool `json:"kept,omitempty"`
 }
 
 // UnitInfo is one sealed or plaintext unit for `precinto ls` and status.
@@ -221,7 +231,7 @@ type UnitInfo struct {
 	RootIDs      []string
 	Gens         []Generation
 	Plaintext    bool   // files currently on disk
-	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict|hold-capped (live only by weak evidence in a locked folder, SPEC §9.5)
+	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict|hold-capped (live only by weak evidence in a locked folder, SPEC §9.5)|adopted (found only by its transcripts' cwd: sweeps leave it to seal --adopt, D113)|disk_full (sealing it now would go below policy.min_free, D111)
 	Bytes        int64
 	LastActivity time.Time
 	Title        string // only when keys were supplied and the caller is authorized

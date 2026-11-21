@@ -147,8 +147,43 @@ func TestNormativeTexts(t *testing.T) {
 	if got := ui.ReasonText(ui.ReasonAgent, 0); got != "the precinto agent stopped responding" {
 		t.Errorf("ReasonAgent = %q", got)
 	}
-	// ReasonAgent renders inside the messages that name a reason.
-	if got := ui.Format(ui.MsgOverlayLine, ui.Vars{Folder: "~/work/acme", Reason: ui.ReasonAgent}); got != "~/work/acme · locked after the precinto agent stopped responding" {
+	// ReasonAgent renders inside the messages that name a reason (D112:
+	// the lock screen shows the reason after the folder, under its title).
+	if got := ui.Format(ui.MsgOverlayLine, ui.Vars{Folder: "~/work/acme", Reason: ui.ReasonAgent}); got != "~/work/acme · the precinto agent stopped responding" {
 		t.Errorf("C4.line with ReasonAgent = %q", got)
+	}
+}
+
+// UX-13, D112: every lock reason reads as a phrase of its own in the lock
+// screen (C4.line) and in C5.ended. The texts are full phrases ("locked by
+// you", "not unlocked yet"), so no template may glue them to a word of its
+// own such as "after" ("locked after locked by you").
+func TestReasonPhrasesFitTheirTemplates(t *testing.T) {
+	reasons := []ui.Reason{ui.ReasonIdle, ui.ReasonScreen, ui.ReasonLimit, ui.ReasonManual, ui.ReasonSleep, ui.ReasonStart, ui.ReasonAgent}
+	for _, r := range reasons {
+		v := ui.Vars{Folder: "~/work/acme", Reason: r, Idle: 15 * time.Minute, Limit: 8 * time.Hour, N: 1, Resume: "claude --continue"}
+		d := v.Idle
+		if r == ui.ReasonLimit {
+			d = v.Limit
+		}
+		text := ui.ReasonText(r, d)
+		if got := ui.Format(ui.MsgOverlayLine, v); got != "~/work/acme · "+text {
+			t.Errorf("C4.line(%s) = %q, want the folder and the reason only", r, got)
+		}
+		c5 := ui.Format(ui.MsgEnded, v)
+		if want := "precinto: locked ~/work/acme (" + text + ") and ended 1 session(s). Resume with: claude --continue"; c5 != want {
+			t.Errorf("C5.ended(%s) = %q, want %q", r, c5, want)
+		}
+		for _, id := range []ui.MsgID{ui.MsgOverlayLine, ui.MsgEnded} {
+			got := ui.Format(id, v)
+			for _, glue := range []string{"after ", "because ", "by "} {
+				if strings.Contains(got, glue+text) && !strings.HasPrefix(text, glue) {
+					t.Errorf("%s(%s) glues %q to the reason: %q", id, r, glue, got)
+				}
+			}
+			if strings.Count(got, text) != 1 {
+				t.Errorf("%s(%s) = %q: the reason must appear once", id, r, got)
+			}
+		}
 	}
 }

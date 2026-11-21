@@ -25,7 +25,12 @@ type RestoreSummary struct {
 	Notices   []string // ui catalog lines (e.g. MsgResumeOld)
 }
 
-// SealSummary is the content-free result of seal-after-exit.
+// SealSummary is the content-free result of seal-after-exit. Files and
+// Bytes count what was sealed (or dropped as unchanged) now; the wrapper
+// says "sealed" only when Files > 0 (D108). SID is the session the exit
+// lines name and C5 resumes: the one the child ran last that the seal
+// found files of, else the launch's target; "" when no such session is
+// known (C5 then suggests continuing the folder's latest session, D107).
 type SealSummary struct {
 	SID      string
 	Files    int
@@ -76,13 +81,24 @@ type Backend interface {
 	// loss.
 	Daemon(ctx context.Context) (Daemon, error)
 	// RecordLaunch writes the ledger "launch" event for a launch whose
-	// session id is known before exec (resume targets), carrying the lease
-	// keys and harness homes; a no-op when the sid is not known yet.
+	// session id is known before exec (resume targets, and fresh launches
+	// whose id the plan chose, D107), carrying the lease keys and harness
+	// homes; a no-op when the sid is not known yet.
 	RecordLaunch(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) error
+	// WatchSessions follows, until ctx ends, which sessions the child runs
+	// (Claude names them in its live-session registry while it runs) and
+	// records each one it has not recorded yet like RecordLaunch, so a
+	// session no hook reported is the child's too and is sealed after exit
+	// (D107). Run calls it for managed launches only, from the start of the
+	// child until it was reaped, and waits for it to return before
+	// SealAfterExit.
+	WatchSessions(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID)
 	// SealAfterExit seals the session's units after the child was reaped
 	// (writer known exited, R20), or queues them if still live.
 	SealAfterExit(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) (SealSummary, error)
 	// HooksSeen reports whether a hook event arrived for the child (UX10).
+	// Run asks it before SealAfterExit: sealing a session moves its ledger,
+	// hooks_seen included, into the capsule (S13, D108).
 	HooksSeen(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) (bool, error)
 }
 

@@ -125,7 +125,9 @@ func TestRunOrchestratesAndPropagatesExitCode(t *testing.T) {
 		"Plan,EnsureUnlocked,Daemon,AcquireLease,RestoreSync",
 		"RecordLaunch",
 		"RestoreBackground",
-		"SealAfterExit,HooksSeen",
+		// D108: hook presence is read before the seal, which moves the
+		// session's ledger into the capsule (S13).
+		"HooksSeen,SealAfterExit",
 	} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("calls %s lack %s", calls, want)
@@ -173,7 +175,7 @@ func TestRunLockAndUnlockEvents(t *testing.T) {
 	b.srv.publish(ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}, Reason: string(ui.ReasonIdle), Busy: true})
 	r.term.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), lockMark)
 	locked := r.term.since(lockMark)
-	if !strings.Contains(locked, "locked after idle 15 min") {
+	if !strings.Contains(locked, acmeFolder+" · idle 15 min") { // D112: the folder, then the reason
 		t.Errorf("overlay reason missing:\n%q", locked)
 	}
 	if !strings.Contains(locked, ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: "generic"})) {
@@ -390,6 +392,12 @@ func TestRunEndEventEndsTheChildSession(t *testing.T) {
 	if strings.Contains(errOut, "stays unlocked") {
 		t.Errorf("C6.ok printed for an ended session: %q", errOut)
 	}
+	// D108: the seal result of an ended session is printed after C5 (the
+	// lock screen no longer claims it before it happened).
+	sealed := ui.Format(ui.MsgSealedLocked, ui.Vars{SID: plan.Resume.Value, Files: 2, Bytes: 10})
+	if i, j := strings.Index(errOut, c5), strings.Index(errOut, sealed); j < 0 || j < i {
+		t.Errorf("stderr %q lacks C6.sealed %q after C5", errOut, sealed)
+	}
 }
 
 // TestRunEndEventsAreAddressed is D71 on the wrapper's side: an end event
@@ -411,7 +419,9 @@ func TestRunEndEventsAreAddressed(t *testing.T) {
 	if res := r.finish(); res.code != 143 {
 		t.Fatalf("exit code %d, want 143 (ended)", res.code)
 	}
-	if !strings.Contains(r.stderr.String(), "ended 1 session(s) after locked by you") {
+	// D112: the reason follows the folder ("locked after locked by you"
+	// read twice).
+	if !strings.Contains(r.stderr.String(), "locked "+acmeFolder+" (locked by you) and ended 1 session(s).") {
 		t.Errorf("C5 missing: %q", r.stderr.String())
 	}
 }
@@ -432,7 +442,9 @@ func TestRunCtrlDOnTheOverlayEndsTheSession(t *testing.T) {
 	if !b.called("SealAfterExit") {
 		t.Fatal("Ctrl-D did not seal the session")
 	}
-	if !strings.Contains(r.stderr.String(), "ended 1 session(s) after locked by you") {
+	// D112: the reason follows the folder ("locked after locked by you"
+	// read twice).
+	if !strings.Contains(r.stderr.String(), "locked "+acmeFolder+" (locked by you) and ended 1 session(s).") {
 		t.Errorf("C5 missing: %q", r.stderr.String())
 	}
 }

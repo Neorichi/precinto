@@ -58,7 +58,9 @@ func cmdSeal(a *app, args []string) int {
 	if err != nil {
 		return a.fail("seal", err)
 	}
-	o := sweep.Options{DryRun: *dryRun, Adopt: *adopt, Reason: "manual"}
+	// D106: --adopt is part of the scope the adapters scan, not only an
+	// option of the seal.
+	o := sweep.Options{DryRun: *dryRun, Adopt: *adopt, Reason: "manual", Scope: harness.Scope{Adopt: *adopt}}
 	if *waitPID != "" {
 		id, err := a.sys.parseProcID(*waitPID)
 		if err != nil {
@@ -80,6 +82,9 @@ func cmdSeal(a *app, args []string) int {
 	eng, err := a.engine(ctx, *experimental)
 	if err != nil {
 		return a.fail("seal", err)
+	}
+	if !*queued {
+		o.OnQuietWait = a.quietWaitNotice()
 	}
 	var rep *sweep.Report
 	switch {
@@ -103,11 +108,23 @@ func cmdSeal(a *app, args []string) int {
 		}
 		rep, err = eng.Seal(ctx, hs, o.Scope, o)
 	}
-	a.printSeal(rep)
+	shown := a.printSeal(rep)
 	if err != nil {
-		return a.fail("seal", err)
+		return a.failShown("seal", err, shown, false)
 	}
 	return exitOK
+}
+
+// quietWaitNotice is Options.OnQuietWait for a seal or sweep run from a
+// terminal (D113): one line before the quiet-window wait, so the pause is
+// not silent; nil when stdout is not a terminal.
+func (a *app) quietWaitNotice() func(time.Duration) {
+	if !a.sys.stdoutTTY() {
+		return nil
+	}
+	return func(d time.Duration) {
+		a.sayOut(textQuietWait, strings.TrimPrefix(ui.ReasonText(ui.ReasonIdle, d), "idle "))
+	}
 }
 
 func cmdSweep(a *app, args []string) int {
@@ -135,6 +152,9 @@ func cmdSweep(a *app, args []string) int {
 	if *lock {
 		o.Reason = "lock"
 	}
+	if !*quiet {
+		o.OnQuietWait = a.quietWaitNotice()
+	}
 	if *rootDir != "" {
 		r, err := a.rootArg(cfg, *rootDir)
 		if err != nil {
@@ -155,11 +175,12 @@ func cmdSweep(a *app, args []string) int {
 		}
 		return exitOK
 	}
+	var shown []error
 	if !*quiet {
-		a.printSeal(rep)
+		shown = a.printSeal(rep)
 	}
 	if err != nil {
-		return a.fail("sweep", err)
+		return a.failShown("sweep", err, shown, false)
 	}
 	return exitOK
 }
@@ -303,14 +324,15 @@ func cmdRestore(a *app, args []string) int {
 			}
 		}
 	}
+	var shown []error
 	if !*background {
-		a.printRestore(total)
+		shown = a.printRestore(total)
 	}
 	if err := errors.Join(errs...); err != nil {
 		if *background {
 			return exitForRestore(err)
 		}
-		return a.failRestore("restore", err)
+		return a.failShown("restore", err, shown, true)
 	}
 	// A lock (or the loss of the daemon) during the restore destroyed the
 	// keys and stopped it (REST-8): what is left stays sealed, so the
