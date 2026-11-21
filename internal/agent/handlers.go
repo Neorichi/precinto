@@ -32,7 +32,8 @@ type connState struct {
 	peer        platform.Peer
 	same        bool // PeerSameExecutable at accept time
 	hello       bool
-	ttyUnlocked bool // a TTY unlock succeeded on this connection (policy confirmation)
+	ttyUnlocked bool           // a TTY unlock succeeded on this connection (policy confirmation)
+	repair      *pendingRepair // a vault_repair dry run's identity, bound to this connection (CC-32; d.mu)
 }
 
 func errResp(code ipc.Code, msg string) ipc.Response {
@@ -47,6 +48,14 @@ func (d *daemon) serveConn(ctx context.Context, c *ipc.Conn) {
 	defer stop()
 	peer, same := d.deps.peer(c)
 	cs := &connState{c: c, peer: peer, same: same}
+	defer func() {
+		d.mu.Lock()
+		p := cs.repair
+		d.mu.Unlock()
+		if p != nil {
+			d.dropRepair(cs, p) // the identity never outlives its connection
+		}
+	}()
 	for {
 		req, sec, err := c.ReadRequest()
 		if err != nil {
@@ -290,7 +299,7 @@ func (d *daemon) afterGate(q ipc.GateReq, roots []string) {
 		info := SessionInfo{Harness: harnessID, SID: sid, RootIDs: taint, HooksSeen: true}
 		if pid > 1 {
 			if p, err := d.procs.Lookup(pid); err == nil && p.State != platform.StateZombie {
-				if h, ok := harnessOf(p); ok && string(h) == harnessID {
+				if matchHarness(d.invs, d.effective(), harnessID, p) {
 					info.Proc = p.ID
 					d.mu.Lock()
 					d.hookSeen[p.ID] = d.now()
@@ -435,8 +444,12 @@ func (d *daemon) register(ctx context.Context, cs *connState, r ipc.RegisterReq)
 	if err != nil || p.State == platform.StateZombie {
 		return &ipc.Error{Code: ipc.CodeBadRequest, Msg: "register: the harness process is not running"}
 	}
-	h, ok := harnessOf(p)
-	if !ok || string(h) != r.Harness {
+	eff := d.effective()
+	if !harnessEnabled(eff, r.Harness) || !d.knownInventory(r.Harness) {
+		return &ipc.Error{Code: ipc.CodeUnauthorized, Msg: "register: that harness is not enabled (precinto integrate)"}
+	}
+	if !matchHarness(d.invs, eff, r.Harness, p) {
+		// The executable must match the harness's inventory (S14, CC-12).
 		return &ipc.Error{Code: ipc.CodeUnauthorized, Msg: "register: the process is not a " + r.Harness + " process"}
 	}
 	now := d.now()
@@ -458,6 +471,9 @@ func (d *daemon) register(ctx context.Context, cs *connState, r ipc.RegisterReq)
 	}
 	d.mu.Lock()
 	d.signalable[p.ID] = true
+	if v := cleanVersion(r.Version); v != "" {
+		d.versions[p.ID] = v // SessionStatus.Version (CC-49)
+	}
 	if info.HooksSeen || info.Wrapper {
 		d.hookSeen[p.ID] = now
 	}
@@ -473,6 +489,33 @@ func (d *daemon) register(ctx context.Context, cs *connState, r ipc.RegisterReq)
 	d.mu.Unlock()
 	d.apply(ctx, Input{Kind: InRegister, Session: &info})
 	return nil
+}
+
+// knownInventory reports whether an inventory exists for harness id.
+func (d *daemon) knownInventory(id string) bool {
+	for _, inv := range d.invs {
+		if inv.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanVersion keeps a harness version string from register only when it
+// looks like one (digits, letters, '.', '-', '+', '_', at most 64 bytes):
+// status prints it, so a client can never inject text or sequences.
+func cleanVersion(v string) string {
+	if v == "" || len(v) > 64 {
+		return ""
+	}
+	for _, c := range v {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '.', c == '-', c == '+', c == '_':
+		default:
+			return ""
+		}
+	}
+	return v
 }
 
 // unregister removes a session. A wrapped session can only be removed by

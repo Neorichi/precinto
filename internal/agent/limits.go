@@ -123,6 +123,15 @@ func (r *RateLimiter) join(vault string) (*flight, bool) {
 	return f, true
 }
 
+// inFlight reports whether an unlock of vault is in progress (status shows
+// "unlocking", CC-32).
+func (r *RateLimiter) inFlight(vault string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.flights[vault]
+	return ok
+}
+
 // finish ends the leader's flight with err.
 func (r *RateLimiter) finish(vault string, f *flight, err error) {
 	r.mu.Lock()

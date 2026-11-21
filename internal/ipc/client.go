@@ -123,7 +123,7 @@ func dialOnce(ctx context.Context, o DialOptions) (*Client, error) {
 		uc.Close()
 		return nil, fmt.Errorf("%w (server runs as another user)", ErrUntrustedServer)
 	}
-	if !(o.Insecure && paths.TestingBuild()) && !sameExe(peer.PID) {
+	if !(o.Insecure && paths.TestingBuild()) && !serverTrusted(peer.PID, o.Layout.AgentLock) {
 		uc.Close()
 		return nil, ErrUntrustedServer
 	}

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
@@ -58,13 +60,15 @@ type mreq struct {
 
 // subscriber is one subscribed connection.
 type subscriber struct {
-	conn  *ipc.Conn
-	id    uint64
-	roots []string
-	sid   string
-	q     chan ipc.Event
-	once  sync.Once
-	done  chan struct{}
+	conn    *ipc.Conn
+	id      uint64
+	roots   []string
+	sid     string
+	peer    platform.ProcID // the subscribing process, measured at accept (D71 addressing)
+	wrapper bool            // subscribed as a wrapper (SubscribeReq.Wrapper)
+	q       chan ipc.Event
+	once    sync.Once
+	done    chan struct{}
 }
 
 func (s *subscriber) stop() {
@@ -74,8 +78,13 @@ func (s *subscriber) stop() {
 	})
 }
 
-// wants reports whether ev concerns the subscription.
+// wants reports whether ev concerns the subscription. End events never go
+// through it: they are addressed to the wrapper whose session ends (D71,
+// daemon.sendEnd).
 func (s *subscriber) wants(ev ipc.Event) bool {
+	if ev.Kind == ipc.EventEnd {
+		return false
+	}
 	if ev.Kind == ipc.EventHeartbeat || (len(s.roots) == 0 && s.sid == "") {
 		return true
 	}
@@ -135,8 +144,11 @@ type daemon struct {
 	ungated     map[platform.ProcID]ungatedMatch
 	hid         hidSample
 	screenOK    bool
-	auditMark   map[string]time.Time
-	gui         map[string]bool // vault id → has a factor that prompts without a terminal
+	gui         map[string]bool             // vault id → has a factor that prompts without a terminal
+	factors     map[string][]string         // vault id → enrolled factor kinds in unlock order (CC-40)
+	versions    map[platform.ProcID]string  // harness process → version from register (CC-49)
+	repairs     map[*pendingRepair]struct{} // identities held by vault_repair dry runs (CC-32)
+	invs        []harness.Inventory         // embedded inventories (CC-12)
 	lastQueue   instant
 	queueWorker platform.ProcID
 	spawned     [][]string
@@ -207,7 +219,7 @@ func withDefaults(o Options) Options {
 		o.Screen = platform.ReadScreen
 	}
 	if o.Harden == nil {
-		o.Harden = hardenWith(o.Env, platform.Harden)
+		o.Harden = hardenWith(o.Env, platform.Harden, raiseMemlock)
 	}
 	if o.Pinentry == nil {
 		env := o.Env
@@ -226,13 +238,25 @@ func withDefaults(o Options) Options {
 }
 
 // hardenWith is the default Harden seam: refuse a loader-injected
-// environment before anything else (SPEC §4.6), then harden the process.
-func hardenWith(env paths.Env, harden func() error) func() error {
+// environment before anything else (SPEC §4.6), harden the process, then
+// raise RLIMIT_MEMLOCK's soft limit to its hard limit (CC-17: every
+// released file key and every identity is a locked buffer). A memlock
+// limit that cannot be raised is not fatal: memguard falls back as it
+// can and the keys request bound keeps the need small.
+func hardenWith(env paths.Env, harden func() error, memlock func() error) func() error {
 	return func() error {
 		if err := platform.CheckLoaderEnv(env.Environ()); err != nil {
 			return err
 		}
-		return harden()
+		if err := harden(); err != nil {
+			return err
+		}
+		if memlock != nil {
+			if err := memlock(); err != nil {
+				log.New(os.Stderr, "precinto agent: ", log.LstdFlags).Printf("RLIMIT_MEMLOCK not raised: %v", err)
+			}
+		}
+		return nil
 	}
 }
 
@@ -260,12 +284,19 @@ func newDaemon(o Options, dp deps, ln *ipc.Listener) *daemon {
 		signalable: map[platform.ProcID]bool{},
 		workers:    map[platform.ProcID]bool{},
 		ungated:    map[platform.ProcID]ungatedMatch{},
-		auditMark:  map[string]time.Time{},
 		gui:        map[string]bool{},
+		factors:    map[string][]string{},
+		versions:   map[platform.ProcID]string{},
+		repairs:    map[*pendingRepair]struct{}{},
 		shutdown:   make(chan struct{}),
 		rec:        &recorder{},
 		ctx:        context.Background(),
 	}
+	invs, err := loadInventories()
+	if err != nil {
+		d.logf("harness inventories: %v (no harness process can register)", err)
+	}
+	d.invs = invs
 	d.loadPolicy()
 	eff := d.effective()
 	d.m = NewMachine(eff.Policy, o.Clock)
@@ -293,7 +324,11 @@ func (d *daemon) serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d.ctx = ctx
+	d.cleanRepairScratch()
 	d.writeRootsList()
+	for _, id := range vaultIDs(d.effective()) {
+		d.refreshFactors(id) // before any event or status names them (CC-40)
+	}
 	d.spawnWorker("sweep", "--quiet") // recovery + full sweep at start (SPEC §13.1)
 	d.bootstrap()
 
@@ -324,6 +359,7 @@ func (d *daemon) serve(ctx context.Context) error {
 	cancel()
 	// Keys first: whatever else happens, nothing stays unlocked (I15).
 	d.deps.keyring.DropAll()
+	d.wipeRepairs()
 	_ = d.ln.Close()
 	d.mu.Lock()
 	for s := range d.subs {
@@ -352,8 +388,18 @@ func (d *daemon) machineLoop(ctx context.Context) {
 			if r.in.Kind == InPolicy && r.in.Policy != nil {
 				d.updateLimiter(*r.in.Policy)
 			}
-			d.runActions(acts)
+			// Publish before the events go out: a subscriber that registers
+			// between the two reads the new state (its initial event) and
+			// may get the event again, never miss it (D71). The actions
+			// never change the machine, so this snapshot stays current.
 			d.publish()
+			switch r.in.Kind {
+			case InLock, InScreenLocked, InJump:
+				// Any lock wipes a vault_repair dry run's identity (CC-32),
+				// also when every vault was locked already.
+				d.wipeRepairs()
+			}
+			d.runActions(acts)
 			if r.done != nil {
 				r.done <- acts
 			}
@@ -446,6 +492,7 @@ func (d *daemon) runActions(acts []Action) {
 		switch a.Kind {
 		case ActWipeKey:
 			d.deps.keyring.Drop(a.Vault)
+			d.wipeRepairs() // any lock wipes a vault_repair dry run's identity (CC-32)
 			d.logf("locked %s (%s)", a.Vault, a.Reason)
 		case ActPublish, ActNotifyExpiring:
 			if a.Kind == ActPublish {
@@ -478,22 +525,65 @@ func (d *daemon) goBackground(fn func()) {
 
 // broadcast queues ev for every interested subscriber; a subscriber whose
 // queue is full is dropped (its wrapper then locks locally, SPEC §15.3).
+// Folder events carry the folder's factor kinds (CC-40).
 func (d *daemon) broadcast(ev ipc.Event) {
 	if ev.At.IsZero() {
 		ev.At = d.clock.Now()
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.withFactorsLocked(&ev)
 	for s := range d.subs {
-		if !s.wants(ev) {
-			continue
+		if s.wants(ev) {
+			d.enqueueLocked(s, ev)
 		}
-		select {
-		case s.q <- ev:
-		default:
-			delete(d.subs, s)
-			s.stop()
+	}
+}
+
+// sendEnd sends EventEnd only on the subscriptions of the wrapper whose
+// session the daemon ends (D71): the subscribing process is the session's
+// registered wrapper (measured ProcIDs, so nobody else can receive it). A
+// broadcast would end every busy wrapped session of the folder early.
+func (d *daemon) sendEnd(s SessionInfo, reason string) {
+	if s.WrapperPID.IsZero() {
+		return
+	}
+	ev := ipc.Event{Kind: ipc.EventEnd, SIDs: nonEmpty(s.SID), RootIDs: s.RootIDs, Reason: reason, At: d.clock.Now()}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sent := 0
+	for sub := range d.subs {
+		if sub.wrapper && sub.peer == s.WrapperPID {
+			d.enqueueLocked(sub, ev)
+			sent++
 		}
+	}
+	if sent == 0 {
+		d.logf("end of a wrapped session: its wrapper has no subscription (it locks locally)")
+	}
+}
+
+// enqueueLocked queues ev for s, dropping s when its queue is full (d.mu
+// held).
+func (d *daemon) enqueueLocked(s *subscriber, ev ipc.Event) {
+	select {
+	case s.q <- ev:
+	default:
+		delete(d.subs, s)
+		s.stop()
+	}
+}
+
+// withFactorsLocked fills Factors of a locked/unlocked/expiring event for
+// one folder from the factor cache (d.mu held).
+func (d *daemon) withFactorsLocked(ev *ipc.Event) {
+	switch ev.Kind {
+	case ipc.EventLocked, ipc.EventUnlocked, ipc.EventExpiring:
+	default:
+		return
+	}
+	if len(ev.Factors) == 0 && len(ev.RootIDs) == 1 {
+		ev.Factors = slices.Clone(d.factors[ev.RootIDs[0]])
 	}
 }
 
@@ -759,5 +849,20 @@ func (d *daemon) setAttention(a ipc.Attention, on bool) {
 		d.attention[key] = a
 	} else {
 		delete(d.attention, key)
+	}
+}
+
+// cleanRepairScratch removes vault_repair dry-run scratch directories a
+// crashed daemon left in the run directory (copies of public vault
+// metadata only).
+func (d *daemon) cleanRepairScratch() {
+	ents, err := os.ReadDir(d.l.RunDir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if e.IsDir() && strings.HasPrefix(e.Name(), repairScratchPrefix) {
+			_ = os.RemoveAll(filepath.Join(d.l.RunDir, e.Name()))
+		}
 	}
 }

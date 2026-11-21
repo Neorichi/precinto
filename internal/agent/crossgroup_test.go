@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/vault/vaulttest"
@@ -157,5 +159,135 @@ func TestPinnedPolicyAcrossRestartReal(t *testing.T) {
 	}
 	if slices.ContainsFunc(st.Attention, func(a ipc.Attention) bool { return a.Code == ipc.AttnPolicyTampered }) {
 		t.Fatal("genuine pin reported tampered")
+	}
+}
+
+// TestAuditWatermarkSurvivesRestartReal is CC-07 with G1's vault: a clean
+// unlock audit moves last_audit in vault.toml, so a daemon started later
+// audits only capsules logged after it. A foreign-recipient entry logged
+// before the watermark is not reported again after the restart, one
+// logged after it is.
+func TestAuditWatermarkSurvivesRestartReal(t *testing.T) {
+	h := testkit.NewHome(t)
+	// vault.MarkAudited refuses future times: the fake clock runs an hour
+	// behind the real one.
+	h.Clock = fakeplatform.NewClock(time.Now().Add(-time.Hour).Truncate(time.Second))
+	fx := vaulttest.New(t, h.Layout.Base, "root-acme")
+	rel := sealNote(t, h, fx, "root-acme")
+	h.Clock.Advance(time.Minute)
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	a.UnlockForTest(t, []string{"root-acme"}, fx.Recovery.String())
+	var mark time.Time
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, err := fx.Store.Open("root-acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mark = v.Meta.LastAudit; !mark.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("last_audit never saved after a clean audit")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !mark.Equal(h.Clock.Now()) {
+		t.Fatalf("last_audit = %v, want the audit start %v", mark, h.Clock.Now())
+	}
+	a.Stop()
+
+	// Two more entries of the vault sealed to a foreign recipient set (as
+	// with a bypassed tripwire): one before the watermark, one after.
+	all, err := capslog.Open(h.Layout.CapsuleLog).All()
+	if err != nil || len(all) != 1 || all[0].Path != rel {
+		t.Fatalf("capsule log = %+v %v", all, err)
+	}
+	logEntry := func(unit string, at time.Time) {
+		t.Helper()
+		n := all[0]
+		n.Path, n.Unit, n.SealedAt, n.RecipientsFpr = "md/"+unit+"/"+capsule.GenName(1), unit, at, "foreign-fingerprint"
+		if err := capslog.Open(h.Layout.CapsuleLog).Append(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logEntry("00000000000000000000000000000001", mark.Add(-time.Minute)) // already audited
+	logEntry("00000000000000000000000000000002", mark.Add(30*time.Second))
+
+	h.Clock.Advance(time.Minute)
+	a = agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	a.UnlockForTest(t, []string{"root-acme"}, fx.Recovery.String())
+	c := a.Dial(t)
+	var exposed ipc.Attention
+	deadline = time.Now().Add(10 * time.Second)
+	for exposed.Code == "" {
+		st, err := c.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, at := range st.Attention {
+			if at.Code == ipc.AttnExposed {
+				exposed = at
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the capsule logged after the watermark was not audited")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if exposed.Count != 1 {
+		t.Fatalf("exposed = %+v: the watermark did not survive the restart (want only the capsule after it)", exposed)
+	}
+	if v, _ := fx.Store.Open("root-acme"); !v.Meta.LastAudit.Equal(mark) {
+		t.Fatalf("last_audit moved to %v past an exposure", v.Meta.LastAudit)
+	}
+}
+
+// TestVaultRepairDryRunReal is CC-32 and SEC-26 (daemon side) with G1's
+// vault: after a recipient swap, the dry run with the recovery key reports
+// the rewrite and changes nothing on disk (it runs on a scratch copy that
+// is removed); the confirmed call on the same connection repairs the vault
+// so sealing works again.
+func TestVaultRepairDryRunReal(t *testing.T) {
+	h := testkit.NewHome(t)
+	fx := vaulttest.New(t, h.Layout.Base, "root-acme")
+	foreign := fx.TamperRecipient(t, "root-acme", false)
+	if _, _, err := fx.Store.Recipients("root-acme"); err == nil {
+		t.Fatal("the tampered vault still yields sealing recipients")
+	}
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	c := a.Dial(t)
+	ctx := context.Background()
+	key := func() *memguard.LockedBuffer { return memguard.NewBufferFromBytes([]byte(fx.Recovery.String())) }
+	k := key()
+	plan, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true}, k, recoveryUI{key: fx.Recovery.String()})
+	k.Destroy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.RecipientChanged || plan.RecoveryChanged {
+		t.Fatalf("dry run = %+v (the vault recipient is rewritten, the recovery one kept)", plan)
+	}
+	v, err := fx.Store.Open("root-acme")
+	if err != nil || v.Meta.Recipient != foreign {
+		t.Fatalf("the dry run wrote vault.toml: %v %v", v, err)
+	}
+	ents, _ := os.ReadDir(h.Layout.RunDir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".repair-") {
+			t.Fatalf("scratch copy %s left behind", e.Name())
+		}
+	}
+	k = key()
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true, Confirmed: true}, k, recoveryUI{key: fx.Recovery.String()}); err != nil {
+		t.Fatal(err)
+	}
+	k.Destroy()
+	v, err = fx.Store.Open("root-acme")
+	if err != nil || v.Meta.Recipient == foreign {
+		t.Fatalf("not repaired: %+v %v", v, err)
+	}
+	if _, _, err := fx.Store.Recipients("root-acme"); err != nil {
+		t.Fatalf("sealing recipients after the repair: %v", err)
 	}
 }

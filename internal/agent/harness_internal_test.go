@@ -38,14 +38,18 @@ type fakeVaults struct {
 	fpr       map[string]string
 	repairs   []string
 	repairErr error
+	plans     []string
+	audited   map[string]time.Time
+	auditErr  error
 	created   []string
 	factors   []string
+	specs     []vault.FactorSpec
 	uis       []vault.UI
 }
 
 func newFakeVaults() *fakeVaults {
 	return &fakeVaults{unwraps: map[string]int{}, unwrapErr: map[string]error{}, verifyErr: map[string]error{},
-		metas: map[string]vault.Meta{}, fpr: map[string]string{}}
+		metas: map[string]vault.Meta{}, fpr: map[string]string{}, audited: map[string]time.Time{}}
 }
 
 // set mutates the fake under its lock (the daemon reads it concurrently).
@@ -113,7 +117,42 @@ func (f *fakeVaults) create(ctx context.Context, id, rootPath string, u vault.UI
 func (f *fakeVaults) addFactor(ctx context.Context, id string, identity *memguard.LockedBuffer, spec vault.FactorSpec, u vault.UI) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !identity.IsAlive() || string(identity.Bytes()) != string(fakeIdentity(id).Bytes()) {
+		return vault.ErrWrongIdentity // the key holder's identity of this very vault
+	}
 	f.factors = append(f.factors, id+":"+string(spec.Kind))
+	rec := spec
+	if spec.Passphrase != nil {
+		rec.Passphrase = memguard.NewBufferFromBytes(append([]byte(nil), spec.Passphrase.Bytes()...))
+		spec.Passphrase.Destroy() // consumed, like vault.AddFactor
+	}
+	f.specs = append(f.specs, rec)
+	return nil
+}
+
+func (f *fakeVaults) repairPlan(id string, identity, recovery *memguard.LockedBuffer, now time.Time) (vault.RepairResult, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.repairErr != nil {
+		return vault.RepairResult{}, "", f.repairErr
+	}
+	f.plans = append(f.plans, id)
+	return vault.RepairResult{RecipientChanged: true, LastAudit: f.metas[id].LastAudit}, "fpr-repaired", nil
+}
+
+func (f *fakeVaults) markAudited(id string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.auditErr != nil {
+		return f.auditErr
+	}
+	f.audited[id] = at
+	m := f.metas[id]
+	m.ID, m.LastAudit = id, at
+	if len(m.Factors) == 0 {
+		m.Factors = []vault.Factor{{Name: "se", Kind: vault.FactorSE, GUI: true}}
+	}
+	f.metas[id] = m
 	return nil
 }
 
@@ -215,6 +254,18 @@ func (k *fakeKeyring) FileKey(id string, header []byte) (*memguard.LockedBuffer,
 		return nil, vault.ErrLocked
 	}
 	return memguard.NewBufferFromBytes(fileKeyOf(header)), nil
+}
+
+func (k *fakeKeyring) WithIdentityBuffer(id string, fn func(identity *memguard.LockedBuffer) error) error {
+	k.mu.Lock()
+	ident, ok := k.ids[id]
+	k.mu.Unlock()
+	if !ok {
+		return vault.ErrLocked
+	}
+	b := memguard.NewBufferFromBytes(append([]byte(nil), ident...))
+	defer b.Destroy()
+	return fn(b)
 }
 
 func (k *fakeKeyring) MAC(id, info string, data []byte) (string, error) {

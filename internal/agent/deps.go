@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -39,6 +40,12 @@ type vaultOps interface {
 	addFactor(ctx context.Context, id string, identity *memguard.LockedBuffer, spec vault.FactorSpec, u vault.UI) error
 	// repair rewrites the recipient set of vault id (D53).
 	repair(id string, identity, recovery *memguard.LockedBuffer, now time.Time) (vault.RepairResult, error)
+	// repairPlan computes what repair would rewrite and the recipients
+	// fingerprint the vault would then have, writing nothing to the vault
+	// (the vault_repair dry run, CC-32).
+	repairPlan(id string, identity, recovery *memguard.LockedBuffer, now time.Time) (vault.RepairResult, string, error)
+	// markAudited moves last_audit of vault id forward to at (CC-07).
+	markAudited(id string, at time.Time) error
 	// meta returns vault.toml of id.
 	meta(id string) (vault.Meta, error)
 	// fingerprint returns the recipients fingerprint of id (tripwire-checked).
@@ -54,6 +61,9 @@ type keyHolder interface {
 	IDs() []string
 	FileKey(id string, header []byte) (*memguard.LockedBuffer, error)
 	MAC(id, info string, data []byte) (string, error)
+	// WithIdentityBuffer runs fn with the locked identity of id, destroyed
+	// when fn returns (factor enrollment, CC-10).
+	WithIdentityBuffer(id string, fn func(identity *memguard.LockedBuffer) error) error
 }
 
 // deps are the daemon's seams onto other packages and onto the system.
@@ -284,6 +294,83 @@ func (s *storeOps) repair(id string, identity, recovery *memguard.LockedBuffer, 
 	return s.st().Repair(v, vault.RepairOptions{Identity: identity, Recovery: recovery, Now: func() time.Time { return now }})
 }
 
+// repairPlan runs Store.Repair on a scratch copy of vault id's metadata
+// (vault.toml and its verified copy, public data only) in a private
+// directory under the run directory, so the dry run shows exactly what the
+// confirmed repair will write while the real vault stays untouched; the
+// copy is removed before returning.
+func (s *storeOps) repairPlan(id string, identity, recovery *memguard.LockedBuffer, now time.Time) (vault.RepairResult, string, error) {
+	if !validName(id) {
+		return vault.RepairResult{}, "", vault.ErrNotFound
+	}
+	tmp, err := os.MkdirTemp(s.l.RunDir, repairScratchPrefix)
+	if err != nil {
+		return vault.RepairResult{}, "", fmt.Errorf("agent: repair scratch: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	vaults, verified := filepath.Join(tmp, "vaults"), filepath.Join(tmp, "verified")
+	if err := os.MkdirAll(filepath.Join(vaults, id), 0o700); err != nil {
+		return vault.RepairResult{}, "", err
+	}
+	if err := os.MkdirAll(verified, 0o700); err != nil {
+		return vault.RepairResult{}, "", err
+	}
+	if err := copyPublic(filepath.Join(s.l.VaultDir(id), "vault.toml"), filepath.Join(vaults, id, "vault.toml")); err != nil {
+		return vault.RepairResult{}, "", err
+	}
+	if err := copyPublic(filepath.Join(s.l.VerifiedDir, id+".recipients"), filepath.Join(verified, id+".recipients")); err != nil &&
+		!errors.Is(err, fs.ErrNotExist) {
+		return vault.RepairResult{}, "", err
+	}
+	st := vault.OpenStore(vaults, verified, s.l.FactorsDir)
+	v, err := st.Open(id)
+	if err != nil {
+		return vault.RepairResult{}, "", err
+	}
+	res, err := st.Repair(v, vault.RepairOptions{Identity: identity, Recovery: recovery, Now: func() time.Time { return now }})
+	if err != nil {
+		return vault.RepairResult{}, "", err
+	}
+	_, fpr, err := st.Recipients(id)
+	if err != nil {
+		return vault.RepairResult{}, "", err
+	}
+	return res, fpr, nil
+}
+
+// repairScratchPrefix names the dry run's scratch directories (left-overs
+// of a crash are removed at the next start).
+const repairScratchPrefix = ".repair-"
+
+// copyPublic copies a small regular file (no symlink followed, at most
+// 1 MiB) with mode 0600.
+func copyPublic(src, dst string) error {
+	f, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() || st.Size() > 1<<20 {
+		return fmt.Errorf("agent: %s is not a small regular file", filepath.Base(src))
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o600)
+}
+
+func (s *storeOps) markAudited(id string, at time.Time) error {
+	if _, err := s.open(id); err != nil {
+		return err
+	}
+	return s.st().MarkAudited(id, at)
+}
+
 func (s *storeOps) meta(id string) (vault.Meta, error) {
 	v, err := s.open(id)
 	if err != nil {
@@ -358,6 +445,14 @@ func (l *lazyKeyring) MAC(id, info string, data []byte) (string, error) {
 		return "", vault.ErrLocked
 	}
 	return k.MAC(id, info, data)
+}
+
+func (l *lazyKeyring) WithIdentityBuffer(id string, fn func(identity *memguard.LockedBuffer) error) error {
+	k := l.get(false)
+	if k == nil {
+		return vault.ErrLocked
+	}
+	return k.WithIdentityBuffer(id, fn)
 }
 
 // identityOpens unwraps header with a copy of identity in a throwaway

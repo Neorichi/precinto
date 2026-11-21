@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"slices"
 
@@ -23,17 +24,15 @@ func fileStamp(path string) string {
 	return fmt.Sprintf("%d:%d", st.Size(), st.ModTime().UnixNano())
 }
 
-// installed reports whether precinto was initialized here: a vault exists.
-func (d *daemon) installed() bool {
-	ents, err := os.ReadDir(d.l.VaultsDir)
-	return err == nil && len(ents) > 0
-}
-
-// loadPolicy computes the effective policy at start (D48, D55): the
+// loadPolicy computes the effective policy at start (D48, D55, D68): the
 // stricter of config.toml and state/policy.pinned. A pinned file that does
-// not decode, or that is missing although vaults exist, is tampering: the
-// compiled-in defaults join the strictest merge until the next TTY
-// confirmation rewrites it.
+// not decode (or is not a regular file of the user, CC-47) is forged:
+// policy-tampered, and the compiled-in defaults join the strictest merge
+// until a confirmed TTY unlock rewrites it. A missing pin is the normal
+// first-run state while no root vault exists (the defaults join the merge,
+// no policy-tampered); once a root vault exists it is tampering too
+// (deleting it must not hand control to config.toml), healed only by a
+// TTY unlock with nothing weakening pending or by a confirmation.
 func (d *daemon) loadPolicy() {
 	cfg, err := config.Load(d.l.ConfigFile)
 	if err != nil {
@@ -41,15 +40,12 @@ func (d *daemon) loadPolicy() {
 		cfg = config.Default()
 	}
 	pinned, ok, perr := config.LoadPinned(d.l.PolicyPinned)
+	rootVault := d.rootVaultExists()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pol = policyState{cfg: cfg, cfgStamp: fileStamp(d.l.ConfigFile), pinned: pinned, hasPinned: ok && perr == nil}
-	// A pin that does not decode is forged. A missing pin although vaults
-	// exist is treated as tampering too (deleting it must not hand control
-	// to config.toml), but may be re-pinned at a TTY unlock when
-	// config.toml weakens nothing (first run after init).
 	d.pol.forged = perr != nil
-	d.pol.tampered = d.pol.forged || (!ok && perr == nil && d.installed())
+	d.pol.tampered = d.pol.forged || (!ok && perr == nil && rootVault)
 	d.recomputeLocked()
 }
 
@@ -60,7 +56,9 @@ func (d *daemon) recomputeLocked() {
 	if p.hasPinned {
 		eff = config.Strictest(p.cfg, p.pinned.Config)
 	}
-	if p.tampered {
+	if p.tampered || !p.hasPinned {
+		// Without a trusted pin the defaults are the floor: first run
+		// (D68) and policy-tampered (D55) alike.
 		eff = config.Strictest(eff, config.Default())
 	}
 	p.eff = eff
@@ -178,11 +176,12 @@ func (d *daemon) verifyPinnedMAC(ctx context.Context, id string) {
 	}
 }
 
-// pinPolicy writes state/policy.pinned after a TTY-confirmed unlock (D55):
-// the current config.toml plus one MAC per vault unlocked now. Without an
-// explicit confirmation it refuses while weakening edits are pending or
-// the pin was found forged (the user must see C13.tampered and confirm),
-// so a forged pin never heals itself.
+// pinPolicy writes state/policy.pinned after a TTY unlock by a human (D55,
+// D68): the current config.toml plus one MAC per vault unlocked now.
+// Without an explicit confirmation (ConfirmDiff, `policy confirm`) it
+// re-pins only when nothing weakening is pending and the pin was not
+// found forged (the user must see C13.tampered and confirm), so a forged
+// pin never heals itself.
 func (d *daemon) pinPolicy(ctx context.Context, confirmed bool) error {
 	d.mu.Lock()
 	cfg := d.pol.cfg
@@ -191,6 +190,44 @@ func (d *daemon) pinPolicy(ctx context.Context, confirmed bool) error {
 	if blocked && !confirmed {
 		return errPending
 	}
+	return d.writePin(ctx, cfg)
+}
+
+// pinFirst writes the first pin when the first root vault is created
+// (D68): the policy enforced now (Strictest of config.toml and the
+// defaults, never a weakening) with the MACs of the vaults unlocked now
+// (the new one included). An existing pin is left to the usual rules.
+func (d *daemon) pinFirst(ctx context.Context) error {
+	d.mu.Lock()
+	exists := d.pol.hasPinned || d.pol.forged
+	eff := d.pol.eff
+	d.mu.Unlock()
+	if exists {
+		return d.pinEnforced(ctx)
+	}
+	if _, err := os.Lstat(d.l.PolicyPinned); !errors.Is(err, fs.ErrNotExist) {
+		return errPending // a pin appeared on disk meanwhile: never overwrite it blindly
+	}
+	return d.writePin(ctx, eff)
+}
+
+// pinEnforced re-pins the policy the daemon enforces now (it can only
+// strengthen the pin: a folder just protected joins it, a pending
+// weakening edit stays pending). Refused while the policy is tampered:
+// only a confirmation heals that.
+func (d *daemon) pinEnforced(ctx context.Context) error {
+	d.mu.Lock()
+	eff := d.pol.eff
+	blocked := d.pol.tampered || d.pol.forged || !d.pol.hasPinned
+	d.mu.Unlock()
+	if blocked {
+		return errPending
+	}
+	return d.writePin(ctx, eff)
+}
+
+// writePin saves cfg as the pinned policy with one MAC per unlocked vault.
+func (d *daemon) writePin(ctx context.Context, cfg config.Config) error {
 	macs := map[string]string{}
 	data := config.Canonical(cfg)
 	for _, id := range d.deps.keyring.IDs() {
@@ -230,7 +267,7 @@ func (d *daemon) policyOp(cs *connState, r ipc.PolicyReq) ipc.Response {
 	if !cs.same {
 		return errResp(ipc.CodeUnauthorized, "precinto: only precinto itself can confirm settings")
 	}
-	if e := authorize(cs.peer, d.ancestry(cs.peer), ipc.OpPolicy, "", nil, nil, d.folder); e != nil {
+	if e := authorizeFacts(d.peerFacts(cs.peer, nil), ipc.OpPolicy, "", nil, nil, d.folder); e != nil {
 		return ipc.Response{Err: e}
 	}
 	if !cs.ttyUnlocked {

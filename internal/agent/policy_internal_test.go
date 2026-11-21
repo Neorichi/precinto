@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awnumar/memguard"
+
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
@@ -130,10 +132,15 @@ func TestPinnedMissingWithVaults(t *testing.T) {
 	_ = os.Remove(x.h.Layout.PolicyPinned)
 }
 
-// TestVaultRepair is SEC-26 (daemon side).
+// TestVaultRepair is SEC-26 (daemon side) with the CC-32 protocol: a dry
+// run (Confirmed=false) unwraps, checks genuineness and reports the diff
+// without writing anything; the confirmed call on the same connection
+// within the hold uses the identity of the dry run (no second presence
+// prompt); another connection, a lock or an expired hold unwraps again.
 func TestVaultRepair(t *testing.T) {
 	x := startTD(t)
 	ctx := context.Background()
+	x.h.Clock.Advance(2 * time.Hour) // capsules below are sealed in the past
 	x.vaults.set(func(f *fakeVaults) {
 		f.metas["root-acme"] = vault.Meta{ID: "root-acme", LastAudit: epochT.Add(30 * time.Minute)}
 	})
@@ -155,8 +162,10 @@ func TestVaultRepair(t *testing.T) {
 	x.h.Procs.Add(nt.Proc)
 	x.setPeer(&nt, true)
 	c := x.dial()
-	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, nil); ipcCode(err) != ipc.CodeAgentContext {
-		t.Fatalf("repair without a terminal = %v", err)
+	for _, confirmed := range []bool{false, true} {
+		if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: confirmed}, nil, nil); ipcCode(err) != ipc.CodeAgentContext {
+			t.Fatalf("repair without a terminal (confirmed %v) = %v", confirmed, err)
+		}
 	}
 	// From an agent: refused.
 	x.addProc(6100, 1, 6100, "/opt/homebrew/bin/claude", "claude")
@@ -167,33 +176,116 @@ func TestVaultRepair(t *testing.T) {
 	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, nil); ipcCode(err) != ipc.CodeAgentContext {
 		t.Fatalf("repair from an agent = %v", err)
 	}
-	if len(x.vaults.repairs) != 0 {
-		t.Fatal("refused repair changed something")
+	if len(x.vaults.repairs) != 0 || x.vaults.count("root-acme") != 0 {
+		t.Fatal("refused repair changed something or prompted")
 	}
-	// The user on a terminal: confirmation relayed, repair done, exposed
-	// capsules listed.
+	// The user on a terminal: the dry run reports what a repair would do
+	// and writes nothing.
 	tty := platform.Peer{UID: os.Getuid(), PID: 6500, Proc: platform.ProcInfo{ID: platform.ProcID{PID: 6500, StartUS: 1}, PPID: 1, TTY: "/dev/ttys005"}}
 	x.h.Procs.Add(tty.Proc)
 	x.setPeer(&tty, true)
 	c = x.dial()
-	ui := &scripted{confirm: false}
-	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui); ipcCode(err) != ipc.CodeCancelled {
-		t.Fatalf("declined confirmation = %v", err)
-	}
-	ui.confirm = true
-	r, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui)
+	ui := &scripted{}
+	plan, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.RecipientChanged || !slices.Equal(r.Exposed, []string{"md/new1/g000001.pcap"}) {
-		t.Fatalf("repair = %+v", r)
+	if !plan.RecipientChanged || !slices.Equal(plan.Exposed, []string{"md/new1/g000001.pcap"}) {
+		t.Fatalf("dry run = %+v", plan)
 	}
-	if !strings.Contains(strings.Join(ui.prompts, "\n"), `Type "repair"`) {
-		t.Fatalf("confirmation prompt = %q (C14.confirm)", ui.prompts)
+	if len(x.vaults.repairs) != 0 {
+		t.Fatal("the dry run wrote something")
+	}
+	if x.keys.Has("root-acme") || x.vaultState("root-acme") != VaultLocked {
+		t.Fatal("the dry run unlocked the vault")
+	}
+	if len(ui.prompts) != 0 {
+		t.Fatalf("the daemon relayed a confirmation (the client asks it now): %q", ui.prompts)
+	}
+	if n := x.vaults.count("root-acme"); n != 1 {
+		t.Fatalf("dry run unwraps = %d", n)
+	}
+	// Confirmed on the same connection: no second presence prompt.
+	r, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.RecipientChanged || !slices.Equal(r.Exposed, []string{"md/new1/g000001.pcap"}) || !slices.Equal(x.vaults.repairs, []string{"root-acme"}) {
+		t.Fatalf("repair = %+v, repairs %v", r, x.vaults.repairs)
+	}
+	if n := x.vaults.count("root-acme"); n != 1 {
+		t.Fatalf("the confirmed call unwrapped again (%d unwraps)", n)
 	}
 	if x.vaultState("root-acme") != VaultUnlocked {
 		t.Fatal("repaired vault not unlocked")
 	}
+	x.d.mu.Lock()
+	held := len(x.d.repairs)
+	x.d.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("%d repair identities still held after the confirmed call", held)
+	}
+	// A dry run on one connection, the confirmed call on another: unwraps
+	// again (the identity is bound to its connection).
+	if _, err := c.Lock(ctx, ipc.LockReq{All: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	c2 := x.dial()
+	if _, err := c2.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	if n := x.vaults.count("root-acme"); n != 3 {
+		t.Fatalf("unwraps = %d, want 3 (the other connection unwraps again)", n)
+	}
+	// A lock between the dry run and the confirmation wipes the identity.
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	x.d.mu.Lock()
+	held = len(x.d.repairs)
+	x.d.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("held = %d after a dry run", held)
+	}
+	if _, err := c2.Lock(ctx, ipc.LockReq{RootIDs: []string{"root-beta"}}); err != nil {
+		t.Fatal(err)
+	}
+	x.eventually("any lock wipes the dry run's identity", func() bool {
+		x.d.mu.Lock()
+		defer x.d.mu.Unlock()
+		return len(x.d.repairs) == 0
+	})
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	if n := x.vaults.count("root-acme"); n != 5 {
+		t.Fatalf("unwraps = %d, want 5 (wiped by the lock)", n)
+	}
+	// An expired hold (120 s on either clock) unwraps again.
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	x.h.Clock.Advance(121 * time.Second)
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	if n := x.vaults.count("root-acme"); n != 7 {
+		t.Fatalf("unwraps = %d, want 7 (hold expired)", n)
+	}
+	// The connection closing wipes a held identity too.
+	c3 := x.dial()
+	if _, err := c3.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme"}, nil, ui); err != nil {
+		t.Fatal(err)
+	}
+	c3.Close()
+	x.eventually("closing the connection wipes the identity", func() bool {
+		x.d.mu.Lock()
+		defer x.d.mu.Unlock()
+		return len(x.d.repairs) == 0
+	})
 	// A key that opens no older capsule is not genuine: nothing changes.
 	x.vaults.set(func(f *fakeVaults) {
 		f.metas["root-beta"] = vault.Meta{ID: "root-beta", LastAudit: epochT.Add(30 * time.Minute)}
@@ -205,16 +297,63 @@ func TestVaultRepair(t *testing.T) {
 	x.caps.entries["md/beta/g000001.pcap"] = e
 	x.caps.mu.Unlock()
 	n := len(x.vaults.repairs)
-	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-beta", Confirmed: true}, nil, ui); ipcCode(err) != ipc.CodeVerify {
-		t.Fatalf("not genuine = %v (C14.notgenuine)", err)
+	for _, confirmed := range []bool{false, true} {
+		if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-beta", Confirmed: confirmed}, nil, ui); ipcCode(err) != ipc.CodeVerify {
+			t.Fatalf("not genuine (confirmed %v) = %v (C14.notgenuine)", confirmed, err)
+		}
 	}
 	if len(x.vaults.repairs) != n {
 		t.Fatal("a non-genuine key repaired the vault")
 	}
-	// The recovery recipient changed and no recovery key: ErrNeedRecovery.
+	// The recovery recipient changed and no recovery key: ErrNeedRecovery,
+	// in the dry run already.
 	x.vaults.set(func(f *fakeVaults) { f.repairErr = vault.ErrNeedRecovery })
-	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: true}, nil, ui); ipcCode(err) != ipc.CodeUnauthorized {
-		t.Fatalf("need recovery = %v", err)
+	for _, confirmed := range []bool{false, true} {
+		if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", Confirmed: confirmed}, nil, ui); ipcCode(err) != ipc.CodeUnauthorized {
+			t.Fatalf("need recovery (confirmed %v) = %v", confirmed, err)
+		}
+	}
+}
+
+// TestVaultRepairRecoveryKeyMustMatch: with --recovery the confirmed call
+// reuses the dry run's identity only when it sends the same recovery key.
+func TestVaultRepairRecoveryKeyMustMatch(t *testing.T) {
+	x := startTD(t)
+	ctx := context.Background()
+	c := x.dial()
+	ui := &scripted{}
+	key := func(s string) *memguard.LockedBuffer { return memguard.NewBufferFromBytes([]byte(s)) }
+	k := key("AGE-SECRET-KEY-1RECOVERYONE")
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true}, k, ui); err != nil {
+		t.Fatal(err)
+	}
+	k.Destroy()
+	if n := x.vaults.count("root-acme"); n != 1 {
+		t.Fatalf("unwraps = %d", n)
+	}
+	k = key("AGE-SECRET-KEY-1RECOVERYTWO")
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true, Confirmed: true}, k, ui); err != nil {
+		t.Fatal(err)
+	}
+	k.Destroy()
+	if n := x.vaults.count("root-acme"); n != 2 {
+		t.Fatalf("unwraps = %d, want 2 (another recovery key unwraps again)", n)
+	}
+	k = key("AGE-SECRET-KEY-1RECOVERYONE")
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true}, k, ui); err != nil {
+		t.Fatal(err)
+	}
+	k.Destroy()
+	k = key("AGE-SECRET-KEY-1RECOVERYONE")
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true, Confirmed: true}, k, ui); err != nil {
+		t.Fatal(err)
+	}
+	k.Destroy()
+	if n := x.vaults.count("root-acme"); n != 3 {
+		t.Fatalf("unwraps = %d, want 3 (the same key reuses the dry run)", n)
+	}
+	if _, err := c.VaultRepair(ctx, ipc.VaultRepairReq{VaultID: "root-acme", UseRecovery: true}, nil, ui); ipcCode(err) != ipc.CodeBadRequest {
+		t.Fatalf("--recovery without the key = %v", err)
 	}
 }
 
@@ -316,3 +455,23 @@ func TestHookRaisedUnlock(t *testing.T) {
 
 // guiFactor on td loads the factor cache synchronously for tests.
 func (x *td) guiFactor(id string) bool { x.d.loadFactors(id); return x.d.guiFactor(id) }
+
+// CC-32: a screen lock wipes a held repair identity even when every vault
+// is locked already (no key to wipe).
+func TestScreenLockWipesHeldRepair(t *testing.T) {
+	x := startTD(t)
+	c := x.dial()
+	if _, err := c.VaultRepair(context.Background(), ipc.VaultRepairReq{VaultID: "root-acme"}, nil, &scripted{}); err != nil {
+		t.Fatal(err)
+	}
+	held := func() int {
+		x.d.mu.Lock()
+		defer x.d.mu.Unlock()
+		return len(x.d.repairs)
+	}
+	if held() != 1 {
+		t.Fatal("no identity held after the dry run")
+	}
+	x.setScreen(platform.ScreenState{Locked: true, LockKnown: true})
+	x.eventually("the screen lock wipes it", func() bool { return held() == 0 })
+}

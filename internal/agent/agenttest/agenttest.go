@@ -133,7 +133,9 @@ func (a *Agent) UnlockForTest(t testing.TB, rootIDs []string, recoveryKey string
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req := ipc.UnlockReq{RootIDs: rootIDs, Factor: "recovery", TTY: true, Deadline: a.Clock.Now().Add(time.Minute)}
+	// The deadline is wall time, like a real client's: the daemon bounds
+	// prompts with the real clock, whatever the fake clock says.
+	req := ipc.UnlockReq{RootIDs: rootIDs, Factor: "recovery", TTY: true, Confirmed: len(rootIDs) > 1, Deadline: time.Now().Add(time.Minute)}
 	if _, err := c.Unlock(ctx, req, recoveryAnswer{key: recoveryKey}); err != nil {
 		t.Fatalf("agenttest: unlock %v: %v", rootIDs, err)
 	}

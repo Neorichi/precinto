@@ -2,12 +2,17 @@ package agenttest_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/agent/agenttest"
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/testkit"
@@ -155,5 +160,167 @@ func TestUnlockForTest(t *testing.T) {
 	}
 	if !unlocked {
 		t.Fatalf("root-acme not unlocked: %+v", st.Vaults)
+	}
+}
+
+// CC-53: a goroutine that outlives its test (a fake backend's dialer) gets
+// an error from Client, never a panic: Client never touches the testing.T.
+func TestClientAfterTheTestEnded(t *testing.T) {
+	release := make(chan struct{})
+	result := make(chan error, 1)
+	t.Run("inner", func(t *testing.T) {
+		h := testkit.NewHome(t)
+		a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+		go func() {
+			<-release
+			defer func() {
+				if r := recover(); r != nil {
+					result <- fmt.Errorf("Client panicked after the test ended: %v", r)
+				}
+			}()
+			c, err := a.Client(context.Background())
+			if err == nil {
+				c.Close()
+				result <- errors.New("Client succeeded after the test and its agent ended")
+				return
+			}
+			result <- nil
+		}()
+	})
+	close(release) // the subtest, its cleanups and the agent are gone
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Client hung after the test ended")
+	}
+}
+
+// CC-15: agenttest's Pinentry is a stub: an unlock that would need
+// pinentry (no terminal to relay to, passphrase factor) fails with no_ui
+// and runs no program; a hook-raised one never gets that far.
+func TestPinentryIsAStub(t *testing.T) {
+	h := testkit.NewHome(t)
+	vaulttest.New(t, h.Layout.Base, "root-acme") // passphrase + recovery factors
+	cfg := h.Cfg
+	cfg.Policy.UnlockOnPrompt = true
+	if err := config.Save(h.Layout.ConfigFile, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePinned(h.Layout.PolicyPinned, config.Pinned{Version: config.PinnedVersion, Config: cfg, MACs: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	c := a.Dial(t)
+	ctx := context.Background()
+	children := func() int {
+		ps, err := platform.System().List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, p := range ps {
+			if p.PPID == os.Getpid() && strings.Contains(strings.ToLower(filepath.Base(p.Exe)), "pinentry") {
+				n++
+			}
+		}
+		return n
+	}
+	before := children()
+	_, err := c.Unlock(ctx, ipc.UnlockReq{RootIDs: []string{"root-acme"}, Factor: "passphrase", Deadline: time.Now().Add(time.Minute)}, nil)
+	var e *ipc.Error
+	if !errors.As(err, &e) || e.Code != ipc.CodeNoUI {
+		t.Fatalf("unlock through pinentry = %v, want no_ui", err)
+	}
+	// A hook-raised unlock after a human prompt: no GUI factor without a
+	// pinentry program, so no_ui before any dialog.
+	h.Procs.Add(platform.ProcInfo{ID: platform.ProcID{PID: 4242, StartUS: h.Clock.Now().UnixMicro()}, PPID: 1, Exe: "/opt/homebrew/bin/claude", Argv: []string{"claude"}})
+	sid := "00000000-0000-4000-8000-000000000005"
+	if err := c.Register(ctx, ipc.RegisterReq{Harness: "claude-code", SID: sid, PID: 4242, Cwd: h.Root}); err != nil {
+		t.Fatal(err)
+	}
+	a.SetScreen(platform.ScreenState{LockKnown: true, IdleKnown: true, HIDIdle: time.Second})
+	time.Sleep(50 * time.Millisecond)
+	if _, err := c.Gate(ctx, ipc.GateReq{Harness: "claude-code", Host: "claude-code", Event: "UserPromptSubmit", SID: sid, PromptID: "p1", Cwd: h.Root}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Unlock(ctx, ipc.UnlockReq{RootIDs: []string{"root-acme"}, FromHook: true, SID: sid, Deadline: time.Now().Add(time.Minute)}, nil)
+	if !errors.As(err, &e) || e.Code != ipc.CodeNoUI {
+		t.Fatalf("hook-raised unlock = %v, want no_ui", err)
+	}
+	if children() != before {
+		t.Fatal("a pinentry program ran")
+	}
+	st, _ := c.Status(ctx)
+	for _, v := range st.Vaults {
+		if v.State != "locked" {
+			t.Fatalf("vault %s is %s", v.VaultID, v.State)
+		}
+	}
+}
+
+// D71 and CC-53 the way a wrapper uses the agent (the wrapper's own
+// crossgroup test adds the PTY): UnlockForTest, a wrapped registration and
+// subscription from Client, the initial unlocked state, the lock event and
+// an end event addressed to this wrapper.
+func TestWrapperFlow(t *testing.T) {
+	h := testkit.NewHome(t)
+	fx := vaulttest.New(t, h.Layout.Base, "root-acme")
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	a.UnlockForTest(t, []string{"root-acme"}, fx.Recovery.String())
+	ctx := context.Background()
+	c, err := a.Client(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	child := platform.ProcInfo{ID: platform.ProcID{PID: 4343, StartUS: h.Clock.Now().UnixMicro()}, PPID: os.Getpid(), Exe: "/usr/local/bin/claude", Comm: "2.1.329"}
+	h.Procs.Add(child)
+	sid := "00000000-0000-4000-8000-000000000006"
+	if err := c.Register(ctx, ipc.RegisterReq{Harness: "claude-code", SID: sid, PID: child.ID.PID, Cwd: h.Root, Wrapper: true, WrapperPID: os.Getpid(), Version: "2.1.329"}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := c.Subscribe(ctx, ipc.SubscribeReq{RootIDs: []string{"root-acme"}, SID: sid, Wrapper: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := func(kind ipc.EventKind) ipc.Event {
+		t.Helper()
+		timeout := time.After(10 * time.Second)
+		for {
+			select {
+			case ev, ok := <-sub:
+				if !ok {
+					t.Fatalf("subscription closed waiting for %s", kind)
+				}
+				if ev.Kind == kind {
+					return ev
+				}
+				if ev.Kind != ipc.EventHeartbeat {
+					t.Fatalf("got %+v waiting for %s", ev, kind)
+				}
+			case <-timeout:
+				t.Fatalf("no %s event", kind)
+			}
+		}
+	}
+	if ev := next(ipc.EventUnlocked); !slices.Equal(ev.RootIDs, []string{"root-acme"}) || !slices.Equal(ev.Factors, []string{"passphrase"}) {
+		t.Fatalf("initial event = %+v", ev)
+	}
+	st, err := c.Status(ctx)
+	if err != nil || len(st.Sessions) != 1 || !st.Sessions[0].Wrapper || st.Sessions[0].Version != "2.1.329" {
+		t.Fatalf("sessions = %+v %v", st.Sessions, err)
+	}
+	if _, err := c.Lock(ctx, ipc.LockReq{All: true}); err != nil {
+		t.Fatal(err)
+	}
+	next(ipc.EventLocked)
+	if _, err := c.Lock(ctx, ipc.LockReq{All: true, End: true}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := next(ipc.EventEnd); !slices.Equal(ev.SIDs, []string{sid}) {
+		t.Fatalf("end event = %+v", ev)
 	}
 }

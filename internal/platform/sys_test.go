@@ -255,7 +255,11 @@ func TestHardenedProcessStaysIdentifiable(t *testing.T) {
 			os.Exit(3)
 		}
 		os.Stdout.WriteString("hardened\n")
-		time.Sleep(30 * time.Second)
+		go func() {
+			time.Sleep(helperLifetime)
+			os.Exit(71)
+		}()
+		_, _ = io.Copy(io.Discard, os.Stdin) // the lifeline: the test holds the other end
 		os.Exit(0)
 	}
 	exe, err := os.Executable()
@@ -264,6 +268,11 @@ func TestHardenedProcessStaysIdentifiable(t *testing.T) {
 	}
 	cmd := exec.Command(exe, "-test.run=^TestHardenedProcessStaysIdentifiable$", "-test.count=1")
 	cmd.Env = []string{"PRECINTO_PLATFORM_HARDEN_SLEEP=1", "HOME=/nonexistent"}
+	lifeR, lifeW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdin = lifeR
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +280,8 @@ func TestHardenedProcessStaysIdentifiable(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }) // our own child
+	lifeR.Close()
+	t.Cleanup(func() { lifeW.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() }) // our own child
 	buf := make([]byte, 9)
 	if _, err := io.ReadFull(out, buf); err != nil || string(buf) != "hardened\n" {
 		t.Fatalf("child did not harden: %q %v", buf, err)

@@ -193,10 +193,14 @@ func (d *daemon) unlock(ctx context.Context, cs *connState, req ipc.Request) ipc
 	if e != nil {
 		return ipc.Response{Err: e}
 	}
-	anc := d.ancestry(cs.peer)
-	f := factsOf(cs.peer, anc)
-	sessRoots := d.sessionRoots(f)
-	if e := authorize(cs.peer, anc, ipc.OpUnlock, "", targets, sessRoots, d.folder); e != nil {
+	f := d.peerFacts(cs.peer, r.AgentMarkers)
+	sessRoots := d.sessionRoots(f, cs.peer)
+	if r.Test && (f.agent || f.noCTTY) && !f.self && !f.worker {
+		// `precinto factor test` is a factor operation: never from an
+		// agent context or a peer without a terminal (D28, D59).
+		return ipc.Response{Err: refuse("test a factor of", d.folder(targets[0]), "factor test")}
+	}
+	if e := authorizeFacts(f, ipc.OpUnlock, "", targets, sessRoots, d.folder); e != nil {
 		return ipc.Response{Err: e}
 	}
 	if len(targets) > 1 && (!r.TTY || !r.Confirmed) {
@@ -222,6 +226,9 @@ func (d *daemon) unlock(ctx context.Context, cs *connState, req ipc.Request) ipc
 		}
 	}
 	if r.FromHook {
+		if r.Test {
+			return errResp(ipc.CodeBadRequest, "precinto: a factor test runs in a terminal (precinto factor test)")
+		}
 		if e := d.hookUnlockAllowed(r, targets); e != nil {
 			return ipc.Response{Err: e}
 		}
@@ -244,6 +251,17 @@ func (d *daemon) unlock(ctx context.Context, cs *connState, req ipc.Request) ipc
 		}
 	})
 	defer stop()
+	if r.Test {
+		// A factor test (CC-50): one unwrap with the named factor and the
+		// recipient check per vault, then the identity is dropped. No
+		// grant, no restore worker, no policy re-pin, nothing unlocked.
+		for _, id := range targets {
+			if e := d.testOne(uctx, cs, req.ID, r, id); e != nil {
+				return ipc.Response{Err: e}
+			}
+		}
+		return ipc.Response{Unlock: &ipc.UnlockResp{Unlocked: []string{}}}
+	}
 	var unlocked []string
 	for _, id := range targets {
 		if e := d.unlockOne(uctx, cs, req.ID, r, id); e != nil {
@@ -326,6 +344,42 @@ func (d *daemon) unlockOne(ctx context.Context, cs *connState, reqID uint64, r i
 	}
 	d.limiter.finish(id, fl, err)
 	return d.unlockErr(id, err)
+}
+
+// testOne is one vault of a factor test (CC-50): the prompt rate limits
+// apply as for an unlock, but a test never joins or blocks an unlock's
+// single flight and never grants: the identity is checked against the
+// vault (recipient and MAC, D5) and destroyed.
+func (d *daemon) testOne(ctx context.Context, cs *connState, reqID uint64, r ipc.UnlockReq, id string) *ipc.Error {
+	if ok, wait := d.limiter.check(id, false, true); !ok {
+		return d.unlockErr(id, errRateLimited{wait})
+	}
+	err := d.unwrapAndCheck(ctx, cs, reqID, r, id)
+	if errors.Is(err, vault.ErrCancelled) || errors.Is(err, vault.ErrBadSecret) {
+		d.limiter.cancelled(id, false)
+	}
+	return d.unlockErr(id, err)
+}
+
+// unwrapAndCheck unwraps vault id with the requested factor, verifies the
+// identity and destroys it (the body of a factor test).
+func (d *daemon) unwrapAndCheck(ctx context.Context, cs *connState, reqID uint64, r ipc.UnlockReq, id string) error {
+	if !d.vaultExists(id) {
+		return errNoVault
+	}
+	identity, err := d.deps.vaults.unwrap(ctx, id, r.Factor, d.newRelayUI(ctx, cs, reqID, r.TTY, id))
+	if err != nil {
+		return err
+	}
+	defer identity.Destroy()
+	if err := d.deps.vaults.verify(id, identity); err != nil {
+		if isVerifyErr(err) {
+			d.setAttention(ipc.Attention{Code: ipc.AttnVaultTampered, Folder: d.folder(id), Fix: "precinto vault repair --root " + d.folder(id)}, true)
+		}
+		return err
+	}
+	d.logf("factor test of %s passed", id)
+	return nil
 }
 
 // errRateLimited carries the wait of a refused prompt.

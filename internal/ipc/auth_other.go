@@ -6,3 +6,7 @@ package ipc
 // executable to same-uid peers (darwin proc_pidpath), so a permission
 // error means the identity cannot be proven: not the same (fail closed).
 func sameExeFallback(int) bool { return false }
+
+// daemonFallback: likewise, the daemon's executable is always readable
+// outside linux; a permission error refuses the server (D6).
+func daemonFallback(int, string) bool { return false }

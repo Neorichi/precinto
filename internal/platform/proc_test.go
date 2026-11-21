@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,17 +18,21 @@ import (
 )
 
 // Every process these tests signal is a child the test started itself
-// (startChild); nothing else is ever signalled.
+// (startChild, startHelper); nothing else is ever signalled.
 
 // child is a process started by the test, killed at cleanup.
 type child struct {
-	cmd *exec.Cmd
-	id  platform.ProcID
+	cmd   *exec.Cmd
+	id    platform.ProcID
+	life  *os.File // helpers: the write end of the lifeline
+	ready string   // helpers: the ready line
 }
 
 // startChild starts argv (absolute) with an empty environment in dir and
 // waits until the kernel shows it with exec done (exe path changed from the
-// test binary), so identity measurements are stable.
+// test binary), so identity measurements are stable. It is used only for
+// children that exit on their own within a second; anything that must
+// stay alive is a startHelper with a lifeline.
 func startChild(t *testing.T, dir string, setsid bool, argv ...string) *child {
 	t.Helper()
 	cmd := &exec.Cmd{Path: argv[0], Args: argv, Env: []string{}, Dir: dir}
@@ -104,7 +109,8 @@ func TestSelfAndIdentify(t *testing.T) {
 
 func TestLookupChildAndReuse(t *testing.T) {
 	dir := realDir(t)
-	c := startChild(t, dir, false, "/bin/sleep", "30")
+	self := selfExe(t)
+	c := startHelper(t, self, dir, false, "helper-sleep")
 	tbl := platform.System()
 	info, err := tbl.Lookup(c.id.PID)
 	if err != nil {
@@ -113,7 +119,8 @@ func TestLookupChildAndReuse(t *testing.T) {
 	if info.PPID != os.Getpid() || info.UID != os.Geteuid() || info.State != platform.StateRunning {
 		t.Fatalf("info = %+v", info)
 	}
-	if filepath.Base(info.Exe) != "sleep" || len(info.Argv) != 2 || info.Argv[1] != "30" {
+	want := helperArgs("helper-sleep")
+	if filepath.Base(info.Exe) != filepath.Base(self) || len(info.Argv) != len(want)+1 || info.Argv[len(want)] != "helper-sleep" {
 		t.Fatalf("exe/argv = %q %q", info.Exe, info.Argv)
 	}
 	mySID := mustLookup(t, os.Getpid()).SID
@@ -199,7 +206,7 @@ func TestWaitExit(t *testing.T) {
 	}
 	c.wait(t)
 
-	long := startChild(t, "/", false, "/bin/sleep", "30")
+	long := startHelper(t, selfExe(t), "/", false, "helper-sleep")
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel2()
 	if err := platform.WaitExit(ctx2, long.id); !errors.Is(err, context.DeadlineExceeded) {
@@ -214,7 +221,7 @@ func TestWaitExit(t *testing.T) {
 }
 
 func TestSignalReverifies(t *testing.T) {
-	c := startChild(t, "/", false, "/bin/sleep", "30")
+	c := startHelper(t, selfExe(t), "/", false, "helper-sleep")
 	wrong := c.id
 	wrong.StartUS++
 	if err := platform.Signal(wrong, syscall.SIGKILL); !errors.Is(err, platform.ErrNotSame) {
@@ -242,9 +249,15 @@ func TestSignalReverifies(t *testing.T) {
 }
 
 func TestSignalGroupOnlyTheSetsidSession(t *testing.T) {
-	// leader (Setsid) with a background member, and a sibling in our session.
-	leader := startChild(t, "/", true, "/bin/sh", "-c", "/bin/sleep 30 & exec /bin/sleep 31")
-	sibling := startChild(t, "/", false, "/bin/sleep", "32")
+	// leader (Setsid) with a member in its session, and a sibling in ours;
+	// all three die with the test's lifeline.
+	self := selfExe(t)
+	leader := startHelper(t, self, "/", true, "helper-group")
+	sibling := startHelper(t, self, "/", false, "helper-sleep")
+	memberPID, err := strconv.Atoi(strings.TrimPrefix(leader.ready, "ready member="))
+	if err != nil {
+		t.Fatalf("leader said %q", leader.ready)
+	}
 	var member platform.ProcInfo
 	deadline := time.Now().Add(5 * time.Second)
 	for member.ID.IsZero() {
@@ -253,7 +266,7 @@ func TestSignalGroupOnlyTheSetsidSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, p := range list {
-			if p.SID == leader.id.PID && p.ID.PID != leader.id.PID && filepath.Base(p.Exe) == "sleep" {
+			if p.SID == leader.id.PID && p.ID.PID == memberPID && p.ID.PID != leader.id.PID {
 				member = p
 			}
 		}
@@ -312,7 +325,7 @@ func TestCwdAndOpenFiles(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c := startChild(t, sub, false, "/bin/sh", "-c", `exec 3< "$0"; exec /bin/sleep 30`, file)
+	c := startHelper(t, selfExe(t), sub, false, "helper-hold", file)
 	tbl := platform.System()
 	cwd, err := tbl.Cwd(c.id)
 	if err != nil || cwd != sub {
@@ -399,7 +412,9 @@ func TestSpawnDetached(t *testing.T) {
 		t.Fatalf("log mode: %v %v", st, err)
 	}
 
-	sl, err := platform.Spawn([]string{"/bin/sleep", "30"}, platform.SpawnOptions{})
+	// A helper that exits once its parent (this test) goes away: a spawned
+	// child has no stdin lifeline.
+	sl, err := platform.Spawn(append([]string{selfExe(t)}, helperArgs("helper-orphan")...), platform.SpawnOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,10 +456,10 @@ func TestExecutableIdentity(t *testing.T) {
 	if err != nil || !same {
 		t.Fatalf("SameExecutable(self) = %v %v", same, err)
 	}
-	c := startChild(t, "/", false, "/bin/sleep", "30")
+	c := startHelper(t, p, "/", false, "helper-sleep")
 	same, err = platform.SameExecutable(c.id.PID)
-	if err != nil || same {
-		t.Fatalf("SameExecutable(sleep) = %v %v", same, err)
+	if err != nil || !same {
+		t.Fatalf("SameExecutable(this binary re-executed) = %v %v", same, err)
 	}
 	if _, err := platform.SameExecutable(1 << 30); err == nil {
 		t.Fatal("SameExecutable(missing pid) without error")
@@ -458,7 +473,7 @@ func TestExecutableIdentity(t *testing.T) {
 	if err := os.WriteFile(cp, b, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	other := startChild(t, "/", false, cp, "-test.run=^TestHelperSleep$", "--", "helper-sleep")
+	other := startHelper(t, cp, "/", false, "helper-sleep")
 	if !platform.System().Alive(other.id) {
 		t.Fatal("helper copy exited early")
 	}
@@ -467,23 +482,11 @@ func TestExecutableIdentity(t *testing.T) {
 	}
 }
 
-// TestHelperSleep is the body of helper processes: it sleeps only when the
-// test binary runs with the "helper-sleep" argument (it is a no-op test
-// otherwise).
-func TestHelperSleep(t *testing.T) {
-	for i, a := range os.Args {
-		if a == "--" && i+1 < len(os.Args) && os.Args[i+1] == "helper-sleep" {
-			time.Sleep(30 * time.Second)
-			os.Exit(0)
-		}
-	}
-}
-
 // StartTime is the wall-clock start of a process (D66): a child started
 // now starts now, whatever the OS's StartUS representation.
 func TestStartTimeIsWallClock(t *testing.T) {
 	before := time.Now()
-	c := startChild(t, "/", false, "/bin/sleep", "5")
+	c := startHelper(t, selfExe(t), "/", false, "helper-sleep")
 	after := time.Now()
 	got := platform.StartTime(c.id)
 	if got.Before(before.Add(-time.Second)) || got.After(after.Add(time.Second)) {

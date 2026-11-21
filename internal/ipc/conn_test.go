@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -521,15 +522,100 @@ func helperCopy(t *testing.T) string {
 	return p
 }
 
-func runHelper(t *testing.T, exe string, args ...string) *exec.Cmd {
+// helper is a child process the test started: the test binary (or a copy)
+// in helper mode. It carries a lifeline (its stdin, a pipe the test holds)
+// and exits as soon as the pipe closes, so it never outlives the test even
+// when the test binary dies; t.Cleanup also kills and reaps it.
+type helper struct {
+	cmd   *exec.Cmd
+	life  *os.File      // write end of the lifeline
+	lines chan string   // the helper's stdout, line by line
+	done  chan struct{} // closed once the helper was reaped
+	err   error         // its exit status (after done)
+}
+
+func runHelper(t *testing.T, exe string, args ...string) *helper {
 	t.Helper()
-	cmd := exec.Command(exe, append([]string{"-test.run=^TestIPCHelper$", "--"}, args...)...)
+	cmd := exec.Command(exe, append([]string{"-test.run=^TestIPCHelper$", "-test.count=1", "--"}, args...)...)
 	cmd.Env = []string{"HOME=/nonexistent"}
+	lifeR, lifeW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdin = lifeR
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }) // our own child
-	return cmd
+	lifeR.Close()
+	h := &helper{cmd: cmd, life: lifeW, lines: make(chan string, 16), done: make(chan struct{})}
+	go func() {
+		b := make([]byte, 0, 256)
+		buf := make([]byte, 256)
+		for {
+			n, err := out.Read(buf)
+			b = append(b, buf[:n]...)
+			for {
+				i := bytes.IndexByte(b, '\n')
+				if i < 0 {
+					break
+				}
+				select {
+				case h.lines <- string(b[:i]):
+				default:
+				}
+				b = b[i+1:]
+			}
+			if err != nil {
+				break
+			}
+		}
+		h.err = cmd.Wait()
+		close(h.done)
+	}()
+	t.Cleanup(func() {
+		h.life.Close() // the helper exits on its own
+		select {
+		case <-h.done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill() // our own child only
+			<-h.done
+		}
+	})
+	return h
+}
+
+// waitReady waits until the helper printed "ready" (it is listening).
+func (h *helper) waitReady(t *testing.T) {
+	t.Helper()
+	timeout := time.After(20 * time.Second)
+	for {
+		select {
+		case l := <-h.lines:
+			if l == "ready" {
+				return
+			}
+		case <-h.done:
+			t.Fatalf("helper exited before it was ready: %v", h.err)
+		case <-timeout:
+			t.Fatal("helper never got ready")
+		}
+	}
+}
+
+// wait waits for the helper to exit by itself and returns its status.
+func (h *helper) wait(t *testing.T) error {
+	t.Helper()
+	select {
+	case <-h.done:
+		return h.err
+	case <-time.After(20 * time.Second):
+		t.Fatal("helper did not exit")
+		return nil
+	}
 }
 
 // TestSocketSquat is SEC-11: another binary bound at agent.sock is refused
@@ -540,15 +626,15 @@ func TestSocketSquat(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := filepath.Join(t.TempDir(), "received")
-	cmd := runHelper(t, helperCopy(t), "listen", l.Socket, result)
-	waitSocket(t, l.Socket)
+	h := runHelper(t, helperCopy(t), "listen", l.Socket, result)
+	h.waitReady(t) // listening, not only bound: never an "agent is not running" race
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := ipc.Dial(ctx, ipc.DialOptions{Layout: l, Client: "cli"})
 	if !errors.Is(err, ipc.ErrUntrustedServer) {
 		t.Fatalf("Dial(squatter) = %v, want ErrUntrustedServer", err)
 	}
-	if err := cmd.Wait(); err != nil {
+	if err := h.wait(t); err != nil {
 		t.Fatalf("helper: %v", err)
 	}
 	b, err := os.ReadFile(result)
@@ -566,8 +652,8 @@ func TestPeerSameExecutable(t *testing.T) {
 		return true
 	})
 	dialT(t, l)
-	cmd := runHelper(t, helperCopy(t), "dial", l.Socket)
-	if err := cmd.Wait(); err != nil {
+	h := runHelper(t, helperCopy(t), "dial", l.Socket)
+	if err := h.wait(t); err != nil {
 		t.Fatalf("helper: %v", err)
 	}
 	s.mu.Lock()
@@ -578,10 +664,19 @@ func TestPeerSameExecutable(t *testing.T) {
 }
 
 // TestIPCHelper is the body of helper processes (a no-op test otherwise).
+// Every mode exits when its lifeline (stdin) closes.
 func TestIPCHelper(t *testing.T) {
 	args := helperArgs()
 	if args == nil {
 		return
+	}
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(70) // the test went away
+	}()
+	if extra, ok := helperModes[args[0]]; ok {
+		extra(args[1:])
+		os.Exit(0)
 	}
 	switch args[0] {
 	case "listen": // listen <socket> <result>: count bytes a client sends
@@ -589,6 +684,7 @@ func TestIPCHelper(t *testing.T) {
 		if err != nil {
 			os.Exit(2)
 		}
+		fmt.Println("ready")
 		c, err := ln.Accept()
 		if err != nil {
 			os.Exit(3)
@@ -613,20 +709,9 @@ func TestIPCHelper(t *testing.T) {
 	os.Exit(9)
 }
 
-// waitSocket waits until a socket exists at path.
-func waitSocket(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSocket != 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("helper never bound")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
+// helperModes are OS-specific helper modes (auth_linux_test.go), keyed by
+// name; each returns when done.
+var helperModes = map[string]func(args []string){}
 
 func helperArgs() []string {
 	for i, a := range os.Args {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 	"syscall"
 	"time"
 
@@ -61,6 +60,7 @@ func registryBusy(e claude.RegistryEntry) bool { return e.Status == "busy" && e.
 // refreshSessions drops sessions whose process exited and refreshes busy
 // from Claude's registry (authoritative when present, SPEC §12.4).
 func (d *daemon) refreshSessions(ctx context.Context) {
+	d.pruneProcFacts()
 	snap := d.snap.Load().snap
 	var reg map[int]claude.RegistryEntry
 	now := d.now()
@@ -99,6 +99,40 @@ func (d *daemon) refreshSessions(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// pruneProcFacts forgets per-process facts of processes that are gone: a
+// ProcID never comes back, so nothing can be signalled or attributed by
+// mistake, and the maps stay bounded over a long-running daemon.
+func (d *daemon) pruneProcFacts() {
+	d.mu.Lock()
+	ids := map[platform.ProcID]bool{}
+	for id := range d.versions {
+		ids[id] = true
+	}
+	for id := range d.signalable {
+		ids[id] = true
+	}
+	for id := range d.hookSeen {
+		ids[id] = true
+	}
+	d.mu.Unlock()
+	var gone []platform.ProcID
+	for id := range ids {
+		if !d.procs.Alive(id) {
+			gone = append(gone, id)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	d.mu.Lock()
+	for _, id := range gone {
+		delete(d.versions, id)
+		delete(d.signalable, id)
+		delete(d.hookSeen, id)
+	}
+	d.mu.Unlock()
 }
 
 // scanUngated looks for harness processes in locked folders that no hook
@@ -142,7 +176,7 @@ func (d *daemon) scanUngated(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		h, ok := harnessOf(p)
+		h, ok := harnessOfProc(d.invs, eff, p)
 		if !ok || p.State == platform.StateZombie || known[p.ID] {
 			continue
 		}
@@ -172,7 +206,7 @@ func (d *daemon) scanUngated(ctx context.Context) {
 			}
 		}
 		found[p.ID] = true
-		if h == harness.ClaudeCode && root != "" {
+		if h == string(harness.ClaudeCode) && root != "" {
 			if reg == nil {
 				reg, homes, regOK = d.registryEntries()
 			}
@@ -191,7 +225,7 @@ func (d *daemon) scanUngated(ctx context.Context) {
 			why = "unknown working directory"
 			root = locked[0]
 		}
-		d.reportUngated(p, string(h), root, why)
+		d.reportUngated(p, h, root, why)
 	}
 	d.mu.Lock()
 	for id := range d.ungated {
@@ -232,13 +266,15 @@ func (d *daemon) interactiveClaude(p platform.ProcInfo, e claude.RegistryEntry, 
 	return true
 }
 
-// reportUngated records a report-only match (C9.ungated).
+// reportUngated records a report-only match (C9.ungated); Harness is the
+// {harness} of the message, the command the user runs it with (CC-48).
 func (d *daemon) reportUngated(p platform.ProcInfo, h, root, why string) {
 	d.mu.Lock()
 	d.ungated[p.ID] = ungatedMatch{proc: p, harness: h, rootID: root, why: why}
 	d.mu.Unlock()
+	cmd := harnessCommand(h)
 	d.setAttention(ipc.Attention{Code: ipc.AttnUngatedSession, Folder: d.folder(root), PID: p.ID.PID, Detail: why,
-		Fix: "precinto run " + strings.TrimSuffix(h, "-code")}, true)
+		Fix: "precinto run " + cmd, Harness: cmd}, true)
 }
 
 // clearUngatedAttention removes ungated-session items of processes no
@@ -266,7 +302,7 @@ func (d *daemon) endSessions(a Action) {
 		switch {
 		case s.Background:
 		case s.Wrapper:
-			d.broadcast(ipc.Event{Kind: ipc.EventEnd, SIDs: nonEmpty(s.SID), RootIDs: s.RootIDs, Reason: a.Reason})
+			d.sendEnd(s, a.Reason)
 		case s.Harness == string(harness.ClaudeCode):
 			s := s
 			d.goBackground(func() { d.endUnwrapped(s, a.Grace, ui.Reason(a.Reason)) })
@@ -299,7 +335,7 @@ func (d *daemon) endUnwrapped(s SessionInfo, grace time.Duration, reason ui.Reas
 	if err != nil || p.ID != s.Proc || p.State == platform.StateZombie {
 		return
 	}
-	if h, ok := harnessOf(p); !ok || h != harness.ClaudeCode {
+	if !matchHarness(d.invs, d.effective(), string(harness.ClaudeCode), p) {
 		return // the pid no longer runs Claude: never signal it
 	}
 	desc, _ := platform.Descendants(d.procs, s.Proc)
@@ -350,11 +386,18 @@ func (d *daemon) waitGone(id platform.ProcID, wait time.Duration) bool {
 
 // audit checks capsules sealed to vault id since its last audit (D5): a
 // capsule whose recipients fingerprint is not the vault's, or whose header
-// the vault key does not open, is listed as exposed.
+// the vault key does not open, is listed as exposed. The watermark lives
+// in vault.toml (Store.MarkAudited, CC-07), so it survives a daemon
+// restart: it moves to the start of a clean audit only. An audit that
+// found an exposed capsule (or could not finish) leaves it where it was,
+// so the exposure is reported again at every unlock and vault repair
+// still lists it. A last_audit later than now counts as zero: a forged
+// future value never hides a capsule.
 func (d *daemon) audit(id string) {
 	if !d.vaultExists(id) {
 		return
 	}
+	start := d.clock.Now()
 	fpr, err := d.deps.vaults.fingerprint(id)
 	if err != nil {
 		return
@@ -363,11 +406,9 @@ func (d *daemon) audit(id string) {
 	if meta, err := d.deps.vaults.meta(id); err == nil {
 		since = meta.LastAudit
 	}
-	d.mu.Lock()
-	if t, ok := d.auditMark[id]; ok && t.After(since) {
-		since = t
+	if since.After(start) {
+		since = time.Time{}
 	}
-	d.mu.Unlock()
 	entries, err := d.deps.logged()
 	if err != nil {
 		return
@@ -391,10 +432,14 @@ func (d *daemon) audit(id string) {
 			key.Destroy()
 		}
 	}
-	d.mu.Lock()
-	d.auditMark[id] = d.clock.Now()
-	d.mu.Unlock()
 	if exposed > 0 {
 		d.setAttention(ipc.Attention{Code: ipc.AttnExposed, Folder: d.folder(id), Count: exposed, Fix: "precinto status"}, true)
+		return
+	}
+	if !start.After(since) {
+		return // nothing to move (a clock behind the watermark)
+	}
+	if err := d.deps.vaults.markAudited(id, start); err != nil {
+		d.logf("audit watermark of %s not saved: %v", id, err)
 	}
 }

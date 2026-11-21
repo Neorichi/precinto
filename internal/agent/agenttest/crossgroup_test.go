@@ -55,12 +55,21 @@ func TestUnlockIdleLockWithRealVaults(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	var restore, seal bool
-	for _, argv := range a.Spawned() {
-		restore = restore || (len(argv) > 2 && argv[1] == "restore" && slices.Contains(argv, "--background"))
-		seal = seal || (len(argv) > 2 && argv[1] == "sweep" && slices.Contains(argv, "--lock"))
-	}
-	if !restore || !seal {
-		t.Fatalf("spawned = %q", a.Spawned())
+	// The lock is visible (the state is published first) a moment before
+	// its keyless seal worker is asked for.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		var restore, seal bool
+		for _, argv := range a.Spawned() {
+			restore = restore || (len(argv) > 2 && argv[1] == "restore" && slices.Contains(argv, "--background"))
+			seal = seal || (len(argv) > 2 && argv[1] == "sweep" && slices.Contains(argv, "--lock"))
+		}
+		if restore && seal {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spawned = %q", a.Spawned())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

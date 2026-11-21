@@ -21,15 +21,15 @@ func TestInsecureHonouredInTestingBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := filepath.Join(t.TempDir(), "received")
-	cmd := runHelper(t, helperCopy(t), "listen", l.Socket, result)
-	waitSocket(t, l.Socket)
+	h := runHelper(t, helperCopy(t), "listen", l.Socket, result)
+	h.waitReady(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_, err := ipc.Dial(ctx, ipc.DialOptions{Layout: l, Insecure: true})
 	if err == nil || errors.Is(err, ipc.ErrUntrustedServer) {
 		t.Fatalf("Dial(Insecure) in a testing build = %v (the squatter does not answer hello)", err)
 	}
-	_ = cmd.Wait()
+	_ = h.wait(t)
 	if b, _ := os.ReadFile(result); string(b) == "0" {
 		t.Fatal("hello not sent although Insecure was honoured")
 	}

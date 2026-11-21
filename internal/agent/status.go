@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/precinto/precinto/internal/harness"
@@ -33,6 +34,14 @@ func (d *daemon) status() ipc.StatusResp {
 	for _, u := range d.ungated {
 		ungated = append(ungated, u)
 	}
+	factors := make(map[string][]string, len(d.factors))
+	for id, k := range d.factors {
+		factors[id] = slices.Clone(k)
+	}
+	versions := make(map[platform.ProcID]string, len(d.versions))
+	for id, v := range d.versions {
+		versions[id] = v
+	}
 	d.mu.Unlock()
 	if st, err := os.Stat(d.l.SweepLast); err == nil {
 		resp.LastSweep = st.ModTime().UTC()
@@ -47,6 +56,10 @@ func (d *daemon) status() ipc.StatusResp {
 			st.State, st.Reason, st.Since = string(vs.State), vs.Reason, vs.Since
 			st.IdleDeadline, st.AbsDeadline, st.LastHuman = vs.IdleDeadline, vs.AbsDeadline, vs.LastHuman
 		}
+		if st.State == string(VaultLocked) && d.limiter.inFlight(id) {
+			st.State = vaultUnlocking // a single-flight unlock is in progress (CC-32)
+		}
+		st.Factors = factors[id]
 		resp.Vaults = append(resp.Vaults, st)
 	}
 	keys := make([]string, 0, len(v.sessions))
@@ -60,6 +73,7 @@ func (d *daemon) status() ipc.StatusResp {
 			Harness: s.Info.Harness, SID: s.Info.SID, Proc: s.Info.Proc, RootIDs: s.Info.RootIDs,
 			State: string(s.State), Busy: s.Busy, Wrapper: s.Info.Wrapper, Background: s.Info.Background,
 			HooksSeen: s.Info.HooksSeen, Registered: s.Info.Registered, TTY: s.Info.TTY,
+			Version: versions[s.Info.Proc],
 		})
 	}
 	sort.Slice(ungated, func(i, j int) bool { return ungated[i].proc.ID.PID < ungated[j].proc.ID.PID })
@@ -81,17 +95,33 @@ func (d *daemon) status() ipc.StatusResp {
 	return resp
 }
 
-// subscribe turns the connection into an event stream (SPEC §13.3): an
-// acknowledgement, the current state of the subscribed folders, then every
-// matching event and a heartbeat each second. Any request on the stream
-// ends it.
+// vaultUnlocking is VaultStatus.State while a single-flight unlock of a
+// locked vault is in progress.
+const vaultUnlocking = "unlocking"
+
+// maxSubscribeRoots bounds the folders of one subscription.
+const maxSubscribeRoots = 256
+
+// subscribe turns the connection into an event stream (SPEC §13.3, D71):
+// an acknowledgement, one locked or unlocked event per subscribed folder,
+// then every matching event, the end events addressed to this wrapper and
+// a heartbeat each second. The initial events are queued in the same
+// critical section that registers the subscriber, from a snapshot
+// published before any event goes out, so no state change is missed. Any
+// request on the stream ends it.
 func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) {
 	r := req.Subscribe
-	sub := &subscriber{conn: cs.c, id: req.ID, roots: dedupe(r.RootIDs), sid: r.SID,
-		q: make(chan ipc.Event, subscriberQueue), done: make(chan struct{})}
+	roots := dedupe(r.RootIDs)
+	if len(roots) > maxSubscribeRoots {
+		roots = roots[:maxSubscribeRoots] // bounded: one queued initial event each
+	}
+	sub := &subscriber{conn: cs.c, id: req.ID, roots: roots, sid: r.SID,
+		peer: cs.peer.Proc.ID, wrapper: r.Wrapper,
+		q: make(chan ipc.Event, subscriberQueue+len(roots)), done: make(chan struct{})}
 	if err := cs.c.WriteResponse(ipc.Response{ID: req.ID, OK: true}); err != nil {
 		return
 	}
+	d.mu.Lock()
 	v := d.view()
 	for _, id := range sub.roots {
 		vs, ok := v.vaults[id]
@@ -101,9 +131,9 @@ func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) 
 		} else if ok {
 			ev.Reason = vs.Reason
 		}
+		d.withFactorsLocked(&ev)
 		sub.q <- ev
 	}
-	d.mu.Lock()
 	d.subs[sub] = struct{}{}
 	d.mu.Unlock()
 	defer func() {
@@ -134,22 +164,34 @@ func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) 
 // ancestry returns the peer's ancestors (nearest first) from the daemon's
 // process table; unknown ancestry is empty. In a -tags testing daemon the
 // walk ends at the process named by paths.TestAncestryStop of the daemon's
-// own environment (D64): it and its ancestors are ignored, so a suite run
-// inside an agent session still exercises the human paths below it.
-// Production builds never read the variable.
-func (d *daemon) ancestry(peer platform.Peer) []platform.ProcInfo {
+// own environment (D64), exactly like ui.AgentContext: it and its
+// ancestors are ignored (peerIsStop reports that the peer itself is that
+// process), so a suite run inside an agent session still exercises the
+// human paths below it, while a harness below the stop is still found.
+// Env markers and the no-controlling-terminal rule still apply. Production
+// builds never read the variable.
+func (d *daemon) ancestry(peer platform.Peer) (anc []platform.ProcInfo, peerIsStop bool) {
 	anc, err := platform.Ancestors(d.procs, peer.PID, maxAncestry)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	if stop, ok := testAncestryStop(d.o.Env); ok {
+		if sameIncarnation(peer.Proc.ID, stop) {
+			return nil, true
+		}
 		for i, a := range anc {
-			if a.ID.PID == stop.PID && a.ID.StartUS == stop.StartUS && (a.ID.BootID == "" || stop.BootID == "" || a.ID.BootID == stop.BootID) {
-				return anc[:i]
+			if sameIncarnation(a.ID, stop) {
+				return anc[:i], false
 			}
 		}
 	}
-	return anc
+	return anc, false
+}
+
+// sameIncarnation compares a measured ProcID with the D64 stop; the boot id
+// counts only when both carry one (a parsed "PID:START" names this boot).
+func sameIncarnation(a, stop platform.ProcID) bool {
+	return a.PID == stop.PID && a.StartUS == stop.StartUS && (a.BootID == "" || stop.BootID == "" || a.BootID == stop.BootID)
 }
 
 // testAncestryStop parses paths.TestAncestryStop (D64; ok=false outside
@@ -163,11 +205,32 @@ func testAncestryStop(e paths.Env) (platform.ProcID, bool) {
 	return id, err == nil
 }
 
+// peerFacts measures who asks (D28, D59, D64): the peer's ancestry in the
+// daemon's own process table, cut at the testing-build stop, and the
+// agent markers the client sent about itself (CC-11), which can only add
+// restrictions.
+func (d *daemon) peerFacts(peer platform.Peer, markers []string) peerFacts {
+	anc, peerIsStop := d.ancestry(peer)
+	return factsOf(peer, anc, peerIsStop).withMarkers(markers)
+}
+
 // sessionRoots returns the folders of the session an agent-context peer
 // runs in: the sessions of its verified harness ancestor, and the folder
-// containing that process's working directory.
-func (d *daemon) sessionRoots(f peerFacts) []string {
-	if !f.agent || f.harnessProc.ID.IsZero() {
+// containing that process's working directory (never the peer's own: an
+// agent could cd anywhere). A peer that is an agent context only by its
+// own markers has no harness the daemon can see; its session is then the
+// folder of its own working directory (the claim only ever restricts it).
+func (d *daemon) sessionRoots(f peerFacts, peer platform.Peer) []string {
+	if !f.agent {
+		return nil
+	}
+	if f.harnessProc.ID.IsZero() {
+		if !f.markers || peer.Proc.ID.IsZero() {
+			return nil
+		}
+		if cwd, err := d.procs.Cwd(peer.Proc.ID); err == nil && cwd != "" {
+			return d.rootsOf(nil, cwd)
+		}
 		return nil
 	}
 	var roots []string
@@ -203,8 +266,16 @@ func (d *daemon) guiFactor(id string) bool {
 	return false
 }
 
+// unlockOrder is the order in which an unlock picks a factor (vault
+// Unwrap with no factor named): Secure Enclave, plugin, passphrase.
+var unlockOrder = []vault.FactorKind{vault.FactorSE, vault.FactorPlugin, vault.FactorPassphrase}
+
+// loadFactors reads vault id's factors once into the caches: whether one
+// prompts without a terminal (D27), and the enrolled kinds in unlock
+// order, never "recovery" (Event/VaultStatus.Factors, CC-40).
 func (d *daemon) loadFactors(id string) {
 	g := false
+	var kinds []string
 	if d.vaultExists(id) {
 		if meta, err := d.deps.vaults.meta(id); err == nil {
 			pin := d.pinentryAvailable()
@@ -217,12 +288,26 @@ func (d *daemon) loadFactors(id string) {
 					g = true
 				}
 			}
+			for _, k := range unlockOrder {
+				if slices.ContainsFunc(meta.Factors, func(f vault.Factor) bool { return f.Kind == k }) {
+					kinds = append(kinds, string(k))
+				}
+			}
 		}
 	}
 	d.mu.Lock()
 	d.gui[id] = g
+	if len(kinds) > 0 {
+		d.factors[id] = kinds
+	} else {
+		delete(d.factors, id)
+	}
 	d.mu.Unlock()
 }
+
+// refreshFactors reloads vault id's factor caches now (start, vault
+// creation, factor enrollment, repair).
+func (d *daemon) refreshFactors(id string) { d.loadFactors(id) }
 
 // pinentryAvailable reports whether a pinentry program is on the PATH.
 func (d *daemon) pinentryAvailable() bool {

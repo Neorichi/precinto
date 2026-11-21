@@ -157,19 +157,29 @@ func TestRawProtocolFuzz(t *testing.T) {
 
 // TestLoaderEnvRefusedBeforeHardening checks the default Harden seam: a
 // DYLD_*/LD_* environment is refused first (the test process itself is
-// never hardened: the refusal returns before platform.Harden).
+// never hardened: the refusal returns before platform.Harden), and the
+// RLIMIT_MEMLOCK raise (CC-17) follows a successful hardening only; its
+// failure is logged, never fatal.
 func TestLoaderEnvRefusedBeforeHardening(t *testing.T) {
-	hardened := 0
-	fake := func() error { hardened++; return nil } // never the real platform.Harden here
+	hardened, raised := 0, 0
+	fake := func() error { hardened++; return nil }  // never the real platform.Harden here
+	memlock := func() error { raised++; return nil } // never the test process's own limits
 	for _, env := range []map[string]string{{"DYLD_INSERT_LIBRARIES": "/tmp/x.dylib"}, {"LD_PRELOAD": "/tmp/x.so"}} {
-		if err := hardenWith(paths.FromMap(env), fake)(); !errors.Is(err, platform.ErrUnsafeEnv) {
+		if err := hardenWith(paths.FromMap(env), fake, memlock)(); !errors.Is(err, platform.ErrUnsafeEnv) {
 			t.Fatalf("Harden with %v = %v (SEC-12)", env, err)
 		}
 	}
-	if hardened != 0 {
-		t.Fatal("hardened despite a loader environment")
+	if hardened != 0 || raised != 0 {
+		t.Fatalf("hardened %d / memlock raised %d despite a loader environment", hardened, raised)
 	}
-	if err := hardenWith(paths.FromMap(map[string]string{"HOME": "/h"}), fake)(); err != nil || hardened != 1 {
-		t.Fatalf("clean environment: %v, hardened %d", err, hardened)
+	if err := hardenWith(paths.FromMap(map[string]string{"HOME": "/h"}), fake, memlock)(); err != nil || hardened != 1 || raised != 1 {
+		t.Fatalf("clean environment: %v, hardened %d, memlock raised %d", err, hardened, raised)
+	}
+	failing := func() error { return errors.New("hardening failed") }
+	if err := hardenWith(paths.FromMap(nil), failing, memlock)(); err == nil || raised != 1 {
+		t.Fatalf("failed hardening = %v, memlock raised %d (must stop before it)", err, raised)
+	}
+	if err := hardenWith(paths.FromMap(nil), fake, func() error { return errors.New("EPERM") })(); err != nil {
+		t.Fatalf("a memlock limit that cannot be raised is fatal: %v", err)
 	}
 }

@@ -60,8 +60,9 @@ func ownedByMe(st fs.FileInfo) bool {
 	return ok && int(sys.Uid) == os.Getuid()
 }
 
-// sameExe reports whether pid runs this binary (D6). Any error counts as
-// "not the same", except where sameExeFallback applies.
+// sameExe reports whether pid runs this binary (D6), the daemon's check of
+// a client. Any error counts as "not the same", except where
+// sameExeFallback applies.
 func sameExe(pid int) bool {
 	same, err := platform.SameExecutable(pid)
 	if err == nil {
@@ -69,6 +70,22 @@ func sameExe(pid int) bool {
 	}
 	if errors.Is(err, fs.ErrPermission) {
 		return sameExeFallback(pid)
+	}
+	return false
+}
+
+// serverTrusted is the client's check of the daemon at pid (D6): the same
+// executable file, or, when its executable cannot be read (a hardened
+// daemon on linux), the D65 facts: it holds lockPath (run/agent.lock) and
+// has our kernel name (daemonFallback). Anything else is refused before
+// the client sends a byte.
+func serverTrusted(pid int, lockPath string) bool {
+	same, err := platform.SameExecutable(pid)
+	if err == nil {
+		return same
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return daemonFallback(pid, lockPath)
 	}
 	return false
 }

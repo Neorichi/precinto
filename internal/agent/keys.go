@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sort"
+	"strconv"
 
 	"github.com/awnumar/memguard"
 
@@ -12,9 +13,6 @@ import (
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/vault"
 )
-
-// maxKeysPerRequest bounds one key release (one secret frame per key).
-const maxKeysPerRequest = 1024
 
 // keyCandidate is a capsule that passed provenance and scope checks.
 type keyCandidate struct {
@@ -37,12 +35,13 @@ func (d *daemon) keys(ctx context.Context, cs *connState, r ipc.KeysReq) (ipc.Re
 	default:
 		return errResp(ipc.CodeBadRequest, "precinto: unknown key purpose"), nil
 	}
-	if len(r.Capsules) > maxKeysPerRequest {
-		return errResp(ipc.CodeBadRequest, "precinto: too many capsules in one request"), nil
+	if len(r.Capsules) > ipc.MaxKeysPerRequest {
+		// One secret frame and one locked buffer per key: clients batch
+		// (CC-17), so a bigger request is a client bug, never served.
+		return errResp(ipc.CodeBadRequest, "precinto: too many capsules in one request (at most "+strconv.Itoa(ipc.MaxKeysPerRequest)+")"), nil
 	}
-	anc := d.ancestry(cs.peer)
-	f := factsOf(cs.peer, anc)
-	sessRoots := d.sessionRoots(f)
+	f := d.peerFacts(cs.peer, r.AgentMarkers)
+	sessRoots := d.sessionRoots(f, cs.peer)
 	resp := ipc.KeysResp{Granted: []ipc.KeyGrant{}, Denied: map[string]ipc.Code{}}
 	var cands []keyCandidate
 	seen := map[string]bool{}
@@ -71,7 +70,7 @@ func (d *daemon) keys(ctx context.Context, cs *connState, r ipc.KeysReq) (ipc.Re
 			resp.Denied[rel] = ipc.CodeLocked
 			continue
 		}
-		if e := authorize(cs.peer, anc, ipc.OpKeys, r.Purpose, roots, sessRoots, d.folder); e != nil {
+		if e := authorizeFacts(f, ipc.OpKeys, r.Purpose, roots, sessRoots, d.folder); e != nil {
 			resp.Denied[rel] = e.Code
 			continue
 		}
