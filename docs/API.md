@@ -5906,8 +5906,10 @@ func FactorName(kinds []string, gui bool) string
 // Format renders a catalog message: every {placeholder} of the text is
 // replaced from v ({idle} and {limit} as "15 min" / "8 h", {until} as
 // 15:04 in v.Until's location, {size} with HumanBytes). An unknown id
-// renders as the id itself so a missing entry is visible. Implemented in
-// the scaffold.
+// renders as the id itself so a missing entry is visible. An empty v.SID
+// drops its slot: "({sid} · " renders as "(" and "session {sid} " as
+// "this session " (a Codex session has no id the wrapper knows, D128).
+// Implemented in the scaffold.
 func Format(id MsgID, v Vars) string
 
 // HumanBytes renders sizes with decimal units: 512 B, 12 kB, 12 MB, 1.2 GB.

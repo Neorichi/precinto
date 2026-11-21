@@ -665,8 +665,11 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 	}
 	defer ctlW.Close()
 	// The shell's lifeline is the terminal: it dies with its master.
+	// The lock screen covers the terminal while the session ends, so the
+	// synthetic Codex reports the quit keys it got in a side file too.
+	keylog := filepath.Join(t.TempDir(), "keys.log")
 	argv := append([]string{shellBin, "-ctl", "3", "-max-life", helperLife, "-test-token", e2eToken,
-		w.bin, "run", "--harness", "codex", "--"}, codexArgv()...)
+		w.bin, "run", "--harness", "codex", "--"}, codexArgv("-keylog", keylog)...)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env, cmd.Dir = w.environ(), w.h.Root
 	cmd.ExtraFiles = []*os.File{ctlR}
@@ -712,7 +715,17 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 	}
 	waitText("READY")
 	w.lock("--end")
-	waitText("CTRL-C 2") // the Codex quit keys reached the TUI
+	deadline := time.Now().Add(e2eTimeout)
+	for { // the Codex quit keys reached the TUI
+		b, _ := os.ReadFile(keylog)
+		if strings.Contains(string(b), "CTRL-C 2\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the quit keys did not reach the synthetic Codex (key log %q):\n%q", b, tail(text()))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	waitText("JOBSHELL exit")
 	select {
 	case err := <-waited:
@@ -729,17 +742,36 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 }
 
 // TestE2E6CodexHomeThroughTheWrapper is the wrapper's part of E2E-6: `precinto
-// run codex exec --ephemeral …` creates and seeds the folder's Codex home,
-// and the snapshot is sealed after the child exits.
+// run codex exec --ephemeral …` creates and seeds the folder's Codex home
+// from the user's (config.toml is copied only when the user has one, D31),
+// and the snapshot is sealed after the child exits. The folder is not a
+// directory Codex trusts and not a git repository, so Codex stops before
+// it would reach a model: no login and no network are needed.
 func TestE2E6CodexHomeThroughTheWrapper(t *testing.T) {
 	requireE2E(t)
 	w := newWorld(t, filepath.Dir(harness(t, "codex")))
+	const userConfig = "# synthetic user config (E2E-6)\nhide_agent_reasoning = true\n"
+	if err := os.WriteFile(filepath.Join(w.h.CodexUser, "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	run := w.start("run", "--harness", "codex", "--", "codex", "exec", "--ephemeral", "Reply OK.")
 	run.answer(w.launchRules()...)
-	run.wait() // no Codex login in the synthetic home: only the home and the seal matter
+	code := run.wait() // no Codex login in the synthetic home: only the home and the seal matter
+	t.Logf("precinto run codex exec: exit %d", code)
 	home := w.h.Layout.CodexHome("root-acme")
+	if b, err := os.ReadFile(filepath.Join(home, "config.toml")); err == nil && !strings.Contains(string(b), "hide_agent_reasoning = true") {
+		t.Errorf("the per-root config.toml is not the user's:\n%s", b)
+	}
 	if _, err := os.Stat(filepath.Join(home, "config.toml")); err != nil {
-		t.Fatalf("the per-root Codex home was not seeded: %v", err)
+		var tree []string
+		_ = filepath.WalkDir(filepath.Join(w.h.Layout.Base, "homes"), func(p string, d os.DirEntry, err error) error {
+			if err == nil {
+				rel, _ := filepath.Rel(w.h.Layout.Base, p)
+				tree = append(tree, rel)
+			}
+			return nil
+		})
+		t.Fatalf("the per-root Codex home was not seeded: %v\nhomes: %q\n%s", err, tree, tail(run.text()))
 	}
 	caps, _ := filepath.Glob(filepath.Join(w.h.Layout.CapsulesDir, "codex", "*", "*.pcap"))
 	if len(caps) == 0 {

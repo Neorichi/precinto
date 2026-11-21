@@ -20,7 +20,9 @@
 // FD to every grandchild; -test-token T marks the process as the test's own
 // (passed on to grandchildren); -max-life D exits with 70 after D (default
 // 2 min); -ignore-term ignores SIGTERM; -burst N sets the burst size;
-// -cooked leaves a terminal stdin in cooked mode.
+// -cooked leaves a terminal stdin in cooked mode; -keylog FILE also appends
+// the key events it reacts to (CTRL-C n, BYE, EOF, INT, TERM) to FILE, one
+// per line, so a test can see them while a lock screen hides the terminal.
 // Every line it prints is synthetic.
 package main
 
@@ -44,6 +46,19 @@ import (
 const exitLifeline = 70
 
 var mu sync.Mutex
+
+// keylog is the -keylog file, nil without the flag.
+var keylog *os.File
+
+// event prints a key event and appends it to the -keylog file.
+func event(format string, args ...any) {
+	say(format, args...)
+	if keylog != nil {
+		mu.Lock()
+		fmt.Fprintf(keylog, format+"\n", args...)
+		mu.Unlock()
+	}
+}
 
 func say(format string, args ...any) {
 	mu.Lock()
@@ -78,6 +93,7 @@ type options struct {
 	cooked     bool
 	burst      int
 	sleep      bool
+	keylog     string
 }
 
 // inherited wraps descriptor fd once: an *os.File closes its descriptor
@@ -116,6 +132,8 @@ func parse(args []string) options {
 			o.ignoreTerm = true
 		case "-cooked":
 			o.cooked = true
+		case "-keylog":
+			o.keylog = value()
 		case "-burst":
 			if n, err := strconv.Atoi(value()); err == nil {
 				o.burst = n
@@ -154,6 +172,14 @@ func main() {
 		os.Exit(exitLifeline)
 	}
 	time.AfterFunc(o.maxLife, func() { os.Exit(exitLifeline) })
+	if o.keylog != "" {
+		f, err := os.OpenFile(o.keylog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+		if err != nil {
+			say("KEYLOG-ERR")
+			os.Exit(exitLifeline)
+		}
+		keylog = f
+	}
 	isTTY := term.IsTerminal(0)
 	sigc := make(chan os.Signal, 8)
 	signal.Notify(sigc, syscall.SIGWINCH, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT, syscall.SIGCONT)
@@ -168,12 +194,12 @@ func main() {
 					say("TERM-IGNORED")
 					continue
 				}
-				say("TERM")
+				event("TERM")
 				os.Exit(143)
 			case syscall.SIGHUP:
 				os.Exit(129)
 			case syscall.SIGINT:
-				say("INT")
+				event("INT")
 				os.Exit(130)
 			case syscall.SIGCONT:
 				say("CONT")
@@ -242,16 +268,16 @@ func main() {
 					os.Exit(7)
 				case 0x03:
 					ctrlC++
-					say("CTRL-C %d", ctrlC)
+					event("CTRL-C %d", ctrlC)
 					if ctrlC >= 2 {
-						say("BYE")
+						event("BYE")
 						return
 					}
 				}
 			}
 		}
 		if err != nil {
-			say("EOF")
+			event("EOF")
 			return
 		}
 	}
