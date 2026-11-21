@@ -175,6 +175,15 @@ func ensurePrivateDir(path string) error {
 // clearing owner bits would make the next component uncreatable). Existing
 // components, including a symlinked trusted ancestor such as /tmp on
 // darwin, are left untouched.
+//
+// TODO(lead): mkdirPrivate and checkPrivateDir are local adapters for
+// fsx.MkdirPrivate and fsx.CheckPrivateDir, which were scaffold stubs when
+// paths was written (wave 1). Once G1 lands them, ensurePrivateDir should
+// call fsx.MkdirPrivate(path) then fsx.CheckPrivateDir(path), and both
+// adapters go away; keep the behaviour the layout tests pin (umask-proof
+// 0700 for every created component, existing directories never chmod'ed,
+// symlinks, foreign owners and group/other bits refused with fsx.ErrUnsafe,
+// a final re-check pass after every directory exists).
 func mkdirPrivate(path string) error {
 	var missing []string
 	for p := path; ; p = filepath.Dir(p) {

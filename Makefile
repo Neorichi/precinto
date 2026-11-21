@@ -16,7 +16,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN     := bin/precinto
 
-.PHONY: all build build-testing build-linux test test-crash test-e2e vet lint fmt fmt-check arch api-doc api-check clean ci
+.PHONY: all build build-testing build-linux test test-race test-crash test-e2e test-integration crossgroup vet vet-crossgroup lint fmt fmt-check arch api-doc api-check hygiene codex-plugin-check clean ci
 
 all: build
 
@@ -37,6 +37,20 @@ build-linux:
 test:
 	$(GO) test -tags testing ./...
 
+## test-race: unit + integration tests under the race detector
+test-race:
+	$(GO) test -race -tags testing ./...
+
+## crossgroup: tests that need every group's real implementation (build tag
+## crossgroup: test/integration flows, adapters over agenttest); they compile
+## in every worktree and pass once the groups are integrated
+crossgroup:
+	$(GO) test -tags testing,crossgroup ./...
+
+## test-integration: cross-package flows against the testing binary (crossgroup)
+test-integration:
+	$(GO) test -tags testing,crossgroup -count=1 ./test/integration/...
+
 ## test-crash: crash-injection matrix (docs/TESTPLAN.md §4)
 test-crash:
 	$(GO) test -tags testing,failpoints -count=1 ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/...
@@ -52,8 +66,13 @@ vet:
 	GOOS=linux $(GO) vet ./...
 	GOOS=linux $(GO) vet -tags testing,failpoints ./...
 
+## vet-crossgroup: the crossgroup tests compile on darwin and linux
+vet-crossgroup:
+	$(GO) vet -tags testing,crossgroup ./...
+	GOOS=linux $(GO) vet -tags testing,crossgroup ./...
+
 ## lint: formatting, vet, architecture contract, API doc drift, optional linters
-lint: fmt-check vet arch api-check
+lint: fmt-check vet vet-crossgroup arch api-check
 	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; else echo "lint: staticcheck not installed, skipped"; fi
 	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "lint: govulncheck not installed, skipped"; fi
 	@if command -v shellcheck >/dev/null 2>&1; then \
@@ -78,8 +97,18 @@ api-doc:
 api-check:
 	$(GO) run ./internal/archtest/apidoc -check docs/API.md
 
+## hygiene: no testdata/ file holds real paths, emails, tokens or non-fixture
+## UUIDs (testkit.Hygiene, S13; TESTPLAN §10)
+hygiene:
+	$(GO) test -tags testing -count=1 -run 'TestTestdataHygiene' ./test/integration/
+
+## codex-plugin-check: plugins/codex/ is byte-identical to its recorded
+## SHA-256 list (D41; skipped until the list is recorded, D61)
+codex-plugin-check:
+	$(GO) test -tags testing -count=1 -run 'TestCodexPluginByteStable' ./test/integration/
+
 clean:
 	rm -rf bin
 
-## ci: everything CI runs
-ci: lint build build-linux test
+## ci: everything CI runs on every change (E2E never runs by default)
+ci: lint build build-linux build-testing test hygiene codex-plugin-check

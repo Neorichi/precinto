@@ -1,0 +1,93 @@
+{
+  "v": 1,
+  "vault": {
+    "initialized": true,
+    "factors": [
+      "se"
+    ],
+    "recovery_tested": false
+  },
+  "agent": {
+    "running": true,
+    "pid": 321,
+    "version": "0.2.0-test",
+    "started": "2026-11-21T09:00:00Z",
+    "screen_watch": true,
+    "service": "not-installed"
+  },
+  "folders": [
+    {
+      "id": "root-acme",
+      "path": "/FAKEHOME/home/work/acme",
+      "state": "unlocked",
+      "since": "2026-11-21T09:00:00Z",
+      "idle_deadline": "2026-11-21T09:15:00Z",
+      "abs_deadline": "2026-11-21T17:00:00Z",
+      "sessions": {
+        "running": 1,
+        "working": 0,
+        "paused": 0,
+        "restored": 1,
+        "sealed": 1,
+        "ungated": 1
+      },
+      "unencrypted": {
+        "files": 3,
+        "bytes": 4200,
+        "by_reason": {
+          "notes": 1,
+          "running": 2
+        }
+      },
+      "harnesses": [
+        "claude-code",
+        "codex"
+      ],
+      "md": "ledger",
+      "on_enter": "prompt",
+      "ungated": [
+        {
+          "harness": "codex",
+          "pid": 77
+        }
+      ]
+    }
+  ],
+  "harnesses": [
+    {
+      "id": "claude-code",
+      "enabled": true,
+      "hooks": "ok",
+      "sessions": 1,
+      "wrapper_installed": false,
+      "seen_at": "2026-11-21T09:00:00Z"
+    },
+    {
+      "id": "codex",
+      "enabled": true,
+      "hooks": "not-seen",
+      "sessions": 1,
+      "wrapper_installed": false
+    }
+  ],
+  "attention": [
+    {
+      "code": "conflict",
+      "folder": "~/work/acme",
+      "count": 1,
+      "fix": "precinto resolve FILE"
+    },
+    {
+      "code": "recovery-tested",
+      "detail": "recovery key: never tested",
+      "fix": "precinto recover --verify"
+    },
+    {
+      "code": "ungated-session",
+      "folder": "~/work/acme",
+      "pid": 77,
+      "detail": "precinto: codex (pid 77) runs in ~/work/acme without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run codex",
+      "fix": "precinto run codex"
+    }
+  ]
+}

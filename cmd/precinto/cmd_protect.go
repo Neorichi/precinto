@@ -1,0 +1,720 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"math"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/precinto/precinto/internal/capsule"
+	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/sweep"
+	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
+)
+
+// markerExclude is the line protect adds to .git/info/exclude (SPEC §8.4).
+const markerExclude = "*.md.precinto"
+
+// Bounds of the repository search below a folder at protect time.
+const (
+	gitSearchDepth   = 4
+	gitSearchEntries = 20000
+)
+
+func cmdProtect(a *app, args []string) int {
+	f := newFlags("protect")
+	md := f.String("md", "", "Markdown policy: ledger (notes agents wrote, default), all or off")
+	onEnter := f.String("on-enter", "", "when a shell enters the folder: prompt, notify or off (default: the policy)")
+	harnessList := f.String("harness", "", "comma-separated harnesses to manage here (default: claude-code,codex)")
+	claudeSettings := f.Bool("claude-settings", false, "also write precinto's Claude settings to DIR/.claude/settings.local.json")
+	pos, err := f.parse(args)
+	if code, ok := a.handleParse(f, err); !ok {
+		return code
+	}
+	if len(pos) != 1 {
+		return a.usageFail(f, "protect needs exactly one folder")
+	}
+	if err := oneOfFlag("md", *md, config.MDLedger, config.MDAll, config.MDOff); err != nil {
+		return a.usageFail(f, err.Error())
+	}
+	if err := oneOfFlag("on-enter", *onEnter, config.OnEnterPrompt, config.OnEnterNotify, config.OnEnterOff); err != nil {
+		return a.usageFail(f, err.Error())
+	}
+	dir, err := a.resolveDir(pos[0])
+	if err != nil {
+		return a.fail("protect", err)
+	}
+	cfg, err := a.config()
+	if err != nil {
+		return a.fail("protect", err)
+	}
+	l, err := a.layout()
+	if err != nil {
+		return a.fail("protect", err)
+	}
+	disp := a.display(dir)
+	if dir == "/" || paths.Within(dir, l.Base) || paths.Within(l.Base, dir) || paths.Within(dir, l.RunDir) || paths.Within(l.RunDir, dir) {
+		a.say(textOwnData, disp)
+		return exitError
+	}
+	for _, h := range a.harnessHomes(cfg) {
+		if paths.Within(h, dir) {
+			a.say(textHarnessData, disp)
+			return exitError
+		}
+	}
+	harnesses, err := a.protectHarnesses(cfg, *harnessList)
+	if err != nil {
+		return a.usageFail(f, err.Error())
+	}
+	vs, err := a.vaults()
+	if err != nil {
+		return a.fail("protect", err)
+	}
+	if done, err := vs.Initialized(); err != nil {
+		return a.fail("protect", err)
+	} else if !done {
+		a.say(textNotInitialized)
+		return exitError
+	}
+	ctx := context.Background()
+	var t terminal
+	if a.sys.interactive() {
+		if tt, err := a.sys.openTTY(); err == nil {
+			t = tt
+			defer t.Close()
+		}
+	}
+
+	root, existing := rootByPath(cfg, dir)
+	if existing {
+		// A protected folder whose vault was never created (an earlier
+		// protect failed at vault_create) gets it now.
+		if _, err := vs.Meta(root.ID); err == nil {
+			a.say(textAlreadyProt, disp)
+			return exitOK
+		} else if !errors.Is(err, vault.ErrNotFound) {
+			return a.fail("protect", err)
+		}
+	} else {
+		if over := cfg.Overlapping(dir); len(over) > 0 {
+			a.say(textOverlap, disp, a.display(over[0].Path))
+			if t == nil {
+				return exitError
+			}
+			ok, err := t.YesNo(textOverlapAsk, false)
+			if err != nil || !ok {
+				a.say(textNotConfirmed)
+				return exitLocked
+			}
+		}
+		if slices.Contains(harnesses, string(harness.Codex)) && t != nil {
+			ok, err := t.YesNo(ui.Format(ui.MsgCodexConsent, ui.Vars{Folder: disp}), true)
+			if err == nil && !ok {
+				harnesses = slices.DeleteFunc(harnesses, func(h string) bool { return h == string(harness.Codex) })
+			}
+		}
+		root = config.Root{
+			ID:             config.NewRootID(),
+			Path:           dir,
+			MD:             *md,
+			OnEnter:        *onEnter,
+			Harnesses:      harnesses,
+			ClaudeSettings: *claudeSettings,
+			ProtectedAt:    a.now().UTC(),
+		}
+		if root.MD == "" {
+			root.MD = config.MDLedger
+		}
+		next := cfg
+		next.Roots = append(append([]config.Root(nil), cfg.Roots...), root)
+		next.Harness = cloneHarness(cfg.Harness)
+		if slices.Contains(harnesses, string(harness.ClaudeCode)) {
+			if h, ok := a.claudeHomeFromEnv(); ok {
+				addHome(next.Harness, string(harness.ClaudeCode), h)
+			}
+		}
+		// The folder is listed (config.toml and roots.list, which the
+		// shim reads) before its vault exists: from now on hooks fail
+		// closed there (I5).
+		if err := a.saveConfig(next); err != nil {
+			return a.fail("protect", err)
+		}
+		cfg = next
+	}
+
+	var relay ipc.UIHandler = headlessUI{w: a.err}
+	if t != nil {
+		relay = t
+	}
+	c, err := a.dial(ctx, true)
+	if err == nil {
+		err = c.VaultCreate(ctx, ipc.VaultCreateReq{RootID: root.ID, RootPath: root.Path}, relay)
+		c.Close()
+	}
+	if err != nil {
+		code := a.fail("protect", err)
+		a.say(textVaultRetry, disp, disp)
+		return code
+	}
+
+	if root.ClaudeSettings {
+		if p, err := a.writeClaudeSettings(ctx, cfg, root); err != nil {
+			a.say("protect: %s", oneLineText(err.Error()))
+		} else {
+			a.say(textSettingsDone, a.display(p))
+		}
+	}
+	a.offerGitExclude(t, root)
+	if top, ok := gitTop(root.Path); ok && top != root.Path && !paths.Within(root.Path, top) {
+		a.say(textRepoOutside, disp, a.display(top))
+	}
+	// Seal what is already there (keyless; the new vault stays unlocked, so
+	// a sweep leaves the folder's units alone until it locks).
+	if eng, err := a.engine(ctx, false); err == nil {
+		_, _ = eng.Sweep(ctx, sweep.Options{Scope: harness.Scope{RootIDs: []string{root.ID}}, Reason: "manual", Quiet: true})
+	}
+	a.say(textProtected, disp, disp)
+	return exitOK
+}
+
+// rootByPath returns the root whose path is exactly dir.
+func rootByPath(cfg config.Config, dir string) (config.Root, bool) {
+	for _, r := range cfg.Roots {
+		if r.Path == dir {
+			return r, true
+		}
+	}
+	return config.Root{}, false
+}
+
+// protectHarnesses parses --harness (default: the enabled built-ins).
+func (a *app) protectHarnesses(cfg config.Config, list string) ([]string, error) {
+	if list == "" {
+		var out []string
+		for _, h := range []string{string(harness.ClaudeCode), string(harness.Codex)} {
+			if cfg.Harness[h].Enabled {
+				out = append(out, h)
+			}
+		}
+		return out, nil
+	}
+	var out []string
+	for _, h := range strings.Split(list, ",") {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if _, known := cfg.Harness[h]; !known && h != string(harness.ClaudeCode) && h != string(harness.Codex) {
+			return nil, usageErrorf("unknown harness %q (known: %s)", h, strings.Join(knownHarnesses(cfg), ", "))
+		}
+		if !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	if len(out) == 0 {
+		return nil, usageErrorf("--harness needs at least one harness")
+	}
+	return out, nil
+}
+
+func knownHarnesses(cfg config.Config) []string {
+	set := map[string]bool{string(harness.ClaudeCode): true, string(harness.Codex): true}
+	for h := range cfg.Harness {
+		set[h] = true
+	}
+	var out []string
+	for h := range set {
+		out = append(out, h)
+	}
+	return sortedStrings(out)
+}
+
+func cloneHarness(m map[string]config.Harness) map[string]config.Harness {
+	out := make(map[string]config.Harness, len(m))
+	for k, v := range m {
+		v.Homes = append([]config.Home(nil), v.Homes...)
+		out[k] = v
+	}
+	return out
+}
+
+// addHome registers h for harness id (deduplicated by directory; a home
+// seen again refreshes SeenAt). Adding a home strengthens protection (D48).
+func addHome(m map[string]config.Harness, id string, h config.Home) {
+	hc := m[id]
+	for i, old := range hc.Homes {
+		if old.Dir == h.Dir {
+			if h.Tmp != "" {
+				old.Tmp = h.Tmp
+			}
+			if h.Cache != "" {
+				old.Cache = h.Cache
+			}
+			old.SeenAt = h.SeenAt
+			hc.Homes[i] = old
+			m[id] = hc
+			return
+		}
+	}
+	hc.Homes = append(hc.Homes, h)
+	m[id] = hc
+}
+
+// claudeHomeFromEnv resolves the Claude home of this environment (SPEC
+// §7.0): CLAUDE_CONFIG_DIR or ~/.claude, its tmp dir (CLAUDE_CODE_TMPDIR or
+// /private/tmp/claude-<uid>) and its cache, realpath'd once. A home that
+// does not exist yet is not registered.
+func (a *app) claudeHomeFromEnv() (config.Home, bool) {
+	home := a.home()
+	dir := a.env.Get(paths.EnvClaudeConfigDir)
+	def := dir == ""
+	if def {
+		if home == "" {
+			return config.Home{}, false
+		}
+		dir = filepath.Join(home, ".claude")
+	}
+	if !filepath.IsAbs(dir) {
+		return config.Home{}, false
+	}
+	real, err := a.sys.realpath(filepath.Clean(dir))
+	if err != nil {
+		return config.Home{}, false
+	}
+	h := config.Home{Dir: real, SeenAt: a.now().UTC(), Default: def}
+	tmp := a.env.Get(paths.EnvClaudeTmpDir)
+	if !filepath.IsAbs(tmp) {
+		tmp = "/tmp/claude-" + strconv.Itoa(a.sys.uid())
+		if a.sys.goos == "darwin" {
+			tmp = "/private" + tmp
+		}
+	}
+	if r, err := a.sys.realpath(filepath.Clean(tmp)); err == nil {
+		h.Tmp = r
+	}
+	var cache string
+	if a.sys.goos == "darwin" {
+		if home != "" {
+			cache = filepath.Join(home, "Library", "Caches", "claude-cli-nodejs")
+		}
+	} else if x := a.env.Get("XDG_CACHE_HOME"); filepath.IsAbs(x) {
+		cache = filepath.Join(filepath.Clean(x), "claude-cli-nodejs")
+	} else if home != "" {
+		cache = filepath.Join(home, ".cache", "claude-cli-nodejs")
+	}
+	if cache != "" {
+		if r, err := a.sys.realpath(cache); err == nil {
+			h.Cache = r
+		}
+	}
+	return h, true
+}
+
+// writeClaudeSettings merges precinto's Claude settings (D32:
+// idleCompaction, awaySummaryEnabled and precomputeCompactionEnabled off)
+// into DIR/.claude/settings.local.json, keeping every other key.
+func (a *app) writeClaudeSettings(ctx context.Context, cfg config.Config, r config.Root) (string, error) {
+	eng, err := a.engine(ctx, false)
+	if err != nil {
+		return "", err
+	}
+	var want map[string]any
+	if err := json.Unmarshal([]byte(eng.ClaudeSettingsJSON(cfg.Policy)), &want); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(r.Path, ".claude")
+	if st, err := fsx.Lstat(dir); err == nil {
+		if !st.IsDir() {
+			return "", fmt.Errorf("%w: %s is not a directory", fsx.ErrUnsafe, a.display(dir))
+		}
+	} else if errors.Is(err, fs.ErrNotExist) {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return "", err
+		}
+	} else {
+		return "", err
+	}
+	p := filepath.Join(dir, "settings.local.json")
+	cur := map[string]any{}
+	if fh, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0); err == nil {
+		b, rerr := readBounded(fh, 1<<20)
+		fh.Close()
+		if rerr != nil {
+			return "", rerr
+		}
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &cur); err != nil {
+				return "", fmt.Errorf("%s is not a JSON object; left unchanged", a.display(p))
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	for k, v := range want {
+		cur[k] = v
+	}
+	b, err := json.MarshalIndent(cur, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return p, fsx.WriteFileAtomic(p, append(b, '\n'), 0o600)
+}
+
+// offerGitExclude offers (consent, default yes) to add *.md.precinto to
+// .git/info/exclude of every repository in the folder and of the
+// repository containing it: local and never committed, the only repository
+// file precinto writes besides markers and --claude-settings (SPEC §8.4).
+// Without a terminal nothing is written.
+func (a *app) offerGitExclude(t terminal, r config.Root) {
+	if t == nil {
+		return
+	}
+	repos := gitDirsUnder(r.Path)
+	if top, ok := gitTop(r.Path); ok {
+		if gd := filepath.Join(top, ".git"); !slices.Contains(repos, gd) {
+			repos = append(repos, gd)
+		}
+	}
+	var todo []string
+	for _, gd := range repos {
+		if !excludeHas(filepath.Join(gd, "info", "exclude"), markerExclude) {
+			todo = append(todo, gd)
+		}
+	}
+	if len(todo) == 0 {
+		return
+	}
+	ok, err := t.YesNo(fmt.Sprintf(textGitExcludeAsk, len(todo), a.display(r.Path)), true)
+	if err != nil || !ok {
+		return
+	}
+	for _, gd := range todo {
+		if err := appendExclude(gd, markerExclude); err != nil {
+			a.say("protect: %s: %s", a.display(gd), oneLineText(err.Error()))
+		}
+	}
+}
+
+// gitDirsUnder lists .git directories (not worktree files) below dir,
+// bounded in depth and entries, skipping dependency and hidden folders.
+func gitDirsUnder(dir string) []string {
+	var out []string
+	seen := 0
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		seen++
+		if seen > gitSearchEntries {
+			return fs.SkipAll
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		if rel != "." && strings.Count(rel, string(filepath.Separator)) >= gitSearchDepth {
+			return fs.SkipDir
+		}
+		name := d.Name()
+		if name == ".git" {
+			out = append(out, p)
+			return fs.SkipDir
+		}
+		if p != dir && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor") {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	return out
+}
+
+// gitTop returns the directory of the repository containing dir (the
+// nearest ancestor with a .git directory or file).
+func gitTop(dir string) (string, bool) {
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d, true
+		}
+		if filepath.Dir(d) == d {
+			return "", false
+		}
+	}
+}
+
+// excludeHas reports whether an exclude file already lists line.
+func excludeHas(path, line string) bool {
+	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer fh.Close()
+	sc := bufio.NewScanner(fh)
+	for sc.Scan() {
+		if strings.TrimSpace(sc.Text()) == line {
+			return true
+		}
+	}
+	return false
+}
+
+// appendExclude appends line to gitDir/info/exclude (never through a
+// symlink).
+func appendExclude(gitDir, line string) error {
+	st, err := fsx.Lstat(gitDir)
+	if err != nil || !st.IsDir() {
+		return fmt.Errorf("%w: not a git directory", fsx.ErrUnsafe)
+	}
+	info := filepath.Join(gitDir, "info")
+	if err := os.Mkdir(info, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	if st, err := fsx.Lstat(info); err != nil || !st.IsDir() {
+		return fmt.Errorf("%w: .git/info is not a directory", fsx.ErrUnsafe)
+	}
+	p := filepath.Join(info, "exclude")
+	fh, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	if st, err := fsx.Fstat(fh); err != nil || !st.IsRegular() {
+		return fmt.Errorf("%w: .git/info/exclude is not a regular file", fsx.ErrUnsafe)
+	}
+	prefix := ""
+	if st, err := fh.Stat(); err == nil && st.Size() > 0 && !endsWithNewline(p) {
+		prefix = "\n"
+	}
+	_, err = fh.WriteString(prefix + line + "\n")
+	return err
+}
+
+func endsWithNewline(p string) bool {
+	fh, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return true
+	}
+	defer fh.Close()
+	st, err := fh.Stat()
+	if err != nil || st.Size() == 0 {
+		return true
+	}
+	b := make([]byte, 1)
+	if _, err := fh.ReadAt(b, st.Size()-1); err != nil {
+		return true
+	}
+	return b[0] == '\n'
+}
+
+func cmdUnprotect(a *app, args []string) int {
+	f := newFlags("unprotect")
+	pos, err := f.parse(args)
+	if code, ok := a.handleParse(f, err); !ok {
+		return code
+	}
+	if len(pos) != 1 {
+		return a.usageFail(f, "unprotect needs exactly one protected folder")
+	}
+	cfg, err := a.config()
+	if err != nil {
+		return a.fail("unprotect", err)
+	}
+	dir := mustAbs(a, pos[0])
+	if real, err := a.sys.realpath(dir); err == nil {
+		dir = real
+	}
+	root, ok := rootByPath(cfg, dir)
+	if !ok {
+		return a.fail("unprotect", notProtectedError{dir: a.display(dir)})
+	}
+	disp := a.display(root.Path)
+	// D59: typed confirmation on a TTY; refused in agent contexts and
+	// without a controlling terminal (SEC-28).
+	if err := a.refuseAgent(refusal{action: "stop protecting", folder: disp, command: "unprotect " + disp}); err != nil {
+		return exitLocked
+	}
+	t, err := a.needTerminal("unprotect")
+	if err != nil {
+		return exitLocked
+	}
+	defer t.Close()
+	if err := a.sys.harden(); err != nil {
+		return a.fail("unprotect", err)
+	}
+	ctx := context.Background()
+	eng, err := a.engine(ctx, false)
+	if err != nil {
+		return a.fail("unprotect", err)
+	}
+	units, err := eng.List(ctx, sweep.ListOptions{RootIDs: []string{root.ID}})
+	if err != nil {
+		return a.fail("unprotect", err)
+	}
+	a.say(textUnprotectList, disp, len(units))
+	for _, u := range units {
+		a.say(textUnprotectUnit, u.Unit, u.Kind, len(u.Gens))
+	}
+	if err := a.typedConfirm(t, fmt.Sprintf(textUnprotectWhat, disp), wordUnprotect); err != nil {
+		return exitLocked
+	}
+	if err := a.ensureUnlocked(ctx, []config.Root{root}, t); err != nil {
+		return a.fail("unprotect", err)
+	}
+	// Restore everything first; on any failure protection is kept and
+	// nothing is deleted (never delete, keep protection: fail closed).
+	if len(units) > 0 {
+		keys := a.keys()
+		defer keys.close()
+		abort, stop := a.watchLocks(ctx, []string{root.ID}, keys.destroy)
+		defer stop()
+		rep, err := a.restoreAll(ctx, eng, keys, root, abort)
+		if err != nil {
+			a.say(textUnprotectKept, disp, oneLineText(err.Error()))
+			return exitForRestore(err)
+		}
+		a.printRestore(rep)
+	}
+	next := cfg
+	next.Roots = slices.DeleteFunc(append([]config.Root(nil), cfg.Roots...), func(r config.Root) bool { return r.ID == root.ID })
+	if err := a.saveConfig(next); err != nil {
+		return a.fail("unprotect", err)
+	}
+	// Removing a folder weakens protection: the daemon keeps it until the
+	// change is confirmed in a terminal (D48). Every pending change is
+	// listed and confirmed explicitly: the typed "unprotect" covered only
+	// this folder, not other edits an agent may have made.
+	a.confirmPolicy(ctx, t)
+	a.say(textUnprotectDone, disp)
+	return exitOK
+}
+
+// restoreAll restores every sealed unit of a folder: sessions, project,
+// plans, the Codex home, notes and history (unprotect, restore --all).
+func (a *app) restoreAll(ctx context.Context, eng engine, keys sweep.KeySource, root config.Root, abort <-chan struct{}) (*sweep.Report, error) {
+	sel := []harness.Selector{
+		{Kind: capsule.KindClaudeSession, RootID: root.ID},
+		{Kind: capsule.KindClaudeProject, RootID: root.ID},
+		{Kind: capsule.KindClaudePlan, RootID: root.ID},
+		{Kind: capsule.KindCodexHome, RootID: root.ID},
+	}
+	total := &sweep.Report{}
+	rep, err := eng.Restore(ctx, keys, sweep.RestoreRequest{Select: sel, Budget: math.MaxInt64, Purpose: ipc.PurposeRestoreAll, StopOnErr: true, Abort: abort})
+	mergeReport(total, rep)
+	if err != nil {
+		return total, err
+	}
+	rep, err = eng.RestoreMarkdown(ctx, keys, root)
+	mergeReport(total, rep)
+	if err != nil {
+		return total, err
+	}
+	rep, err = eng.MergeHistory(ctx, keys, root.ID)
+	mergeReport(total, rep)
+	return total, err
+}
+
+// ensureUnlocked unlocks the folders that are locked, in this terminal
+// (wrapper.Backend.EnsureUnlocked and unprotect).
+func (a *app) ensureUnlocked(ctx context.Context, roots []config.Root, relay ipc.UIHandler) error {
+	if len(roots) == 0 {
+		return nil
+	}
+	c, err := a.dial(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	st, err := c.Status(ctx)
+	if err != nil {
+		return err
+	}
+	open := unlockedVaults(st)
+	var locked []string
+	var first string
+	for _, r := range roots {
+		if !open[r.ID] {
+			locked = append(locked, r.ID)
+			if first == "" {
+				first = a.display(r.Path)
+			}
+		}
+	}
+	if len(locked) == 0 {
+		return nil
+	}
+	tty := relay != nil
+	if _, headless := relay.(headlessUI); headless || relay == nil {
+		tty = false
+	}
+	confirmed := len(locked) == 1
+	if !confirmed {
+		// D40: several folders are confirmed by typing "unlock".
+		if !tty {
+			return refusedError{reason: "several folders need a terminal"}
+		}
+		ok, err := relay.Confirm(ui.Format(ui.MsgUnlockConfirmAll, ui.Vars{N: len(locked), Folder: first}), wordUnlock, "")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			a.say(textNotConfirmed)
+			return refusedError{reason: "not confirmed"}
+		}
+		confirmed = true
+	}
+	if relay == nil {
+		relay = headlessUI{w: a.err}
+	}
+	_, err = c.Unlock(ctx, ipc.UnlockReq{RootIDs: locked, TTY: tty, Confirmed: confirmed, Deadline: a.now().Add(3 * time.Minute)}, relay)
+	return err
+}
+
+// confirmPolicy lists the weakening changes waiting for confirmation (D48)
+// and confirms them only after an explicit yes on the terminal.
+func (a *app) confirmPolicy(ctx context.Context, t terminal) {
+	if t == nil {
+		return
+	}
+	c, err := a.dial(ctx, false)
+	if err != nil {
+		return
+	}
+	defer c.Close()
+	p, err := c.Policy(ctx, ipc.PolicyReq{})
+	if err != nil || len(p.Pending) == 0 {
+		return
+	}
+	a.showPending(p.Pending)
+	ok, err := t.YesNo(textPolicyConfirm, false)
+	if err != nil || !ok {
+		return
+	}
+	_, _ = c.Policy(ctx, ipc.PolicyReq{Confirm: true})
+}
+
+// showPending prints C13.policy and the pending changes.
+func (a *app) showPending(pending []string) {
+	a.line(ui.MsgPolicyPending, ui.Vars{N: len(pending)})
+	for _, ch := range pending {
+		a.say(textPolicyLine, oneLineText(ch))
+	}
+}

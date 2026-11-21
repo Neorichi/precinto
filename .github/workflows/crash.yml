@@ -1,0 +1,46 @@
+# Crash-injection matrix (docs/TESTPLAN.md §4, `make test-crash`): nightly,
+# on demand, and on changes under internal/{fsx,capsule,sweep,live}
+# (TESTPLAN §10). Owner: G7.
+name: crash
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "internal/fsx/**"
+      - "internal/capsule/**"
+      - "internal/sweep/**"
+      - "internal/live/**"
+  pull_request:
+    paths:
+      - "internal/fsx/**"
+      - "internal/capsule/**"
+      - "internal/sweep/**"
+      - "internal/live/**"
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: auto
+  GOFLAGS: -mod=readonly
+
+jobs:
+  crash:
+    name: crash matrix (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test-crash

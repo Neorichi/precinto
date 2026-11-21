@@ -1,0 +1,126 @@
+# CI gates of docs/TESTPLAN.md §10 on darwin and linux. Owner: G7.
+#
+# E2E never runs here: the opt-in flows (PRECINTO_E2E=1, `make test-e2e`)
+# need a real, logged-in Claude Code and run only on a developer machine.
+# No job sets PRECINTO_E2E, and no job has secrets.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: auto
+  GOFLAGS: -mod=readonly
+
+jobs:
+  lint:
+    name: lint (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
+      - name: Install staticcheck and govulncheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Install shellcheck
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+      # gofmt, go vet for {default, testing+failpoints, testing+crossgroup}
+      # × {darwin, linux}, internal/archtest, apidoc -check, staticcheck,
+      # govulncheck, shellcheck of the shims.
+      - run: make lint
+
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build build-testing build-linux
+      - name: CGO-free build
+        run: CGO_ENABLED=0 go build ./...
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Unit and package-integration tests (-tags testing), including
+      # test/integration against the testing binary in throwaway homes.
+      - run: make test
+      - name: Race detector
+        run: make test-race
+        env:
+          CGO_ENABLED: "1"
+      # testkit.Hygiene over every testdata/ (no real paths, emails,
+      # tokens or non-fixture UUIDs, S13).
+      - run: make hygiene
+      # plugins/codex/ matches its recorded SHA-256 list (D41).
+      - run: make codex-plugin-check
+
+  crossgroup:
+    name: crossgroup (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Flows across every group: init, protect, status, run with a fake
+      # harness, lock, unlock, restore; SEC-12 against a production build.
+      - run: make crossgroup
+
+  plugin:
+    name: plugin validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `claude plugin validate --strict ./plugin` when claude is available
+      # on the runner (it is not installed by CI: no network login, no
+      # secrets); the hooks files are also covered by G5's golden tests.
+      - name: claude plugin validate
+        run: |
+          if [ ! -d plugin ]; then echo "plugin/ not present yet"; exit 0; fi
+          if command -v claude >/dev/null 2>&1; then
+            claude plugin validate --strict ./plugin
+          else
+            echo "claude not available on this runner: skipped"
+          fi
