@@ -55,6 +55,11 @@ const (
 	textStillPlain      = "%d unit(s) are still unencrypted (in use). See: precinto status"
 	textSealed          = "sealed %d unit(s) (%d files, %s)."
 	textSealSkipped     = "%d unit(s) are still in use and stay unencrypted for now; precinto seals them when they are quiet."
+	textSealHeldLine    = "  %s (%d): %s" // under textSealSkipped, printed without the "precinto: " prefix
+	textRemoveFailed    = "%d unit(s) were sealed, but some of their files could not be removed and stay unencrypted; the next sweep removes them. See: precinto status"
+	textSealAdopted     = "%d session(s) from before the folder was protected, or run without precinto's hooks, stay unencrypted. Seal them with: precinto seal --adopt"
+	textSealNoSpace     = "not enough free space to seal %d unit(s): they need %s, and precinto keeps min_free (%s) free on the disk. Free some space, then seal again: precinto seal"
+	textQuietWait       = "waiting %s for the files to stop changing…"
 	textSealNone        = "nothing to seal."
 	textQueued          = "queued the session for sealing."
 	textRestored        = "restored %d unit(s) (%d files, %s)."

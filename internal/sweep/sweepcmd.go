@@ -32,6 +32,7 @@ func Sweep(ctx context.Context, e Env, o Options) (*Report, error) {
 }
 
 func (r *run) sweep(ctx context.Context, o Options) (*Report, error) {
+	r.onQuiet = o.OnQuietWait
 	lk, err := r.sweepLock(ctx, o)
 	if err != nil {
 		return r.finish(), err
@@ -292,6 +293,7 @@ func DrainQueue(ctx context.Context, e Env, o Options) (*Report, error) {
 // units at a time, each with at most Env.Parallel seals and large units
 // alone (R19, CONC-1).
 func (r *run) drainCommand(ctx context.Context, o Options) (*Report, error) {
+	r.onQuiet = o.OnQuietWait
 	if err := ctx.Err(); err != nil {
 		return r.finish(), err
 	}

@@ -823,14 +823,29 @@ func (r *run) quarantinedUnits() map[string]bool {
 	return out
 }
 
+// Plaintext reasons of PlaintextSummary and List besides the evidence ones.
+const (
+	// reasonAdopted: a session found only by its transcripts' cwd (S6)
+	// that sweeps leave alone (md = "ledger"): only seal --adopt seals it
+	// (D113).
+	reasonAdopted = "adopted"
+	// reasonDiskFull: sealing the unit now would leave less than
+	// policy.min_free on the capsule volume (SPEC §17, D111).
+	reasonDiskFull = "disk_full"
+)
+
 // plaintextReason classifies a unit's plaintext for status and ls from
 // what is on disk now, without new state (SPEC §9.5, §16.4, D63): one look
 // only, so evidence the next sweep's quiet wait resolves (a first
 // observation, a restore within the window) is "deferred", while weak
 // evidence that never resolves by waiting holds a unit of a locked folder
-// "hold-capped". A locked folder's unit whose plaintext still matches a
-// committed receipt is "remove-failed" (the seal committed, the unlink was
-// refused); EACCES/EPERM met while summarizing is "inaccessible".
+// "hold-capped". A locked folder's unit whose plaintext still matches the
+// receipt a committed seal kept is "remove-failed" (the seal committed,
+// the unlink was refused); plaintext equal to a restore's receipt waits
+// for the next sweep of its locked folder, "deferred" (D110). A session
+// sweeps never seal because it was only adopted is "adopted"; a unit that
+// does not fit above policy.min_free now is "disk_full" (D111, D113);
+// EACCES/EPERM met while summarizing is "inaccessible".
 func (r *run) plaintextReason(ctx context.Context, ad harness.Adapter, u harness.Unit, unlocked map[string]bool) string {
 	if r.inaccessibleUnit(u) {
 		return "inaccessible"
@@ -858,10 +873,22 @@ func (r *run) plaintextReason(ctx context.Context, ad harness.Adapter, u harness
 	switch {
 	case hasRc && !locked:
 		return "restored"
-	case hasRc && r.removeFailed(u, rd):
+	case hasRc && rd.Kept && r.removeFailed(u, rd):
 		return "remove-failed"
+	case !hasRc && u.Adopted && !r.adoptByPolicy(u) && !r.managed(u.Key):
+		return reasonAdopted
+	case r.noRoomFor(u):
+		return reasonDiskFull
 	}
 	return "deferred"
+}
+
+// noRoomFor reports whether sealing u now would go below the free-space
+// floor (the check every seal makes first, SPEC §17); an error of any
+// other kind is not a full disk.
+func (r *run) noRoomFor(u harness.Unit) bool {
+	err := r.p.fs.CheckSpace(r.l.CapsulesDir, unitBytes(u), r.e.Floor)
+	return err != nil && (errors.Is(err, fsx.ErrNoSpace) || classOf(err) == fsx.ClassNoSpace)
 }
 
 // inaccessibleUnit reports a unit whose scan met EACCES/EPERM, or whose

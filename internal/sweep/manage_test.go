@@ -489,9 +489,11 @@ func TestSweepAsksForAdoptedSessions(t *testing.T) {
 // from one look, without new state: strong evidence is running; weak
 // evidence the quiet wait never resolves holds a locked folder's unit
 // hold-capped; a first observation only is deferred (the next sweep waits
-// for it); a restored unit of an unlocked folder is restored; a locked
-// folder's plaintext still matching its committed receipt is
-// remove-failed; an unreadable scan entry is inaccessible.
+// for it); a restored unit of an unlocked folder is restored, of a locked
+// one deferred (D110); a locked folder's plaintext still matching the
+// receipt its committed seal kept is remove-failed; an adopted session is
+// adopted and a unit below the free-space floor disk_full (D111, D113); an
+// unreadable scan entry is inaccessible.
 func TestPlaintextReasons(t *testing.T) {
 	t.Parallel()
 	reasonOf := func(t *testing.T, te *testEnv, key string) string {
@@ -568,6 +570,32 @@ func TestPlaintextReasons(t *testing.T) {
 			if res := outcome(t, rep, u.Key); res.Outcome != OutRemoveFailed {
 				t.Fatalf("seal %+v", res)
 			}
+			return u.Key
+		}},
+		// UX-10, D110: a restore's plaintext in a folder locked since
+		// (its session kept it leased past the lock's sweep) waits for
+		// the next sweep; it is not an unlink that failed.
+		{"restored in a locked folder", "deferred", func(t *testing.T, te *testEnv) string {
+			u, _ := te.sealedSession(sid1, nil)
+			te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+			return u.Key
+		}},
+		// UX-11, D111: below the free-space floor now.
+		{"disk full", reasonDiskFull, func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			te.fs.mu.Lock()
+			te.fs.free = 1 << 10
+			te.fs.mu.Unlock()
+			return te.sessionKey(sid1)
+		}},
+		// UX-17, D113: a session found only by its transcripts' cwd, which
+		// sweeps leave to seal --adopt.
+		{"adopted", reasonAdopted, func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			u := te.scanSession(sid1)
+			u.Adopted = true
+			te.claude.sids = nil
+			te.claude.extra = []harness.Unit{u}
 			return u.Key
 		}},
 		{"inaccessible", "inaccessible", func(t *testing.T, te *testEnv) string {

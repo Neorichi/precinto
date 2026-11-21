@@ -66,7 +66,7 @@ Every "implemented directly" row is a compile-time assertion in `cmd/precinto/se
 | `ipc.CodeLocked`, `CodeUnauthorized`, `CodeAgentContext`, `CodeCancelled`, `CodeNoUI`, `CodeRateLimited`, `CodeBadSecret`; `sweep.ErrKeyDenied`; `vault.ErrCancelled`, `vault.ErrBadSecret`, `vault.ErrNoUI`, `vault.ErrLocked`, `vault.ErrNeedRecovery`; `ui.ErrCancelled`; `platform.ErrRoot` | 3 |
 | `sweep.ErrLive`, `capsule.ErrChanged`, `sweep.ErrConflict` (codex launch) | 4 |
 | `capsule.ErrVerify`, `capsule.ErrHeader`, `capsule.ErrRecipients`, `capsule.ErrFormat`, `capsule.ErrUnsafe`, `capsule.ErrTooLarge`, `fsx.ErrUnsafe` from restore/extract, `harness.ErrUnitKey` from restore (unit id does not match its key), `vault.ErrMACMismatch`, `vault.ErrRecipientsChanged` (`sweep.ErrTripwire`), `vault.ErrWrongIdentity`, `vault.ErrPluginPin`, `capslog.ErrNotLogged` (`sweep.ErrNotLogged`: quarantined, no provenance), `ipc.CodeVerify`, `ipc.CodeNotLogged` | 5 |
-| anything else (`ipc.ErrUntrustedServer`, `ipc.ErrNoDaemon`, `sweep.ErrInaccessible`, I/O) | 1 |
+| anything else (`ipc.ErrUntrustedServer`, `ipc.ErrNoDaemon`, `sweep.ErrInaccessible`, `sweep.ErrNoSpace`, `harness.ErrUnregistered` from restore: a capsule of a home config does not register is a configuration gap, never 5 (D109), I/O) | 1 |
 | `sweep.ErrBusy` from `precinto sweep` | 0 (another sweep will rescan) |
 | `wrapper.ExitNotStarted` from `wrapper.Run` (the launch never started) | map the returned error with this table (an executable that cannot run: 127, or 126 when it is not executable); once the child started, `run` returns the child's own code |
 | `precinto doctor` | `doctor.Worst`: 1 when any finding fails, else 0 |
@@ -3464,6 +3464,12 @@ type LaunchPlan struct {
 	// scanning). Adapters always set SIDs when the resume target is known;
 	// the backend adds Procs=[child].
 	SealScope Scope
+	// SessionID is the id of the new session a fresh launch starts, when
+	// the adapter knows it before exec (Claude: the --session-id it passes,
+	// or the user's own, D107); "" otherwise. The backend records it as the
+	// child's (RecordLaunch). It does not narrow SealScope: the seal after
+	// exit still takes every session the child owns.
+	SessionID string
 	// HookCheck says how to verify hook health (UX10): event expected and
 	// within how long after start.
 	HookCheck HookCheck
@@ -4389,6 +4395,11 @@ type Options struct {
 	Lock     bool             // sealing on behalf of a lock (status reason "lock")
 	Dormant  string           // generic inventories: seal this harness once (D33)
 	Deadline time.Time
+	// OnQuietWait, when set, is called once, just before the run's single
+	// quiet-window wait (D63), with the wait's length, so a command run
+	// from a terminal can say why it pauses (D113). It never runs for a
+	// run that does not wait.
+	OnQuietWait func(d time.Duration)
 }
 
 // Outcome of one unit.
@@ -4448,6 +4459,11 @@ type Receipt struct {
 	Gen        uint64        `json:"gen"`
 	RestoredAt time.Time     `json:"restored_at"`
 	Files      []ReceiptFile `json:"files"`
+	// Kept marks a receipt the seal of Gen rewrote for files it left as
+	// plaintext (SPEC §10.3 step 8); a restore's receipt never has it.
+	// Plaintext still equal to a kept receipt is "remove-failed"; equal to
+	// a restore's, it waits for the next sweep of its locked folder (D110).
+	Kept bool `json:"kept,omitempty"`
 }
 
 // LoadReceipt reads the receipt of a unit (ok=false if none).
@@ -4598,7 +4614,7 @@ type UnitInfo struct {
 	RootIDs      []string
 	Gens         []Generation
 	Plaintext    bool   // files currently on disk
-	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict|hold-capped (live only by weak evidence in a locked folder, SPEC §9.5)
+	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict|hold-capped (live only by weak evidence in a locked folder, SPEC §9.5)|adopted (found only by its transcripts' cwd: sweeps leave it to seal --adopt, D113)|disk_full (sealing it now would go below policy.min_free, D111)
 	Bytes        int64
 	LastActivity time.Time
 	Title        string // only when keys were supplied and the caller is authorized
@@ -5026,13 +5042,24 @@ type Backend interface {
 	// loss.
 	Daemon(ctx context.Context) (Daemon, error)
 	// RecordLaunch writes the ledger "launch" event for a launch whose
-	// session id is known before exec (resume targets), carrying the lease
-	// keys and harness homes; a no-op when the sid is not known yet.
+	// session id is known before exec (resume targets, and fresh launches
+	// whose id the plan chose, D107), carrying the lease keys and harness
+	// homes; a no-op when the sid is not known yet.
 	RecordLaunch(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) error
+	// WatchSessions follows, until ctx ends, which sessions the child runs
+	// (Claude names them in its live-session registry while it runs) and
+	// records each one it has not recorded yet like RecordLaunch, so a
+	// session no hook reported is the child's too and is sealed after exit
+	// (D107). Run calls it for managed launches only, from the start of the
+	// child until it was reaped, and waits for it to return before
+	// SealAfterExit.
+	WatchSessions(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID)
 	// SealAfterExit seals the session's units after the child was reaped
 	// (writer known exited, R20), or queues them if still live.
 	SealAfterExit(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) (SealSummary, error)
 	// HooksSeen reports whether a hook event arrived for the child (UX10).
+	// Run asks it before SealAfterExit: sealing a session moves its ledger,
+	// hooks_seen included, into the capsule (S13, D108).
 	HooksSeen(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) (bool, error)
 }
 
@@ -5196,7 +5223,12 @@ func (s *Scrollback) Wrapped() bool
 // Write appends output, dropping the oldest bytes beyond the bound.
 func (s *Scrollback) Write(b []byte) (int, error)
 
-// SealSummary is the content-free result of seal-after-exit.
+// SealSummary is the content-free result of seal-after-exit. Files and
+// Bytes count what was sealed (or dropped as unchanged) now; the wrapper
+// says "sealed" only when Files > 0 (D108). SID is the session the exit
+// lines name and C5 resumes: the one the child ran last that the seal
+// found files of, else the launch's target; "" when no such session is
+// known (C5 then suggests continuing the folder's latest session, D107).
 type SealSummary struct {
 	SID      string
 	Files    int
@@ -5821,6 +5853,14 @@ func ReasonText(r Reason, d time.Duration) string
 // (escape-sequence injection defence for `precinto cat` to a TTY, S17).
 func SanitizeTerminal(b []byte) []byte
 
+// ShellWord renders the path p as one shell word for a command a message
+// tells the user to run (a fix, C6.none): the ~-shortened form (paths.Tilde
+// of home) when it needs no quoting, else the absolute path in single
+// quotes. Control characters are dropped (a folder name can carry terminal
+// escapes, S17) and newlines and tabs become spaces, so the command stays
+// on its line.
+func ShellWord(home, p string) string
+
 // MsgID identifies a catalog message (SPEC §16.3; text from the UX review).
 type MsgID string
 
@@ -5858,14 +5898,16 @@ const (
 	MsgStartLockedUser    MsgID = "C3.start.user"      // precinto: {folder} is locked. Your first message will ask you to unlock.
 	MsgCodexWrongHome     MsgID = "C3.codexhome"       // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
 	MsgOverlayTitle       MsgID = "C4.title"           // Locked by precinto
-	MsgOverlayLine        MsgID = "C4.line"            // {folder} · locked after {reason}
+	MsgOverlayLine        MsgID = "C4.line"            // {folder} · {reason}
 	MsgOverlayPaused      MsgID = "C4.paused"          // Your session is paused, not closed. It continues where it was.
 	MsgOverlayKeys        MsgID = "C4.keys"            // Enter   unlock ({factor})          Ctrl-D   end session and seal it
 	MsgOverlayKeysPlain   MsgID = "C4.keys.plain"      // Enter   unlock          Ctrl-D   end session and seal it
 	MsgOverlayBusy        MsgID = "C4.busy"            // {harness} is finishing its current step. New messages wait until you unlock.
-	MsgOverlayEnding      MsgID = "C4.ending"          // Ending session... sealed.
-	MsgEnded              MsgID = "C5.ended"           // precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}
+	MsgOverlayEnding      MsgID = "C4.ending"          // Ending session...
+	MsgEnded              MsgID = "C5.ended"           // precinto: locked {folder} ({reason}) and ended {n} session(s). Resume with: {resume}
 	MsgSealedOK           MsgID = "C6.ok"              // precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.
+	MsgSealedLocked       MsgID = "C6.sealed"          // precinto: sealed this session ({sid} · {files} files · {size}).
+	MsgSealNone           MsgID = "C6.none"            // precinto: no file of this session was found to seal. If it saved a conversation, seal it with: {command}
 	MsgSealDeferred       MsgID = "C6.deferred"        // precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).
 	MsgSealFailed         MsgID = "C6.failed"          // precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.
 	MsgResumeOlder        MsgID = "C7.older"           // precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick
@@ -5875,7 +5917,7 @@ const (
 	MsgPurgeForget        MsgID = "C7.purge"           // precinto: claude purge deletes Claude's own copies of these sessions. precinto keeps its sealed copies (precinto forget deletes them). Run claude purge? [y/N]
 	MsgExpiry             MsgID = "C8.expiry"          // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
-	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
+	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks), so its prompts weren't paused while the folder was locked.
 	MsgBareWarning        MsgID = "C9.bare"            // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
 	MsgUngatedSession     MsgID = "C9.ungated"         // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
 	MsgCodexOutside       MsgID = "C9.codexoutside"    // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
@@ -5913,6 +5955,7 @@ const (
 	MsgNotInitialized     MsgID = "E.notinit"          // precinto is not set up yet. Run: precinto init
 	MsgAgentDownAll       MsgID = "E.agentdown"        // the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock
 	MsgNeedTerminal       MsgID = "E.needtty"          // {command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.
+	MsgHomeUnregistered   MsgID = "E.unregistered"     // precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code
 	MsgShimFailed         MsgID = "D.shim"             // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
 )
 

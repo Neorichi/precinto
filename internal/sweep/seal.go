@@ -40,6 +40,7 @@ func Seal(ctx context.Context, e Env, units []harness.Unit, o Options) (*Report,
 
 // sealCommand is Seal: recovery first (SPEC §10.5), then the units.
 func (r *run) sealCommand(ctx context.Context, units []harness.Unit, o Options) (*Report, error) {
+	r.onQuiet = o.OnQuietWait
 	if err := ctx.Err(); err != nil {
 		return r.finish(), err
 	}
@@ -1120,7 +1121,7 @@ func (r *run) rewriteReceipt(unit string, kind capsule.Kind, h string, bases map
 			files = append(files, f)
 		}
 	}
-	rd := receiptDisk{Receipt: Receipt{Unit: unit, Gen: gen, RestoredAt: r.now(), Files: files}, Kind: kind, Harness: h, Bases: map[capsule.BaseID]string{}}
+	rd := receiptDisk{Receipt: Receipt{Unit: unit, Gen: gen, RestoredAt: r.now(), Files: files, Kept: true}, Kind: kind, Harness: h, Bases: map[capsule.BaseID]string{}}
 	if old != nil && !old.RestoredAt.IsZero() {
 		rd.RestoredAt = old.RestoredAt
 	}

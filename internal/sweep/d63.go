@@ -204,7 +204,11 @@ func (r *run) waitQuiet(ctx context.Context, deadline time.Time) bool {
 		return false
 	}
 	r.quietTried = true
+	notify := r.onQuiet
 	r.quietMu.Unlock()
+	if notify != nil {
+		notify(q)
+	}
 	if err := r.p.sleep(ctx, q); err != nil {
 		return false
 	}

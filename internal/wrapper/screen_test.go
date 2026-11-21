@@ -36,7 +36,7 @@ func TestOverlayLinesComeFromTheCatalog(t *testing.T) {
 	lines := strings.Join(wrapper.OverlayLines(o, "", false), "\n")
 	for _, want := range []string{
 		ui.Format(ui.MsgOverlayTitle, ui.Vars{}),
-		"~/work/acme · locked after idle 15 min",
+		"~/work/acme · idle 15 min", // D112: the reason after the folder, under the title
 		ui.Format(ui.MsgOverlayPaused, ui.Vars{}),
 		ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: "Claude Code"}),
 		ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "Mac password"}),

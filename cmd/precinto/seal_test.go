@@ -32,7 +32,8 @@ func TestSealOptions(t *testing.T) {
 	if !o.Adopt || !o.DryRun || o.WaitFor == nil || *o.WaitFor != (platform.ProcID{PID: 123, StartUS: 456}) {
 		t.Fatalf("options %+v", o)
 	}
-	if s := e.eng.sealScope[0]; len(s.SIDs) != 1 || s.SIDs[0] != "sid1" || s.RootIDs[0] != "root-acme" {
+	// D106: --adopt reaches the scope the adapters scan (UX-01).
+	if s := e.eng.sealScope[0]; len(s.SIDs) != 1 || s.SIDs[0] != "sid1" || s.RootIDs[0] != "root-acme" || !s.Adopt {
 		t.Fatalf("scope %+v", s)
 	}
 	if hs := e.eng.sealHarness[0]; len(hs) != 1 || hs[0] != harness.ClaudeCode {

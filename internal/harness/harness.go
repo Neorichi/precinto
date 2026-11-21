@@ -352,6 +352,12 @@ type LaunchPlan struct {
 	// scanning). Adapters always set SIDs when the resume target is known;
 	// the backend adds Procs=[child].
 	SealScope Scope
+	// SessionID is the id of the new session a fresh launch starts, when
+	// the adapter knows it before exec (Claude: the --session-id it passes,
+	// or the user's own, D107); "" otherwise. The backend records it as the
+	// child's (RecordLaunch). It does not narrow SealScope: the seal after
+	// exit still takes every session the child owns.
+	SessionID string
 	// HookCheck says how to verify hook health (UX10): event expected and
 	// within how long after start.
 	HookCheck HookCheck

@@ -231,7 +231,15 @@ func (e *env) lockedPlaintext() []Finding {
 			out = append(out, info(CheckUnsealed, msg+" (sessions still running are sealed when they end)", "precinto lock --end"))
 			continue
 		}
-		out = append(out, warn(CheckUnsealed, msg, "precinto sweep"))
+		fix := "precinto sweep"
+		if r, ok := e.o.Cfg.RootByID(p.RootID); ok && p.ByReason["adopted"] > 0 {
+			// Sweeps never seal sessions found only by their transcripts'
+			// cwd; seal --adopt does (D113, CROSS from group w). Only a
+			// configured folder can be named with --root, as one shell
+			// word.
+			fix = "precinto seal --adopt --root " + e.arg(r.Path)
+		}
+		out = append(out, warn(CheckUnsealed, msg, fix))
 	}
 	return out
 }

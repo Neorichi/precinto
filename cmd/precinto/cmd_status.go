@@ -285,7 +285,14 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 			}
 		}
 		if fo.State != "unlocked" && fo.Unencrypted.Files > 0 {
-			local = append(local, ipc.Attention{Code: ipc.AttnUnsealed, Folder: a.display(r.Path), Count: fo.Unencrypted.Files, Fix: "precinto doctor"})
+			fix := "precinto doctor"
+			if fo.Unencrypted.ByReason["adopted"] > 0 {
+				// Sweeps never seal sessions found only by their
+				// transcripts' cwd; seal --adopt does (D113, CROSS from
+				// group w). The folder is one shell word.
+				fix = "precinto seal --adopt --root " + ui.ShellWord(a.home(), r.Path)
+			}
+			local = append(local, ipc.Attention{Code: ipc.AttnUnsealed, Folder: a.display(r.Path), Count: fo.Unencrypted.Files, Fix: fix})
 		}
 		// D63: plaintext a locked folder keeps only because of weak
 		// liveness evidence (PlaintextSummary reason hold-capped).

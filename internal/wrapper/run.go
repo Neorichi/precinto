@@ -63,6 +63,7 @@ type runner struct {
 	managed     bool
 	rootIDs     []string
 	folder      string
+	adoptCmd    string // C6.none's {command}: seal --adopt of the folder, one shell word
 	sid         string
 	cwd         string
 	harnessName string
@@ -159,6 +160,7 @@ func newRunner(o Options, plan harness.LaunchPlan) *runner {
 	if len(plan.Roots) > 0 {
 		home, _ := paths.UserHome(o.Env)
 		r.folder = paths.Tilde(home, plan.Roots[0].Path)
+		r.adoptCmd = "precinto seal --adopt --root " + ui.ShellWord(home, plan.Roots[0].Path)
 	}
 	if plan.Resume.Kind == harness.ResumeSID {
 		r.sid = plan.Resume.Value
@@ -403,9 +405,19 @@ func (r *runner) launch(parent context.Context) (int, error) {
 		_ = lease.SetChild(r.child)
 	}
 	_ = r.b.RecordLaunch(ctx, r.plan, r.child)
+	// D107: the sessions the child runs are followed while it runs, so
+	// those no hook reports are the child's too when it is sealed.
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
 	if r.managed {
 		r.register(ctx)
 		go r.activityLoop(ctx)
+		go func() {
+			defer close(watchDone)
+			r.b.WatchSessions(watchCtx, r.plan, r.child)
+		}()
+	} else {
+		close(watchDone)
 	}
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	bgDone := make(chan struct{})
@@ -416,6 +428,8 @@ func (r *runner) launch(parent context.Context) (int, error) {
 
 	r.loop(ctx, r.childExited())
 	code, werr := r.waitChild()
+	watchCancel()
+	waitClosed(watchDone, bgStopWait)
 	bgCancel()
 	waitClosed(bgDone, bgStopWait)
 	cancel() // ends the subscription and the activity reports
@@ -757,7 +771,13 @@ func (r *runner) onKey(k byte) {
 	case '\r':
 		r.startUnlock()
 	case 0x04:
-		r.startEnd(r.lockCode) // Ctrl-D: end the session and seal it
+		// Ctrl-D: end the session and seal it. A lock screen shown for a
+		// lost subscription names that reason (C5 renders it, D112).
+		code := r.lockCode
+		if r.lost {
+			code = ui.ReasonAgent
+		}
+		r.startEnd(code)
 	}
 }
 
@@ -872,8 +892,24 @@ func (r *runner) afterExit(parent context.Context, lease Lease, code int) {
 	if lease != nil {
 		_ = lease.Release()
 	}
+	// Hook presence (UX10, SPEC §14.4): asked for every managed launch
+	// whose plan declares a check, so the backend can mark the session
+	// ungated; only Claude has an exit message (C9.claude). An unmanaged
+	// session leaves no ledger trace by design, so its hooks can never be
+	// seen and nothing is said (UX-06, D108). It is asked before the seal:
+	// sealing a session moves its ledger, hooks_seen included, into the
+	// capsule (S13), after which no hook would ever look seen.
+	claudeNoHooks := false
+	if r.managed && r.plan.HookCheck.Event != "" {
+		seen, herr := r.b.HooksSeen(ctx, r.plan, r.child)
+		claudeNoHooks = herr == nil && !seen && r.plan.Harness == harness.ClaudeCode
+	}
 	sum, err := r.b.SealAfterExit(ctx, r.plan, r.child)
-	if sum.SID != "" && r.sid == "" {
+	if sum.SID != "" {
+		// The session the child ran last, as far as the seal found it (a
+		// /clear or /resume moves it off the launch's own target): C5's
+		// resume hint and the C6 line name it (D107). Without one, C5
+		// suggests continuing the folder's latest session.
 		r.sid = sum.SID
 	}
 	if r.endedByUs {
@@ -883,20 +919,20 @@ func (r *runner) afterExit(parent context.Context, lease Lease, code int) {
 			Resume: r.resumeCommand(),
 		})
 	}
-	// Hook presence (UX10, SPEC §14.4): asked for every harness whose plan
-	// declares a check, so the backend can mark the session ungated; only
-	// Claude has an exit message (C9.claude).
-	if r.plan.HookCheck.Event != "" {
-		seen, herr := r.b.HooksSeen(ctx, r.plan, r.child)
-		if herr == nil && !seen && r.plan.Harness == harness.ClaudeCode {
-			r.msgs.Line(ui.MsgClaudeNoHooks, ui.Vars{})
-		}
+	if claudeNoHooks {
+		r.msgs.Line(ui.MsgClaudeNoHooks, ui.Vars{})
 	}
-	r.sealLine(sum, err)
+	r.sealLine(sum, err, claudeNoHooks)
 }
 
-// sealLine prints the one C6 line of SPEC §15.1 step 9.
-func (r *runner) sealLine(sum SealSummary, err error) {
+// sealLine prints the one C6 line of SPEC §15.1 step 9. It says "sealed"
+// only when the summary counts sealed files (D108): C6.ok while the
+// folder stays unlocked, C6.sealed when precinto ended the session or a
+// folder is locked at exit (C6.ok's "stays unlocked" would be wrong
+// there). When nothing was sealed and Claude's hooks did not run (so no
+// SessionEnd queued the session either), C6.none says so and names the
+// command that seals what the session may have saved.
+func (r *runner) sealLine(sum SealSummary, err error, claudeNoHooks bool) {
 	sid := sum.SID
 	if sid == "" {
 		sid = r.sid
@@ -910,11 +946,15 @@ func (r *runner) sealLine(sum SealSummary, err error) {
 		r.msgs.Line(ui.MsgSealFailed, ui.Vars{SID: sid, Cause: cause})
 	case sum.Deferred:
 		r.msgs.Line(ui.MsgSealDeferred, ui.Vars{Harness: r.harnessName})
-	case (sum.Files > 0 || sum.SID != "") && r.managed && !r.endedByUs && len(r.locked) == 0:
+	case sum.Files > 0 && r.managed && (r.endedByUs || len(r.locked) > 0):
+		r.msgs.Line(ui.MsgSealedLocked, ui.Vars{SID: sid, Files: sum.Files, Bytes: sum.Bytes})
+	case sum.Files > 0 && r.managed:
 		r.msgs.Line(ui.MsgSealedOK, ui.Vars{
 			SID: sid, Files: sum.Files, Bytes: sum.Bytes,
 			Folder: r.folder, Idle: r.o.Policy.IdleSoft.D(),
 		})
+	case r.managed && claudeNoHooks:
+		r.msgs.Line(ui.MsgSealNone, ui.Vars{Command: r.adoptCmd})
 	}
 }
 
