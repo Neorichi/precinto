@@ -34,15 +34,26 @@ func TestCrossProbeRealOpenFiles(t *testing.T) {
 		t.Fatalf("scan: %v %v", units, err)
 	}
 	rollout := filepath.Join(f.home, filepath.FromSlash(units[0].Files[0].Rel))
-	holder := exec.Command("/bin/sh", "-c", `exec 3<"$1"; sleep 30`, "sh", rollout)
+	// One process holds the rollout open and waits on its stdin, the
+	// lifeline: it exits when the test closes it or dies (no child of its
+	// own could outlive the test holding the file).
+	holder := exec.Command("/bin/sh", "-c", `exec 3<"$1"; read -r _`, "sh", rollout)
 	holder.Env = []string{"PATH=/usr/bin:/bin"}
+	lifeline, err := holder.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := holder.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		_ = holder.Process.Kill() // our own child
-		_ = holder.Wait()
-	}()
+	reaped := false
+	t.Cleanup(func() {
+		_ = lifeline.Close()
+		if !reaped {
+			_ = holder.Process.Kill() // our own child, not reaped yet
+			_ = holder.Wait()
+		}
+	})
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		evs, err := f.a.Probe(context.Background(), f.e, units[0])
@@ -63,8 +74,10 @@ func TestCrossProbeRealOpenFiles(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	_ = lifeline.Close()
 	_ = holder.Process.Kill()
 	_ = holder.Wait()
+	reaped = true
 	evs, err := f.a.Probe(context.Background(), f.e, units[0])
 	if err != nil {
 		t.Fatal(err)

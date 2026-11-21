@@ -172,7 +172,8 @@ func resumeSID(r harness.Resume) (string, bool) {
 }
 
 // addDirs returns the directories of --add-dir options (variadic, as the
-// Claude CLI parses them), resolved against cwd.
+// Claude CLI parses them), resolved against cwd and realpath'd like the
+// roots of config.
 func addDirs(args []string, cwd string) []string {
 	var out []string
 	for i := 0; i < len(args); i++ {
@@ -195,11 +196,27 @@ func addDirs(args []string, cwd string) []string {
 	return out
 }
 
+// positionals returns the arguments of a subcommand that are not options
+// (claude purge [path]), as paths resolved against cwd and realpath'd.
+func positionals(args []string, cwd string) []string {
+	var out []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if a != "" && !strings.HasPrefix(a, "-") {
+			out = append(out, absAgainst(a, cwd))
+		}
+	}
+	return out
+}
+
+// absAgainst resolves p against cwd and realpaths it when it exists.
 func absAgainst(p, cwd string) string {
 	if filepath.IsAbs(p) {
-		return filepath.Clean(p)
+		return realpath(p)
 	}
-	return filepath.Join(cwd, p)
+	return realpath(filepath.Join(cwd, p))
 }
 
 // hasSettingsFlag reports whether the user passed --settings.

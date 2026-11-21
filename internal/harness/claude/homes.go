@@ -149,15 +149,45 @@ func registeredHomes(c config.Config) []home {
 	return out
 }
 
-// tmpSafe reports whether a tmp base may receive restored files: owned by
-// the current user with no group or other permissions (SPEC §7.0, S7).
-func tmpSafe(dir string) bool {
-	if dir == "" {
-		return false
+// Reasons a secondary base (Claude's $TMP or $CACHE) cannot receive
+// restored files now (harness.TargetRules.Skip): short and content-free.
+const (
+	skipTmpUnsafe   = "unsafe tmp"   // not a directory owned by the user with mode 0700 (S7)
+	skipTmpMissing  = "no tmp dir"   // absent (e.g. after a reboot): precinto never creates it
+	skipCacheUnsafe = "unsafe cache" // not a real directory owned by the user
+	skipCacheGone   = "no cache dir" // absent: precinto never creates it
+)
+
+// tmpUnsafe returns why the tmp base dir cannot receive restored files now,
+// or "" when it can: it must be owned by the current user with no group or
+// other permissions (SPEC §7.0, S7).
+func tmpUnsafe(dir string) string {
+	if dir == "" || !filepath.IsAbs(dir) {
+		return skipTmpUnsafe
 	}
 	st, err := fsx.Lstat(dir)
-	if err != nil {
-		return false
+	if notExist(err) {
+		return skipTmpMissing
 	}
-	return st.IsDir() && int(st.UID) == os.Getuid() && st.Mode&0o077 == 0
+	if err != nil || !st.IsDir() || int(st.UID) != os.Getuid() || st.Mode&0o077 != 0 {
+		return skipTmpUnsafe
+	}
+	return ""
+}
+
+// cacheUnsafe returns why the cache base dir cannot receive restored files
+// now (it must be a real directory owned by the user, like every base
+// opened for placement, SPEC §11.4), or "" when it can.
+func cacheUnsafe(dir string) string {
+	if dir == "" || !filepath.IsAbs(dir) {
+		return skipCacheUnsafe
+	}
+	st, err := fsx.Lstat(dir)
+	if notExist(err) {
+		return skipCacheGone
+	}
+	if err != nil || !st.IsDir() || int(st.UID) != os.Getuid() {
+		return skipCacheUnsafe
+	}
+	return ""
 }

@@ -147,6 +147,25 @@ func TestScanOnlyWhenDormantAndPartitions(t *testing.T) {
 	if len(units) != 3 {
 		t.Fatalf("partitions = %v", keys(byPart))
 	}
+	// CC-21: Scope.Procs and Scope.Adopt change nothing for partitions; a
+	// scope naming sessions gets none (partitions are no sessions), and
+	// the wrapper's seal after exit (Procs only) seals nothing.
+	for _, s := range []harness.Scope{
+		{Kinds: dormant.Kinds, Procs: []platform.ProcID{{PID: 7, StartUS: 7}}},
+		{Kinds: dormant.Kinds, Adopt: true},
+	} {
+		if got, err := f.a.Scan(ctx, f.e, s); err != nil || len(got) != 3 {
+			t.Errorf("scope %+v: %d units, %v", s, len(got), err)
+		}
+	}
+	for _, s := range []harness.Scope{
+		{Kinds: dormant.Kinds, SIDs: []string{"s1"}},
+		{Procs: []platform.ProcID{{PID: 7, StartUS: 7}}},
+	} {
+		if got, err := f.a.Scan(ctx, f.e, s); err != nil || len(got) != 0 {
+			t.Errorf("scope %+v: %d units, %v", s, len(got), err)
+		}
+	}
 	a := byPart["demo_home/sessions/ws-a"]
 	if len(a.Files) != 2 || len(a.Hazards) != 1 || a.Hazards[0].Rel != "sessions/ws-a/link" {
 		t.Errorf("ws-a: %+v", a)
@@ -333,6 +352,10 @@ func TestPlanLaunchGeneric(t *testing.T) {
 	if plan.Argv[0] != bin || plan.Mode != harness.LaunchDirect || len(plan.Roots) != 1 ||
 		len(plan.Sync)+len(plan.Background) != 0 || len(plan.Env) != 0 || plan.HookCheck.Event != "" {
 		t.Fatalf("plan %+v (no restore, no relocation, no hooks)", plan)
+	}
+	// CC-24: no hooks, so no SessionEnd budget: the minimum grace.
+	if plan.KillGrace != 8*time.Second || len(plan.QuitKeys) != 0 {
+		t.Errorf("termination %v %q", plan.KillGrace, plan.QuitKeys)
 	}
 	if plan, _ := f.a.PlanLaunch(context.Background(), f.e, f.h.Root, []string{"demo", "--version"}); plan.Mode != harness.LaunchPassthrough {
 		t.Fatalf("passthrough: %+v", plan)

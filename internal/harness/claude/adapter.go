@@ -1,7 +1,9 @@
 package claude
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
@@ -217,7 +220,7 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 			continue
 		}
 		if wantKind(s, capsule.KindClaudePlan) && len(b.transcripts)+len(b.subagents) > 0 {
-			for _, slug := range transcriptSlugs(ctx, append(append([]string{}, b.transcripts...), b.subagents...)) {
+			for _, slug := range a.transcriptSlugs(ctx, append(append([]string{}, b.transcripts...), b.subagents...)) {
 				for _, r := range si.roots {
 					slugRoots[slug] = appendUnique(slugRoots[slug], r)
 				}
@@ -232,7 +235,7 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 		}
 		u.Procs = si.owners
 		u.Adopted = si.adopted
-		u.ProjectDir = sessionProjectDir(ctx, si, b)
+		u.ProjectDir = a.sessionProjectDir(ctx, e, si, b)
 		out = append(out, u)
 	}
 	// Projects.
@@ -301,7 +304,11 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 // resolveSessions decides which sessions found on disk are managed and by
 // which roots: a ledger taint (sticky), else adoption — the project index
 // for the session's project directories, and, with Scope.Adopt or when the
-// scope names the session, the cwd keys of its transcripts (S6).
+// scope names the session, the cwd keys of its transcripts (S6). A session
+// without a ledger that precinto restored (its unit has a receipt) is
+// precinto's own, not adopted: its ledger went into the capsule at the seal
+// (S13) and the project index recorded its roots then (DC-30), so the next
+// sweep of its locked folder seals it again.
 func (a *adapter) resolveSessions(ctx context.Context, e harness.Env, s harness.Scope, h home, w *walker, index *ledger.Index) map[string]sessionInfo {
 	out := map[string]sessionInfo{}
 	for _, k := range w.order {
@@ -331,7 +338,7 @@ func (a *adapter) resolveSessions(ctx context.Context, e harness.Env, s harness.
 			}
 			if s.Adopt || named {
 				for _, t := range append(append([]string{}, b.transcripts...), b.subagents...) {
-					facts, err := scanTranscript(ctx, t)
+					facts, err := a.facts(ctx, t)
 					if err != nil {
 						continue
 					}
@@ -341,7 +348,7 @@ func (a *adapter) resolveSessions(ctx context.Context, e harness.Env, s harness.
 			for _, r := range adopt {
 				si.roots = appendUnique(si.roots, r)
 			}
-			si.adopted = len(si.roots) > 0
+			si.adopted = len(si.roots) > 0 && !restoredBefore(e, h, b.id)
 		}
 		if len(si.roots) == 0 {
 			continue
@@ -352,6 +359,22 @@ func (a *adapter) resolveSessions(ctx context.Context, e harness.Env, s harness.
 		out[b.id] = si
 	}
 	return out
+}
+
+// restoredBefore reports whether precinto placed this session's files: its
+// unit has a receipt (state/receipts/<unit-key>.json, D10), written when a
+// capsule is restored and kept while sealed files could not be removed.
+func restoredBefore(e harness.Env, h home, sid string) bool {
+	dir := e.Layout.ReceiptsDir
+	if !filepath.IsAbs(dir) || len(e.Salt) == 0 {
+		return false
+	}
+	key, err := harness.UnitKeyFor(e.Salt, capsule.KindClaudeSession, harness.ClaudeCode, h.ID, "", sid)
+	if err != nil {
+		return false
+	}
+	st, err := fsx.Lstat(filepath.Join(dir, key+".json"))
+	return err == nil && st.IsRegular()
 }
 
 func absOnly(ps []string) []string {
@@ -445,10 +468,10 @@ func assignPlans(files []planFile, slugs map[string][]string) map[string][]planF
 }
 
 // transcriptSlugs returns every plan slug the transcripts reference.
-func transcriptSlugs(ctx context.Context, files []string) []string {
+func (a *adapter) transcriptSlugs(ctx context.Context, files []string) []string {
 	var out []string
 	for _, f := range files {
-		ts, err := scanTranscriptFull(ctx, f)
+		ts, err := a.scanFull(ctx, f)
 		if err != nil {
 			continue
 		}
@@ -460,18 +483,17 @@ func transcriptSlugs(ctx context.Context, files []string) []string {
 }
 
 // sessionProjectDir is Unit.ProjectDir of a session (D73): its start cwd,
-// realpath'd — the ledger's first cwd (the start event), else the first
-// cwd its main transcript records; "" when neither is known.
-func sessionProjectDir(ctx context.Context, si sessionInfo, b *builder) string {
+// realpath'd — the cwd of the ledger's start event, else the first cwd its
+// main transcript records (the one Claude named projects/<P> after), else
+// the first cwd the ledger knows; "" when none is known.
+func (a *adapter) sessionProjectDir(ctx context.Context, e harness.Env, si sessionInfo, b *builder) string {
 	if si.hasLog {
-		for _, c := range si.ledger.Cwds {
-			if filepath.IsAbs(c) {
-				return realpath(c)
-			}
+		if c := ledgerStartCwd(e, b.id); c != "" {
+			return realpath(c)
 		}
 	}
 	for _, t := range b.transcripts {
-		facts, err := scanTranscript(ctx, t)
+		facts, err := a.facts(ctx, t)
 		if err != nil {
 			continue
 		}
@@ -479,6 +501,38 @@ func sessionProjectDir(ctx context.Context, si sessionInfo, b *builder) string {
 			if filepath.IsAbs(c) {
 				return realpath(c)
 			}
+		}
+	}
+	if si.hasLog {
+		for _, c := range si.ledger.Cwds {
+			if filepath.IsAbs(c) {
+				return realpath(c)
+			}
+		}
+	}
+	return ""
+}
+
+// ledgerStartCwd is the cwd of the session's own start in its ledger: the
+// first SessionStart with source startup or clear (a /clear starts a new
+// session). A launch or resume names where the session was opened again, a
+// compaction restart and a first-contact start (empty source, SPEC §14.3)
+// where it was at that moment: none of them is where it started.
+func ledgerStartCwd(e harness.Env, sid string) string {
+	if e.Ledger == nil {
+		return ""
+	}
+	raw, _, err := e.Ledger.Snapshot(harnessName, sid)
+	if err != nil {
+		return ""
+	}
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		var ev ledger.Event
+		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &ev) != nil || ev.Harness != harnessName || ev.SID != sid {
+			continue
+		}
+		if ev.Type == ledger.TypeStart && (ev.Source == "startup" || ev.Source == "clear") && filepath.IsAbs(ev.Cwd) {
+			return ev.Cwd
 		}
 	}
 	return ""
@@ -570,7 +624,13 @@ func (a *adapter) MarkdownPaths(ctx context.Context, e harness.Env, u harness.Un
 	return out, nil
 }
 
+// Describe returns the unit's title and last activity for its manifest.
+// The sealer calls it once per unit it seals, so it also records the unit's
+// project directories in the project index (recordProjects, DC-30).
 func (a *adapter) Describe(ctx context.Context, e harness.Env, u harness.Unit) (string, time.Time, error) {
+	if ctx.Err() == nil {
+		a.recordProjects(e, u)
+	}
 	last := u.LastActivity
 	for _, f := range u.Files {
 		if t := time.Unix(0, f.Snap.MtimeNS); f.Snap.MtimeNS != 0 && t.After(last) {

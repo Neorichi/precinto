@@ -22,6 +22,9 @@ const (
 	msgBareWarning  = "C9.bare"     // --bare in a protected folder
 	msgResumeTwice  = "C7.twice"    // the session is open in another terminal
 	msgSettingsKept = "C9.settings" // the user passed --settings: precinto added none (D32)
+	msgPurgeForget  = "C7.purge"    // claude purge: also forget precinto's sealed copies? (default no)
+	// cmdPurge is Claude's subcommand that deletes sessions (SPEC §7.1.5).
+	cmdPurge = "purge"
 	// sessionEndBudget is Claude's SessionEnd hook budget (HOOKS-IO §1).
 	sessionEndBudget = 1500 * time.Millisecond
 	envAwaySummary   = "CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0"
@@ -72,7 +75,12 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	}
 	resume, cont, fork := resumeFlagsOf(a.inv)
 	plan.Resume = parseResume(args, resume, cont, fork)
-	plan.Roots = e.Cfg.RootsFor(append([]string{cwd}, addDirs(args, cwd)...)...)
+	purge := len(args) > 0 && args[0] == cmdPurge
+	touched := append([]string{cwd}, addDirs(args, cwd)...)
+	if purge {
+		touched = append(touched, positionals(args[1:], cwd)...) // claude purge [path]
+	}
+	plan.Roots = e.Cfg.RootsFor(touched...)
 	// The primary root contains the start cwd (D1), else the deepest
 	// touched one.
 	if r, ok := e.Cfg.RootFor(cwd); ok {
@@ -82,6 +90,17 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		// Passthrough commands are neither gated nor restored (UX14); a
 		// launch outside every folder has nothing to restore.
 		plan.Argv = append([]string{exe}, args...)
+		plan.SealScope = harness.Scope{RootIDs: rootIDs(plan.Roots)}
+		return plan, nil
+	}
+	if purge {
+		// claude purge [path] deletes sessions and runs none: it is gated
+		// like any launch in the folder, but nothing is restored for it
+		// and no session settings are added. precinto asks first whether
+		// its sealed copies should go too (C7.purge, default no: answering
+		// no starts nothing, CC-20).
+		plan.Argv = append([]string{exe}, args...)
+		plan.Confirm = msgPurgeForget
 		plan.SealScope = harness.Scope{RootIDs: rootIDs(plan.Roots)}
 		return plan, nil
 	}
@@ -106,21 +125,29 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		Recent: e.Cfg.Policy.RestoreRecent, MaxAge: maxAge, MaxBytes: e.Cfg.Policy.RestoreMaxBytes}
 	project := a.projectSelector(e, h, registered, root, cwd)
 
-	if sid, ok := a.resumeTarget(e, h, plan.Resume); ok && registered {
-		key, err := harness.UnitKeyFor(e.Salt, capsule.KindClaudeSession, harness.ClaudeCode, h.ID, "", sid)
-		if err != nil {
-			return harness.LaunchPlan{}, err
+	if sid, ok := a.resumeTarget(e, h, plan.Resume); ok {
+		if registered {
+			key, err := harness.UnitKeyFor(e.Salt, capsule.KindClaudeSession, harness.ClaudeCode, h.ID, "", sid)
+			if err != nil {
+				return harness.LaunchPlan{}, err
+			}
+			plan.Sync = append(plan.Sync, harness.Selector{Kind: capsule.KindClaudeSession, Keys: []string{key}, MtimeNow: true})
+			plan.Lease = append(plan.Lease, key)
+			if pid, open := a.openElsewhere(e, h, sid); open && !plan.Resume.Fork {
+				// Opening a session twice can lose messages (C7.twice): the
+				// plan opens a copy; answering no aborts the launch.
+				plan.Confirm = msgResumeTwice
+				plan.MsgVars = map[string]string{"sid": sid, "pid": strconv.Itoa(pid)}
+				plan.Resume.Fork = true
+				final = append(final, fork[0])
+			}
 		}
-		plan.Sync = append(plan.Sync, harness.Selector{Kind: capsule.KindClaudeSession, Keys: []string{key}, MtimeNow: true})
-		plan.Lease = append(plan.Lease, key)
-		plan.SealScope.SIDs = []string{sid}
-		if pid, open := a.openElsewhere(e, h, sid); open && !plan.Resume.Fork {
-			// Opening a session twice can lose messages (C7.twice): the
-			// plan opens a copy; answering no aborts the launch.
-			plan.Confirm = msgResumeTwice
-			plan.MsgVars = map[string]string{"sid": sid, "pid": strconv.Itoa(pid)}
-			plan.Resume.Fork = true
-			final = append(final, fork[0])
+		// The seal after exit is scoped to the resumed session (CC-21); a
+		// fork writes a new session whose id is known only once it runs,
+		// so its scope stays the child's sessions (Scope.Procs, added by
+		// the backend).
+		if !plan.Resume.Fork {
+			plan.SealScope.SIDs = []string{sid}
 		}
 	} else {
 		switch plan.Resume.Kind {
@@ -209,7 +236,9 @@ func (a *adapter) projectSelector(e harness.Env, h home, registered bool, root c
 						continue
 					}
 					for _, c := range p.Cwds {
-						if filepath.Clean(c) == cwd {
+						// Index cwds are realpath'd start cwds (recorded at
+						// the seal); cwd is the realpath'd launch cwd.
+						if filepath.IsAbs(c) && (filepath.Clean(c) == cwd || realpath(c) == cwd) {
 							if key, err := harness.UnitKeyFor(e.Salt, capsule.KindClaudeProject, harness.ClaudeCode, h.ID, "", p.Slug); err == nil {
 								sel.Keys = appendUnique(sel.Keys, key)
 							}

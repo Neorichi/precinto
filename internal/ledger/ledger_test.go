@@ -245,6 +245,67 @@ func TestByProcAfterClear(t *testing.T) {
 	}
 }
 
+// SPEC §14.3: the first managed contact of a session without a ledger is a
+// start event with an empty source. It is the session's start (process,
+// homes, transcript) when it opens the ledger, and only facts when the
+// session already started: a session that ended with /clear stays ended and
+// warm, and the process keeps owning its newer session (D20).
+func TestFoldFirstContactStart(t *testing.T) {
+	t.Parallel()
+	l := newLedger(t)
+	// A session that became managed after its SessionStart (a tool touched
+	// the folder): its first event is the first-contact start.
+	appendAll(t, l,
+		ledger.Event{T: at(2), Type: ledger.TypeStart, SID: sidA, Proc: procP, Cwd: "/u/other", ConfigDir: "/u/cc",
+			TmpDir: "/tmp/claude-501", Transcript: "/u/cc/projects/p/a.jsonl"},
+		ledger.Event{T: at(2), Type: ledger.TypeTaint, SID: sidA, Roots: []string{"root-acme"}},
+		ledger.Event{T: at(2), Type: ledger.TypeTouch, SID: sidA, Path: "/u/work/acme/x.go"},
+	)
+	s, err := l.Get(hcc, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CurrentProc != procP || !reflect.DeepEqual(s.Procs, []platform.ProcID{procP}) || !s.Started.Equal(at(2)) || s.Ended {
+		t.Errorf("first contact: current %v procs %v started %v ended %v", s.CurrentProc, s.Procs, s.Started, s.Ended)
+	}
+	if !reflect.DeepEqual(s.ConfigDirs, []string{"/u/cc"}) || !reflect.DeepEqual(s.TmpDirs, []string{"/tmp/claude-501"}) ||
+		s.Transcript != "/u/cc/projects/p/a.jsonl" || !s.Managed() || !s.HooksSeen {
+		t.Errorf("first-contact facts: %+v", s)
+	}
+	if got, _ := l.ByProc(hcc, procP); len(got) != 1 || got[0].SID != sidA {
+		t.Fatalf("ByProc after the first contact = %+v", got)
+	}
+
+	// /clear: the old session ends, the new one starts in the same
+	// process and becomes managed at its own first contact.
+	appendAll(t, l,
+		ledger.Event{T: at(5), Type: ledger.TypeEnd, SID: sidA, Proc: procP, Reason: "clear"},
+		ledger.Event{T: at(7), Type: ledger.TypeStart, SID: sidB, Proc: procP, Cwd: "/u/other"},
+	)
+	if got, _ := l.ByProc(hcc, procP); len(got) != 1 || got[0].SID != sidB {
+		t.Fatalf("ByProc after /clear = %+v, want only the newer session", got)
+	}
+	// A stray first-contact start of the cleared session (a hook that found
+	// no ledger while an Archive replaced it) is not a new session.
+	appendAll(t, l, ledger.Event{T: at(9), Type: ledger.TypeStart, SID: sidA, Proc: procP, Cwd: "/u/other", ConfigDir: "/u/cc2"})
+	s, _ = l.Get(hcc, sidA)
+	if !s.Ended || s.EndReason != "clear" || !s.Warm() || s.CurrentProc != procP {
+		t.Errorf("after a stray first contact: ended %v reason %q warm %v current %v", s.Ended, s.EndReason, s.Warm(), s.CurrentProc)
+	}
+	if !reflect.DeepEqual(s.ConfigDirs, []string{"/u/cc", "/u/cc2"}) {
+		t.Errorf("a stray first contact still records its facts: %v", s.ConfigDirs)
+	}
+	if got, _ := l.ByProc(hcc, procP); len(got) != 1 || got[0].SID != sidB {
+		t.Fatalf("ByProc after a stray first contact = %+v, want the newer session", got)
+	}
+	// A real SessionStart (resume) of the cleared session does restart it.
+	appendAll(t, l, ledger.Event{T: at(11), Type: ledger.TypeStart, SID: sidA, Proc: procQ, Source: "resume"})
+	s, _ = l.Get(hcc, sidA)
+	if s.Ended || s.Warm() || s.CurrentProc != procQ {
+		t.Errorf("after resume: ended %v warm %v current %v", s.Ended, s.Warm(), s.CurrentProc)
+	}
+}
+
 func TestListSkipsForeignAndBrokenEntries(t *testing.T) {
 	t.Parallel()
 	l := newLedger(t)

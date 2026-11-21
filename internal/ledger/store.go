@@ -188,9 +188,17 @@ type folded struct {
 	lastStarts map[platform.ProcID]time.Time
 }
 
+// firstContact reports a start event with an empty source: the hooks'
+// record of the first managed contact of a session that had no ledger yet
+// (SPEC §14.3), not a SessionStart.
+func firstContact(e Event) bool { return e.Type == TypeStart && e.Source == "" }
+
 // fold applies the fold rules to the events of one session in file order.
 // Lines that do not decode, belong to another session, or have an unknown
-// type are ignored: they can never make a session look less live.
+// type are ignored: they can never make a session look less live. A
+// first-contact start (firstContact) is the session's start when it is the
+// first start of the file: it gives the process, homes and transcript of a
+// session that became managed after its SessionStart.
 func fold(harness, sid string, raw []byte) folded {
 	f := folded{s: Session{Harness: harness, SID: sid}, lastStarts: map[platform.ProcID]time.Time{}}
 	s := &f.s
@@ -252,6 +260,15 @@ func fold(harness, sid string, raw []byte) folded {
 		case TypeLaunch, TypeStart:
 			if s.Started.IsZero() {
 				s.Started = e.T
+			}
+			if firstContact(e) && lastStart >= 0 {
+				// A first-contact start after the session already started
+				// (a hook that found no ledger while an Archive replaced
+				// it): its process, homes and transcript are facts (folded
+				// above), never a restart. A session that ended with /clear
+				// stays ended and warm, and its process keeps owning the
+				// newer session (D20).
+				break
 			}
 			if !e.Proc.IsZero() {
 				s.CurrentProc = e.Proc

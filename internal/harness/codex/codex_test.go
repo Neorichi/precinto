@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/harness/codex"
 	"github.com/precinto/precinto/internal/harness/codex/codextest"
@@ -466,6 +467,23 @@ func TestScanHomeSnapshot(t *testing.T) {
 	if !dirs["precinto-tmp"] {
 		t.Errorf("empty precinto-tmp not recorded: %v", u.Dirs)
 	}
+	// CC-19: prune entries are "<base id>:<rel>", deepest first, never the
+	// home itself.
+	if len(u.Prune) == 0 {
+		t.Error("no prune entries")
+	}
+	depth := -1
+	for i, pr := range u.Prune {
+		base, rel, ok := strings.Cut(pr, ":")
+		if !ok || base != string(capsule.BaseCodexHome) || rel == "" || rel == "." || strings.HasPrefix(rel, "/") {
+			t.Errorf("prune entry %q", pr)
+		}
+		d := strings.Count(rel, "/")
+		if i > 0 && d > depth {
+			t.Errorf("prune entries not deepest first: %v", u.Prune)
+		}
+		depth = d
+	}
 	rules, err := f.a.Targets(context.Background(), f.e, u.Ref(), u.UnitID)
 	if err != nil {
 		t.Fatal(err)
@@ -480,6 +498,55 @@ func TestScanHomeSnapshot(t *testing.T) {
 	}
 	if units, _ := f.a.Scan(context.Background(), f.e, harness.Scope{RootIDs: []string{"root-other"}}); len(units) != 0 {
 		t.Error("another root's scan returned the home")
+	}
+}
+
+// CC-21: a Codex session is sealed with its home. A scope naming sessions
+// returns the homes that hold one of them (a rollout carries the id in its
+// name, or the session's ledger names the home); Scope.Procs and
+// Scope.Adopt change nothing for a home.
+func TestScanScopesOfAHome(t *testing.T) {
+	t.Parallel()
+	f := newFx(t)
+	ch := f.seed(codextest.Options{Rollouts: 2, Cwd: f.h.Root})
+	rollouts := ch.Rollouts(t)
+	if len(rollouts) == 0 {
+		t.Fatal("no rollouts")
+	}
+	name := strings.TrimSuffix(filepath.Base(rollouts[0]), ".jsonl")
+	sid := name[len(name)-36:]
+	scan := func(s harness.Scope) int {
+		t.Helper()
+		units, err := f.a.Scan(context.Background(), f.e, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(units)
+	}
+	for label, s := range map[string]harness.Scope{
+		"rollout id":            {SIDs: []string{sid}},
+		"rollout id, uppercase": {SIDs: []string{strings.ToUpper(sid)}},
+		"rollout id in root":    {SIDs: []string{"x", sid}, RootIDs: []string{"root-acme"}},
+		"child process":         {RootIDs: []string{"root-acme"}, Procs: []platform.ProcID{{PID: 7, StartUS: 7}}},
+		"adopt":                 {Adopt: true},
+	} {
+		if n := scan(s); n != 1 {
+			t.Errorf("%s: %d units, want the home", label, n)
+		}
+	}
+	const other = "00000000-0000-7000-8000-0000000000ff"
+	if n := scan(harness.Scope{SIDs: []string{other}}); n != 0 {
+		t.Errorf("a session the home does not hold: %d units", n)
+	}
+	if err := f.e.Ledger.Append(ledger.Event{Type: ledger.TypeStart, Harness: "codex", SID: other, Source: "startup",
+		ConfigDir: f.home, Cwd: f.h.Root}); err != nil {
+		t.Fatal(err)
+	}
+	if n := scan(harness.Scope{SIDs: []string{other}}); n != 1 {
+		t.Errorf("a session whose ledger names the home: %d units", n)
+	}
+	if n := scan(harness.Scope{SIDs: []string{sid}, RootIDs: []string{"root-other"}}); n != 0 {
+		t.Errorf("another root's scope: %d units", n)
 	}
 }
 
@@ -595,11 +662,13 @@ func TestPlanLaunchCodex(t *testing.T) {
 		len(plan.Sync) != 1 || plan.Sync[0].Keys[0] != key || plan.Sync[0].Kind != capsule.KindCodexHome {
 		t.Fatalf("plan %+v", plan)
 	}
-	if plan.Confirm != "C10.consent" {
-		t.Errorf("first use must ask for consent, got %q", plan.Confirm)
+	// D72: the folder lists codex, so its first launch (no home yet) asks
+	// nothing; consent is per folder, in config.
+	if plan.Confirm != "" {
+		t.Errorf("a folder that lists codex was asked %q", plan.Confirm)
 	}
-	if plan.MsgVars["folder"] == "" {
-		t.Errorf("C10.consent without {folder}: %v", plan.MsgVars)
+	if !reflect.DeepEqual(plan.SealScope, harness.Scope{RootIDs: []string{"root-acme"}, Kinds: []capsule.Kind{capsule.KindCodexHome}}) {
+		t.Errorf("seal scope %+v", plan.SealScope)
 	}
 	// CC-24: Ctrl-C twice (Codex has no SIGTERM handler), 3 s + 6 s.
 	if string(plan.QuitKeys) != "\x03\x03" || plan.KillGrace != 9*time.Second {
@@ -625,9 +694,46 @@ func TestPlanLaunchCodex(t *testing.T) {
 	if plan.Mode != harness.LaunchDirect || plan.Resume.Kind != harness.ResumeSID || plan.Resume.Value != "00000000-0000-7000-8000-00000000000a" {
 		t.Errorf("exec resume: %+v", plan)
 	}
+	// CC-21: a known resume target scopes the seal after exit (the home
+	// that holds it); a fork writes a new session.
+	if !reflect.DeepEqual(plan.SealScope.SIDs, []string{"00000000-0000-7000-8000-00000000000a"}) || plan.SealScope.RootIDs[0] != "root-acme" {
+		t.Errorf("exec resume seal scope: %+v", plan.SealScope)
+	}
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex", "fork", "00000000-0000-7000-8000-00000000000a"})
+	if !plan.Resume.Fork || len(plan.SealScope.SIDs) != 0 {
+		t.Errorf("fork of a session: %+v %+v", plan.Resume, plan.SealScope)
+	}
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex", "fork"})
 	if plan.Resume.Kind != harness.ResumePicker || !plan.Resume.Fork {
 		t.Errorf("fork picker: %+v", plan.Resume)
+	}
+	// D72: a folder whose harness list lacks codex asks C10.consent (with
+	// {folder}) before anything else, whether or not its home exists; an
+	// empty list is the default (every built-in harness).
+	cfg := f.e.Cfg
+	f.e.Cfg.Roots = append([]config.Root(nil), cfg.Roots...)
+	f.e.Cfg.Roots[0].Harnesses = []string{"claude-code"}
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex"})
+	if plan.Confirm != "C10.consent" || plan.MsgVars["folder"] != "~/work/acme" || plan.Mode != harness.LaunchInteractive || len(plan.Sync) != 1 {
+		t.Errorf("folder without codex: confirm %q vars %v plan %+v", plan.Confirm, plan.MsgVars, plan)
+	}
+	os.RemoveAll(f.home)
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex"}); plan.Confirm != "C10.consent" {
+		t.Errorf("folder without codex, no home: confirm %q", plan.Confirm)
+	}
+	f.e.Cfg.Roots[0].Harnesses = nil
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex"}); plan.Confirm != "" {
+		t.Errorf("default harness list, no home: confirm %q", plan.Confirm)
+	}
+	f.e.Cfg = cfg
+	// A launch through a symlink into the folder uses the folder's home.
+	link := filepath.Join(t.TempDir(), "acme-link")
+	if err := os.Symlink(f.h.Root, link); err != nil {
+		t.Fatal(err)
+	}
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, link, []string{"codex"}); plan.Mode != harness.LaunchInteractive || len(plan.Roots) != 1 ||
+		!reflect.DeepEqual(plan.Env, codex.LaunchEnv(f.home)) {
+		t.Errorf("symlinked cwd: %+v", plan)
 	}
 	// Passthrough inside a root and anything outside run unmanaged.
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex", "login"})

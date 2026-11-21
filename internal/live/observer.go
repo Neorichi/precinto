@@ -22,7 +22,8 @@ const (
 	// before it counts as "in the future" (R16): file systems round times.
 	futureSkew = 2 * time.Second
 	// forgetAfter drops the history of units not observed for this long,
-	// so the daemon's long-lived observer does not grow without bound.
+	// so a long-lived observer does not grow without bound (sealing
+	// processes start without observations, D63).
 	forgetAfter = 48 * time.Hour
 )
 

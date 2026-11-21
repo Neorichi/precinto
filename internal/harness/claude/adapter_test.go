@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/harness/claude"
 	"github.com/precinto/precinto/internal/harness/claude/claudetest"
@@ -292,6 +293,52 @@ func TestScanSessionInventoryIsFailClosed(t *testing.T) {
 	// Hygiene of what a unit carries outside ciphertext: no content.
 	if strings.Contains(u.Note+pu.Note, f.marker) {
 		t.Error("marker in a scan note")
+	}
+}
+
+// CC-19: Unit.Prune holds "<base id>:<rel>" entries only, of a base the
+// unit's home has, deepest first; never a base root and never projects/<P>.
+func TestPruneEntriesNameTheirBase(t *testing.T) {
+	f := newFx(t)
+	_, paths := f.session(sid1, f.h.Root, nil)
+	p := slugOf(t, paths)
+	f.taint(sid1, procP.ID)
+	f.l.WriteJob(t, "job-1", sid1, "running")
+	write(t, filepath.Join(f.h.ClaudeConfig, "file-history", sid1, "a", "b@v1"), "x")
+	write(t, filepath.Join(f.h.ClaudeConfig, "usage-data", "session-meta", "u.json"), "x")
+	units := f.scan(harness.Scope{Global: true})
+	kinds := map[capsule.Kind]bool{}
+	for _, u := range units {
+		depth := -1
+		for i, pr := range u.Prune {
+			base, rel, ok := strings.Cut(pr, ":")
+			if !ok || rel == "" {
+				t.Errorf("%s: prune entry %q has no base prefix", u.Kind, pr)
+				continue
+			}
+			if _, ok := u.Home.Bases[capsule.BaseID(base)]; !ok {
+				t.Errorf("%s: prune entry %q names a base the home lacks", u.Kind, pr)
+			}
+			if rel != filepath.ToSlash(filepath.Clean(rel)) || strings.HasPrefix(rel, "/") || rel == "." {
+				t.Errorf("%s: prune entry %q is not a clean relative path", u.Kind, pr)
+			}
+			if base == string(capsule.BaseClaudeConfig) && (rel == "projects" || rel == "projects/"+p) {
+				t.Errorf("%s: prune entry %q removes the shared project directory", u.Kind, pr)
+			}
+			d := strings.Count(rel, "/")
+			if i > 0 && d > depth {
+				t.Errorf("%s: prune entries not deepest first: %v", u.Kind, u.Prune)
+			}
+			depth = d
+		}
+		if len(u.Prune) > 0 {
+			kinds[u.Kind] = true
+		}
+	}
+	for _, k := range []capsule.Kind{capsule.KindClaudeSession, capsule.KindClaudeProject, capsule.KindGlobalStore} {
+		if !kinds[k] {
+			t.Errorf("no %s unit with prune entries to check", k)
+		}
 	}
 }
 
@@ -786,12 +833,100 @@ func TestTargetsPerKind(t *testing.T) {
 	if _, err := f.a.Targets(ctx, f.e, codexRef, sid1); err == nil {
 		t.Error("a Codex ref was accepted")
 	}
-	// An unsafe tmp dir is never a target (S7).
+	// An unsafe tmp dir is never a base (S7): its entries are skipped and
+	// reported (CC-22), the rest of the session restores; entries are still
+	// checked against the session's own targets.
 	os.Chmod(f.h.ClaudeTmp, 0o755)
 	defer os.Chmod(f.h.ClaudeTmp, 0o700)
 	unsafe, _ := f.a.Targets(ctx, f.e, ref(capsule.KindClaudeSession), sid1)
-	if _, ok := unsafe.Bases[capsule.BaseClaudeTmp]; ok || unsafe.Allow(capsule.BaseClaudeTmp, p+"/"+sid1+"/x") {
-		t.Error("a group-readable tmp dir is still a restore target")
+	if _, ok := unsafe.Bases[capsule.BaseClaudeTmp]; ok {
+		t.Error("a group-readable tmp dir is still a restore base")
+	}
+	if unsafe.Skip[capsule.BaseClaudeTmp] != "unsafe tmp" || len(unsafe.Skip) != 1 {
+		t.Errorf("Skip = %v, want the tmp base with reason \"unsafe tmp\"", unsafe.Skip)
+	}
+	if !unsafe.Allow(capsule.BaseClaudeTmp, p+"/"+sid1+"/x") || unsafe.Allow(capsule.BaseClaudeTmp, p+"/"+sid2+"/x") ||
+		!unsafe.Allow(capsule.BaseClaudeConfig, "projects/"+p+"/"+sid1+".jsonl") {
+		t.Error("the targets of a session with a skipped tmp base")
+	}
+	// Other kinds never skip the tmp base: an entry there still rejects.
+	if pu, _ := f.a.Targets(ctx, f.e, ref(capsule.KindClaudeProject), p); pu.Skip != nil || pu.Allow(capsule.BaseClaudeTmp, p+"/"+sid1+"/x") {
+		t.Errorf("project targets with an unsafe tmp: skip %v", pu.Skip)
+	}
+}
+
+// CC-22: the session's own transcript is placed last (REST-3); a $TMP or
+// $CACHE that is missing (after a reboot) or not the user's is skipped with
+// a reason instead of rejecting the whole capsule, and only for the kind
+// that uses it.
+func TestTargetsLastAndSkippedBases(t *testing.T) {
+	f := newFx(t)
+	_, paths := f.session(sid1, f.h.Root, nil)
+	p := slugOf(t, paths)
+	ctx := context.Background()
+	ref := func(k capsule.Kind) harness.UnitRef {
+		return harness.UnitRef{Harness: harness.ClaudeCode, Kind: k, HomeID: f.homeID, RootIDs: []string{"root-acme"}}
+	}
+	rules, err := f.a.Targets(ctx, f.e, ref(capsule.KindClaudeSession), sid1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules.Last == nil || rules.Skip != nil {
+		t.Fatalf("session rules: last %v skip %v", rules.Last != nil, rules.Skip)
+	}
+	for e, want := range map[capsule.Entry]bool{
+		{Base: capsule.BaseClaudeConfig, Rel: "projects/" + p + "/" + sid1 + ".jsonl"}:                 true,
+		{Base: capsule.BaseClaudeConfig, Rel: "projects/other/" + sid1 + ".jsonl"}:                     true,
+		{Base: capsule.BaseClaudeConfig, Rel: "projects/" + p + "/" + sid1 + "/subagents/agent.jsonl"}: false,
+		{Base: capsule.BaseClaudeConfig, Rel: "projects/" + p + "/" + sid1 + ".jsonl.compact.tmp.1"}:   false,
+		{Base: capsule.BaseClaudeConfig, Rel: "projects/" + p + "/" + sid2 + ".jsonl"}:                 false,
+		{Base: capsule.BaseClaudeTmp, Rel: p + "/" + sid1 + ".jsonl"}:                                  false,
+		{Base: capsule.BaseClaudeConfig, Rel: "file-history/" + sid1 + "/a"}:                           false,
+	} {
+		if got := rules.Last(e); got != want {
+			t.Errorf("Last(%s:%s) = %v, want %v", e.Base, e.Rel, got, want)
+		}
+	}
+	for _, k := range []capsule.Kind{capsule.KindClaudeProject, capsule.KindClaudeHistory} {
+		id := p
+		if k == capsule.KindClaudeHistory {
+			id = "root-acme"
+		}
+		if r, err := f.a.Targets(ctx, f.e, ref(k), id); err != nil || r.Last != nil {
+			t.Errorf("%s: Last set (%v)", k, err)
+		}
+	}
+
+	// The tmp base is gone (reboot) and the cache is not a directory.
+	if err := os.RemoveAll(f.h.ClaudeTmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(f.h.ClaudeCache); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f.h.ClaudeCache, "not a directory")
+	rules, _ = f.a.Targets(ctx, f.e, ref(capsule.KindClaudeSession), sid1)
+	if _, ok := rules.Bases[capsule.BaseClaudeTmp]; ok || rules.Skip[capsule.BaseClaudeTmp] != "no tmp dir" || len(rules.Skip) != 1 {
+		t.Errorf("missing tmp: bases %v skip %v", rules.Bases, rules.Skip)
+	}
+	if _, ok := rules.Bases[capsule.BaseClaudeCache]; ok {
+		t.Error("a cache base that is not a directory was kept")
+	}
+	if !rules.Allow(capsule.BaseClaudeTmp, p+"/"+sid1+"/tasks/x.output") || rules.Allow(capsule.BaseClaudeCache, p+"/x") {
+		t.Error("session targets with skipped bases")
+	}
+	project, _ := f.a.Targets(ctx, f.e, ref(capsule.KindClaudeProject), p)
+	if project.Skip[capsule.BaseClaudeCache] != "unsafe cache" || len(project.Skip) != 1 {
+		t.Errorf("project skip %v, want the cache with reason \"unsafe cache\"", project.Skip)
+	}
+	if !project.Allow(capsule.BaseClaudeCache, p+"/mcp-logs-x/a.jsonl") || project.Allow(capsule.BaseClaudeCache, "other/x") ||
+		!project.Allow(capsule.BaseClaudeConfig, "projects/"+p+"/memory/MEMORY.md") {
+		t.Error("project targets with a skipped cache")
+	}
+	os.Remove(f.h.ClaudeCache)
+	project, _ = f.a.Targets(ctx, f.e, ref(capsule.KindClaudeProject), p)
+	if project.Skip[capsule.BaseClaudeCache] != "no cache dir" {
+		t.Errorf("missing cache: skip %v", project.Skip)
 	}
 }
 
@@ -1069,6 +1204,188 @@ func TestUnitProjectDirIsTheStartCwd(t *testing.T) {
 	}
 }
 
+// D73: the start cwd comes from the ledger's own start (SessionStart
+// startup or clear). A ledger that only knows a later moment of the session
+// — a launch and resume elsewhere after its first ledger went into a
+// capsule, or a first-contact start (empty source) — yields to the first cwd
+// of the transcript, the one Claude named projects/<P> after.
+func TestProjectDirFromTheSessionsOwnStart(t *testing.T) {
+	f := newFx(t)
+	sub := filepath.Join(f.h.Root, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, rsub := realPath(t, f.h.Root), realPath(t, sub)
+	ev := func(sid string, typ ledger.Type, source string) ledger.Event {
+		return ledger.Event{Type: typ, Harness: "claude-code", SID: sid, Source: source, Cwd: sub,
+			Roots: []string{"root-acme"}, ConfigDir: f.h.ClaudeConfig}
+	}
+	for sid, evs := range map[string][]ledger.Event{
+		sid1: {ev(sid1, ledger.TypeLaunch, ""), ev(sid1, ledger.TypeStart, "resume")},
+		sid2: {ev(sid2, ledger.TypeStart, "")},
+		sid3: {ev(sid3, ledger.TypeStart, "startup")},
+	} {
+		f.session(sid, f.h.Root, nil) // the transcript starts in the folder itself
+		for _, e := range evs {
+			if err := f.e.Ledger.Append(e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	units := f.scan(harness.Scope{})
+	for sid, want := range map[string]string{sid1: root, sid2: root, sid3: rsub} {
+		u, ok := find(units, capsule.KindClaudeSession, sid)
+		if !ok {
+			t.Fatalf("no unit for %s", sid)
+		}
+		if u.ProjectDir != want {
+			t.Errorf("%s: ProjectDir = %q, want %q", sid, u.ProjectDir, want)
+		}
+	}
+}
+
+// DC-30, SPEC §11.2, FX-G3-11: the project index learns <P> — with the
+// session's roots and start cwd — when the session is sealed (the sealer's
+// Describe), never from a scan or a probe (status and doctor are
+// read-only). A later restore then accepts the session's $TMP/<P> entries
+// although projects/<P> was deleted, so the restore recreates it; a
+// session never sealed is refused once its projects/<P> is gone.
+func TestSealRecordsTheProjectIndex(t *testing.T) {
+	f := newFx(t)
+	ctx := context.Background()
+	_, paths := f.session(sid1, f.h.Root, nil)
+	p := slugOf(t, paths)
+	f.taint(sid1, procP.ID)
+	idx := f.e.Index("claude-code")
+	u := sessionUnit(t, f, sid1)
+	if _, err := f.a.Probe(ctx, f.e, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(idx.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a scan or probe wrote the project index: %v", err)
+	}
+	if _, _, err := f.a.Describe(ctx, f.e, u); err != nil {
+		t.Fatal(err)
+	}
+	proj, ok, err := idx.Lookup(f.h.ClaudeConfig, p)
+	if err != nil || !ok {
+		t.Fatalf("the sealed session's <P> is not indexed: %v %v", ok, err)
+	}
+	if !slices.Equal(proj.Cwds, []string{u.ProjectDir}) || !slices.Equal(proj.RootIDs, []string{"root-acme"}) || proj.Harness != "claude-code" {
+		t.Errorf("index entry %+v, want the start cwd %q and root-acme", proj, u.ProjectDir)
+	}
+	before, _ := os.Lstat(idx.Path)
+	if _, _, err := f.a.Describe(ctx, f.e, u); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.Lstat(idx.Path); !os.SameFile(before, after) || !after.ModTime().Equal(before.ModTime()) {
+		t.Error("an unchanged seal rewrote the index")
+	}
+	// A launch in the start cwd now restores the project unit by key.
+	bin := filepath.Join(f.h.Dir, "bin", "claude")
+	write(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.e.Cfg.Harness["claude-code"]
+	hc.Bin = bin
+	f.e.Cfg.Harness["claude-code"] = hc
+	plan, err := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkey, _ := harness.UnitKeyFor(salt, capsule.KindClaudeProject, harness.ClaudeCode, f.homeID, "", p)
+	if len(plan.Sync) != 1 || !slices.Equal(plan.Sync[0].Keys, []string{pkey}) || plan.Sync[0].ProjectDir != "" {
+		t.Errorf("project selector %+v, want the indexed project by key", plan.Sync)
+	}
+
+	// projects/<P> is deleted (by the user, or Claude's cleanup) while the
+	// session is sealed: the restore accepts every sealed entry.
+	if err := os.RemoveAll(filepath.Join(f.h.ClaudeConfig, "projects", p)); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := f.a.Targets(ctx, f.e, u.Ref(), sid1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpEntries := 0
+	for _, file := range append(append([]harness.File{}, u.Files...), u.Dirs...) {
+		if file.Base == capsule.BaseClaudeTmp {
+			tmpEntries++
+		}
+		if !rules.Allow(file.Base, file.Rel) {
+			t.Errorf("sealed %s:%s cannot be restored after projects/<P> was deleted", file.Base, file.Rel)
+		}
+	}
+	if tmpEntries == 0 {
+		t.Fatal("the fixture has no $TMP entries")
+	}
+
+	// Another session, in another project directory, never sealed.
+	_, paths2 := f.session(sid2, filepath.Join(f.h.Root, "other"), nil)
+	p2 := slugOf(t, paths2)
+	f.taint(sid2, procP.ID)
+	u2 := sessionUnit(t, f, sid2)
+	if err := os.RemoveAll(filepath.Join(f.h.ClaudeConfig, "projects", p2)); err != nil {
+		t.Fatal(err)
+	}
+	rules2, _ := f.a.Targets(ctx, f.e, u2.Ref(), sid2)
+	if rules2.Allow(capsule.BaseClaudeTmp, p2+"/"+sid2+"/scratchpad/notes.txt") {
+		t.Error("a $TMP project directory nobody indexed was accepted")
+	}
+	// The first entry is kept when another is recorded (never dropped).
+	if _, _, err := f.a.Describe(ctx, f.e, u2); err != nil {
+		t.Fatal(err)
+	}
+	all, err := idx.All()
+	if err != nil || len(all) != 2 {
+		t.Fatalf("index %+v %v, want both project directories", all, err)
+	}
+	// The project unit records its own directory with its roots.
+	write(t, filepath.Join(f.h.ClaudeConfig, "projects", p, "memory", "MEMORY.md"), "memory")
+	pu, ok := find(f.scan(harness.Scope{}), capsule.KindClaudeProject, p)
+	if !ok || pu.ProjectDir != u.ProjectDir {
+		t.Fatalf("project unit %v %q, want ProjectDir %q from the index", ok, pu.ProjectDir, u.ProjectDir)
+	}
+}
+
+// A session that precinto restored has no ledger (it went into the capsule
+// at the seal, S13) but a receipt (D10): it is precinto's own, so a plain
+// scan returns it as managed with the roots the index recorded at its seal,
+// and the next sweep of its locked folder seals it again. Without a receipt
+// the same files are only adopted (seal --adopt), like a sibling session of
+// the same project that precinto never sealed.
+func TestRestoredSessionIsManaged(t *testing.T) {
+	f := newFx(t)
+	ctx := context.Background()
+	f.session(sid1, f.h.Root, nil)
+	f.taint(sid1, procP.ID)
+	u := sessionUnit(t, f, sid1)
+	if _, _, err := f.a.Describe(ctx, f.e, u); err != nil { // sealed
+		t.Fatal(err)
+	}
+	_, n, err := f.e.Ledger.Snapshot("claude-code", sid1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.Ledger.Archive("claude-code", sid1, n); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := find(f.scan(harness.Scope{}), capsule.KindClaudeSession, sid1)
+	if !ok || !got.Adopted {
+		t.Fatalf("without a receipt: %v adopted=%v, want an adopted session", ok, got.Adopted)
+	}
+	write(t, filepath.Join(f.h.Layout.ReceiptsDir, u.Key+".json"), "{}")
+	got, ok = find(f.scan(harness.Scope{}), capsule.KindClaudeSession, sid1)
+	if !ok || got.Adopted || got.VaultID != "root-acme" || got.Key != u.Key {
+		t.Fatalf("restored session: %v %+v adopted=%v, want managed in root-acme", ok, got.Ref(), got.Adopted)
+	}
+	f.session(sid2, f.h.Root, nil)
+	if s2, ok := find(f.scan(harness.Scope{}), capsule.KindClaudeSession, sid2); !ok || !s2.Adopted {
+		t.Fatalf("a never-sealed sibling: %v adopted=%v, want adopted", ok, s2.Adopted)
+	}
+}
+
 func realPath(t *testing.T, p string) string {
 	t.Helper()
 	r, err := filepath.EvalSymlinks(p)
@@ -1076,6 +1393,118 @@ func realPath(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// SPEC §7.1.5, CC-38: claude purge in a protected folder (by cwd or by its
+// path argument) asks C7.purge first; it restores nothing and adds no
+// session settings. Outside every folder it runs unmanaged.
+func TestPlanLaunchPurge(t *testing.T) {
+	f := newFx(t)
+	bin := filepath.Join(f.h.Dir, "bin", "claude")
+	write(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.e.Cfg.Harness["claude-code"]
+	hc.Bin = bin
+	f.e.Cfg.Harness["claude-code"] = hc
+	ctx := context.Background()
+	outside := filepath.Join(f.h.HomeDir, "elsewhere")
+	for name, c := range map[string]struct {
+		cwd  string
+		args []string
+	}{
+		"in the folder":           {f.h.Root, []string{"claude", "purge"}},
+		"the folder as argument":  {outside, []string{"claude", "purge", f.h.Root}},
+		"a relative path into it": {f.h.HomeDir, []string{"claude", "purge", "work/acme"}},
+	} {
+		plan, err := f.a.PlanLaunch(ctx, f.e, c.cwd, c.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Confirm != "C7.purge" || len(plan.Roots) != 1 || plan.Roots[0].ID != "root-acme" {
+			t.Errorf("%s: confirm %q roots %v", name, plan.Confirm, plan.Roots)
+		}
+		if slices.Contains(plan.Argv, "--settings") || len(plan.Sync)+len(plan.Background)+len(plan.Lease) != 0 ||
+			!slices.Equal(plan.Argv, append([]string{bin}, c.args[1:]...)) {
+			t.Errorf("%s: argv %q sync %v background %v", name, plan.Argv, plan.Sync, plan.Background)
+		}
+	}
+	plan, err := f.a.PlanLaunch(ctx, f.e, outside, []string{"claude", "purge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Confirm != "" || len(plan.Roots) != 0 {
+		t.Errorf("purge outside every folder: %+v", plan)
+	}
+	// A prompt that happens to be the word is not the subcommand.
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "-p", "purge"})
+	if plan.Confirm != "" || plan.Argv[1] != "--settings" {
+		t.Errorf("-p purge: %+v", plan)
+	}
+}
+
+// CC-21: the seal after exit is scoped to the resumed session whenever the
+// target is known, even in a home config does not register (nothing is
+// restored there); a fork — asked for, or planned for C7.twice — writes a
+// new session, so its scope is left to Scope.Procs.
+func TestPlanLaunchSealScopeOfAKnownTarget(t *testing.T) {
+	f := newFx(t)
+	bin := filepath.Join(f.h.Dir, "bin", "claude")
+	write(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.e.Cfg.Harness["claude-code"]
+	hc.Bin = bin
+	f.e.Cfg.Harness["claude-code"] = hc
+	ctx := context.Background()
+	f.l.WriteJob(t, "job-7", sid2, "running")
+	for _, args := range [][]string{
+		{"claude", "--resume", sid1},
+		{"claude", "--resume", filepath.Join(f.h.ClaudeConfig, "projects", "p", sid1+".jsonl")},
+	} {
+		plan, err := f.a.PlanLaunch(ctx, f.e, f.h.Root, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(plan.SealScope.SIDs, []string{sid1}) || !slices.Equal(plan.SealScope.RootIDs, []string{"root-acme"}) {
+			t.Errorf("%q: seal scope %+v", args, plan.SealScope)
+		}
+	}
+	plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "attach", "job-7"})
+	if !slices.Equal(plan.SealScope.SIDs, []string{sid2}) {
+		t.Errorf("attach: seal scope %+v", plan.SealScope)
+	}
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "--resume", sid1, "--fork-session"})
+	if len(plan.SealScope.SIDs) != 0 || len(plan.Sync) != 2 {
+		t.Errorf("fork: seal scope %+v sync %v", plan.SealScope, plan.Sync)
+	}
+	for _, args := range [][]string{{"claude"}, {"claude", "-c"}, {"claude", "--resume"}, {"claude", "--resume", "my title"}} {
+		if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, args); len(plan.SealScope.SIDs) != 0 {
+			t.Errorf("%q: seal scope %+v, want no session ids", args, plan.SealScope)
+		}
+	}
+	// C7.twice opens a copy (a fork): no session ids either.
+	start := time.Now().Add(-time.Minute)
+	f.h.Procs.Add(platform.ProcInfo{ID: platform.ProcID{PID: 901, StartUS: start.UnixMicro()}, PPID: 1, Exe: "/opt/claude/bin/claude"})
+	f.l.WriteRegistryEntry(t, claude.RegistryEntry{PID: 901, SessionID: sid1, StartedAt: start, Valid: true})
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "-r", sid1})
+	if plan.Confirm != "C7.twice" || len(plan.SealScope.SIDs) != 0 {
+		t.Errorf("twice: confirm %q seal scope %+v", plan.Confirm, plan.SealScope)
+	}
+	// A home config does not register: nothing is restored, the scope is
+	// still the session.
+	f.e.Cfg.Harness["claude-code"] = config.Harness{Enabled: true, Bin: bin}
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "--resume", sid3})
+	for _, sel := range plan.Sync {
+		if sel.Kind == capsule.KindClaudeSession {
+			t.Errorf("unregistered home: a session restore was planned: %+v", sel)
+		}
+	}
+	if len(plan.Lease) != 0 || !slices.Equal(plan.SealScope.SIDs, []string{sid3}) {
+		t.Errorf("unregistered home: lease %v scope %+v", plan.Lease, plan.SealScope)
+	}
 }
 
 // SPEC §7.1.5, CC-38: when the user passed --settings, PlanLaunch adds none

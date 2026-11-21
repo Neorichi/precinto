@@ -42,17 +42,52 @@ func (a *adapter) Targets(ctx context.Context, e harness.Env, ref harness.UnitRe
 	}
 	cc := h.configDir()
 	bases := map[capsule.BaseID]string{capsule.BaseClaudeConfig: cc}
+	// $TMP and $CACHE receive files only while they are safe (S7) and
+	// exist; otherwise their entries are skipped and reported and the rest
+	// of the unit restores (TargetRules.Skip, SPEC §11.5). precinto never
+	// creates them.
+	skip := map[capsule.BaseID]string{}
 	if c := h.cacheDir(); c != "" {
-		bases[capsule.BaseClaudeCache] = c
+		if why := cacheUnsafe(c); why == "" {
+			bases[capsule.BaseClaudeCache] = c
+		} else {
+			skip[capsule.BaseClaudeCache] = why
+		}
 	}
-	if t := h.tmpDir(); tmpSafe(t) {
-		bases[capsule.BaseClaudeTmp] = t
+	if t := h.tmpDir(); t != "" {
+		if why := tmpUnsafe(t); why == "" {
+			bases[capsule.BaseClaudeTmp] = t
+		} else {
+			skip[capsule.BaseClaudeTmp] = why
+		}
+	}
+	// Only the kind's own secondary base is skipped (sessions: $TMP;
+	// projects: $CACHE): an entry of a base the kind never uses still
+	// rejects the capsule.
+	var own capsule.BaseID
+	switch ref.Kind {
+	case capsule.KindClaudeSession:
+		own = capsule.BaseClaudeTmp
+	case capsule.KindClaudeProject:
+		own = capsule.BaseClaudeCache
+	}
+	// usable: entries of the skipped base are still checked against the
+	// unit's targets; an entry of any other base is refused (exit 5).
+	usable := func(base capsule.BaseID) bool {
+		if _, ok := bases[base]; ok {
+			return true
+		}
+		_, skipped := skip[base]
+		return skipped && base == own
 	}
 	var index *ledger.Index
 	if e.Index != nil {
 		index = e.Index(harnessName)
 	}
 	rules := harness.TargetRules{Bases: bases, Mode: harness.GenLayered, Policy: func(capsule.Entry) harness.Placement { return harness.PlaceExact }}
+	if why, ok := skip[own]; ok {
+		rules.Skip = map[capsule.BaseID]string{own: why}
+	}
 	configOK := func(rel string, want func([]string) bool) bool {
 		parts, ok := cleanRel(rel)
 		return ok && !deniedByIdentity(cc, parts[0]) && want(parts)
@@ -64,7 +99,7 @@ func (a *adapter) Targets(ctx context.Context, e harness.Env, ref harness.UnitRe
 		}
 		sid := strings.ToLower(unitID)
 		rules.Allow = func(base capsule.BaseID, rel string) bool {
-			if _, ok := bases[base]; !ok {
+			if !usable(base) {
 				return false
 			}
 			switch base {
@@ -100,13 +135,26 @@ func (a *adapter) Targets(ctx context.Context, e harness.Env, ref harness.UnitRe
 			}
 			return harness.PlaceExact
 		}
+		// projects/<P>/<sid>.jsonl is placed after every other entry: a
+		// session Claude can resume is complete (REST-3, SPEC §7.1.1).
+		rules.Last = func(en capsule.Entry) bool {
+			if en.Base != capsule.BaseClaudeConfig {
+				return false
+			}
+			parts, ok := cleanRel(en.Rel)
+			if !ok {
+				return false
+			}
+			main, _ := isTranscript(parts, sid)
+			return main
+		}
 	case capsule.KindClaudeProject:
 		if !safeComponent(unitID) {
 			return harness.TargetRules{}, fmt.Errorf("%w: project directory", harness.ErrUnitKey)
 		}
 		proj := unitID
 		rules.Allow = func(base capsule.BaseID, rel string) bool {
-			if _, ok := bases[base]; !ok {
+			if !usable(base) {
 				return false
 			}
 			switch base {

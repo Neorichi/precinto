@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -106,7 +107,10 @@ func wantKind(s harness.Scope, k capsule.Kind) bool {
 
 // Scan returns one codex-home unit per protected root whose per-root home
 // holds content (D31, D42): every file except the never-touch list, SQLite
-// files in groups, -shm never.
+// files in groups, -shm never. A Codex session is sealed with its home,
+// never alone: a scope naming sessions (SIDs) returns the homes that hold
+// one of them. Scope.Procs and Scope.Adopt are ignored: a home is no
+// session, and there is nothing to adopt (CC-21).
 func (a *adapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) ([]harness.Unit, error) {
 	if a.invErr != nil {
 		return nil, a.invErr
@@ -114,8 +118,8 @@ func (a *adapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) ([]h
 	if len(e.Salt) == 0 {
 		return nil, errNoSalt
 	}
-	if len(s.SIDs) > 0 || !wantKind(s, capsule.KindCodexHome) {
-		return nil, nil // Codex sessions are sealed with their home, never alone
+	if !wantKind(s, capsule.KindCodexHome) {
+		return nil, nil
 	}
 	var out []harness.Unit
 	var errs []error
@@ -131,11 +135,47 @@ func (a *adapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) ([]h
 			errs = append(errs, fmt.Errorf("codex: home of %s: %w", r.ID, err))
 			continue
 		}
-		if ok {
+		if ok && (len(s.SIDs) == 0 || holdsSession(e, u, s.SIDs)) {
 			out = append(out, u)
 		}
 	}
 	return out, errors.Join(errs...)
+}
+
+// holdsSession reports whether the home of u holds one of the sessions
+// sids: its ledger names the home (CODEX_HOME, recorded by the hooks), or a
+// rollout of the home carries the session id in its name
+// (rollout-<time>-<id>.jsonl[.zst]).
+func holdsSession(e harness.Env, u harness.Unit, sids []string) bool {
+	home := u.Home.Bases[capsule.BaseCodexHome]
+	real := resolve(home)
+	for _, sid := range sids {
+		id := strings.ToLower(sid)
+		if id == "" {
+			continue
+		}
+		for _, name := range []string{sid, id} {
+			if e.Ledger == nil {
+				break
+			}
+			s, err := e.Ledger.Get(harnessName, name)
+			if err != nil {
+				continue
+			}
+			for _, d := range s.ConfigDirs {
+				if filepath.Clean(d) == home || resolve(d) == real {
+					return true
+				}
+			}
+		}
+		for _, f := range u.Files {
+			name := strings.ToLower(path.Base(f.Rel))
+			if strings.HasPrefix(name, "rollout-") && strings.Contains(name, id) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *adapter) scanHome(ctx context.Context, e harness.Env, r config.Root) (harness.Unit, bool, error) {
@@ -425,7 +465,9 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		QuitKeys:  []byte{0x03, 0x03},
 		KillGrace: harness.KillGrace(sessionEndBudget),
 	}
-	root, ok := e.Cfg.RootFor(filepath.Clean(cwd))
+	// Roots are realpath'd in config: a launch through a symlink into a
+	// folder runs on the folder's sealed home too.
+	root, ok := e.Cfg.RootFor(resolve(cwd))
 	if !ok || plan.Mode == harness.LaunchPassthrough {
 		plan.Mode = harness.LaunchPassthrough // unmanaged: the user's own home (D31)
 		if ok {
@@ -451,6 +493,10 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	plan.Sync = []harness.Selector{{Kind: capsule.KindCodexHome, RootID: root.ID, Keys: []string{key}}}
 	plan.Lease = []string{key}
 	plan.SealScope = harness.Scope{RootIDs: []string{root.ID}, Kinds: []capsule.Kind{capsule.KindCodexHome}}
+	if plan.Resume.Kind == harness.ResumeSID && !plan.Resume.Fork {
+		// The resumed session is known (CC-21): it is sealed with its home.
+		plan.SealScope.SIDs = []string{plan.Resume.Value}
+	}
 	plan.HookCheck = harness.HookCheck{Event: "UserPromptSubmit", Within: hookPresenceWithin, OnInput: true}
 	plan.Prepare = func(ctx context.Context) error { return prepareHome(ctx, seed) }
 	plan.Finish = func(ctx context.Context, _ int) error {
@@ -459,17 +505,46 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		}
 		return syncAuthBack(ctx, seed)
 	}
-	if st, err := fsx.Lstat(home); err != nil || !st.IsDir() {
+	switch {
+	case !managesCodex(root):
+		// D72: consent is per folder, in config. A folder that does not
+		// list codex asks first (yes adds it, a strengthening edit by the
+		// caller; no starts nothing, CC-20); a missing home is only the
+		// first launch of a folder that consented.
 		plan.Confirm = msgConsent
 		folder := root.Path
 		if h, err := paths.UserHome(e.Host); err == nil {
 			folder = paths.Tilde(h, root.Path)
 		}
 		plan.MsgVars = map[string]string{"folder": folder}
-	} else if trusted, known, _ := hooksTrusted(home); known && !trusted {
-		plan.Confirm = msgUntrusted
+	case homeExists(home):
+		// Prepare seeds a new home from the user's config; an existing one
+		// is checked for precinto's hook trust (UX10).
+		if trusted, known, _ := hooksTrusted(home); known && !trusted {
+			plan.Confirm = msgUntrusted
+		}
 	}
 	return plan, nil
+}
+
+// managesCodex reports whether a folder manages Codex (D72): its harness
+// list names codex; an empty list is the default, every built-in harness.
+func managesCodex(r config.Root) bool {
+	if len(r.Harnesses) == 0 {
+		return true
+	}
+	for _, h := range r.Harnesses {
+		if h == harnessName {
+			return true
+		}
+	}
+	return false
+}
+
+// homeExists reports whether the per-root home is a directory already.
+func homeExists(home string) bool {
+	st, err := fsx.Lstat(home)
+	return err == nil && st.IsDir()
 }
 
 func (a *adapter) resolveExe(e harness.Env, name string) (string, error) {

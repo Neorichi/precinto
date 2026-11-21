@@ -573,6 +573,29 @@ func TestUnobservedThenStableOrUnstable(t *testing.T) {
 	}
 }
 
+// D63: a quiet window of zero or less is 120 s, never "stable at once":
+// the second look must come a full 120 s after the first.
+func TestQuietWindowZeroMeans120s(t *testing.T) {
+	t.Parallel()
+	for _, q := range []time.Duration{0, -time.Second} {
+		r := newRig(t)
+		r.engine.Quiet = q
+		s := live.Subject{Key: "unit-q0", Paths: []string{r.file("a.jsonl", "x\n")}}
+		v := r.decide(s)
+		if !v.Live || len(v.Evidence) != 1 || v.Evidence[0].Reason != live.ReasonUnobserved {
+			t.Fatalf("quiet %v, first look: %+v, want only ReasonUnobserved", q, v)
+		}
+		r.clock.Advance(119 * time.Second)
+		if v := r.decide(s); !v.Live || !reasons(v)[live.ReasonUnobserved] {
+			t.Fatalf("quiet %v, 119 s later: %+v, want still unobserved", q, v)
+		}
+		r.clock.Advance(time.Second)
+		if v := r.decide(s); v.Live {
+			t.Fatalf("quiet %v, 120 s later: %+v, want not live", q, v)
+		}
+	}
+}
+
 // CC-55: probes racing Acquire never fail it (the shared flock is taken
 // with a bounded wait while a probe holds its momentary exclusive lock).
 func TestProbesNeverFailAcquire(t *testing.T) {

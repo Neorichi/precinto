@@ -303,7 +303,9 @@ func wantGeneric(s harness.Scope) bool {
 // Scan lists the experimental harness's partitions only when the scope
 // asks for generic units explicitly (`seal --dormant`): an ordinary sweep
 // never seals experimental data (SPEC §7.3). Units belong to the global
-// vault: experimental stores cannot be attributed to a folder.
+// vault: experimental stores cannot be attributed to a folder. A scope
+// naming sessions gets nothing (partitions are no sessions); Scope.Procs
+// and Scope.Adopt are ignored (CC-21).
 func (a *adapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) ([]harness.Unit, error) {
 	if !wantGeneric(s) || len(s.SIDs) > 0 || (len(s.RootIDs) > 0 && !s.Global) {
 		return nil, nil
@@ -633,9 +635,11 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	return harness.LaunchPlan{
 		Harness:   a.ID(),
 		Mode:      a.inv.Classify(args, true, true),
-		Roots:     e.Cfg.RootsFor(filepath.Clean(cwd)),
+		Roots:     e.Cfg.RootsFor(resolve(cwd)),
 		Argv:      append([]string{filepath.Clean(exe)}, args...),
 		SealScope: harness.Scope{}, // nothing: Scan answers only explicit --dormant scopes
+		// No hooks, so no SessionEnd budget: the minimum grace (CC-24).
+		KillGrace: harness.KillGrace(0),
 	}, nil
 }
 
