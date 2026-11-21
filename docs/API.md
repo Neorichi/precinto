@@ -1089,6 +1089,12 @@ type InitOptions struct {
 	Factors []FactorSpec
 	UI      UI
 	Now     func() time.Time
+	// Confirm, when set, receives the new recovery identity before
+	// anything is written (the caller shows or writes it and has the user
+	// confirm it, D7); an error from it ends Init with nothing created, so
+	// init can run again with a new key (UX-07). The buffer stays the
+	// caller's to read only: Init returns it on success.
+	Confirm func(recovery *memguard.LockedBuffer) error
 }
 
 // Keyring holds unlocked identities, one memguard enclave per vault id (D4).
@@ -1188,7 +1194,8 @@ func (s *Store) Create(ctx context.Context, id, rootPath string, ui UI) (*memgua
 
 // Init creates the install-wide recovery identity and the global vault
 // wrapped to every factor, and returns the recovery identity once, in a
-// locked buffer, for the caller to show or write per D7.
+// locked buffer, for the caller to show or write per D7 (with
+// InitOptions.Confirm, before the vault exists).
 func (s *Store) Init(ctx context.Context, o InitOptions) (*memguard.LockedBuffer, error)
 
 // Initialized reports whether init has run (recovery recipient and global
@@ -4678,6 +4685,31 @@ type UnitResult struct {
 
 ## G5 hooks & packaging
 
+### `github.com/precinto/precinto` (module root)
+
+- Owner: **G5 hooks & packaging** · layer 0 · production
+- May import (module): none
+- May import (third party): stdlib only
+- Tests: the embedded files equal the repository's two marketplace manifests and plugin roots byte for byte, nothing more, nothing less (plugins_test.go)
+
+> Package precinto carries precinto's harness plugins and their
+> marketplace manifests (SPEC §21) inside the binary, so that `precinto
+> integrate` installs them from bytes precinto controls, written under
+> precinto's own directory, and never from a network marketplace (D116).
+>
+> The files are embedded at their repository paths: the Claude Code
+> marketplace (.claude-plugin/marketplace.json → plugin/), the Codex one
+> (.agents/plugins/marketplace.json → plugins/codex/, byte-stable, D41,
+> D78) and every file of both plugin roots. Directories are named one by
+> one so that a stray dot file of a checkout (.DS_Store) is never
+> embedded; a test keeps the list equal to the repository's files.
+
+```go
+// Plugins holds the marketplace manifests and the plugin files, at their
+// repository paths.
+var Plugins embed.FS
+```
+
 ### `internal/hook`
 
 - Owner: **G5 hooks & packaging** · layer 8 · production
@@ -5376,7 +5408,9 @@ func DefaultBase(e Env) (string, error)
 // (exec.LookPath reads the process environment, which only this package
 // may do). A name containing '/' must be absolute and is checked as is.
 // Prefer absolute system paths (/usr/sbin/lsof, /usr/sbin/ioreg) where
-// they are fixed. Implemented in the scaffold.
+// they are fixed. A name that is not found is an error matching
+// exec.ErrNotFound (`precinto run` exits 127 for it, UX-16). Implemented
+// in the scaffold.
 func LookPath(e Env, name string) (string, error)
 
 // OverridesAllowed reports whether PRECINTO_HOME/PRECINTO_RUNTIME_DIR may be
@@ -5450,6 +5484,11 @@ type Layout struct {
 	ConfigFile string // <base>/config.toml
 	RootsList  string // <base>/roots.list (D22; read by the POSIX shim)
 	BinLink    string // <base>/bin/precinto (pinned binary symlink written by integrate, D6)
+	// Marketplace is <base>/marketplace: precinto's plugins and their two
+	// marketplace manifests, written byte for byte from the binary by
+	// integrate, which adds it to the harness as a local marketplace
+	// (D116). Not created by EnsureDirs.
+	Marketplace string
 
 	VaultsDir     string // <base>/vaults/<vault-id>/ (D1)
 	FactorsDir    string // <base>/factors/ (non-secret factor stubs, e.g. se.identity)
@@ -5914,10 +5953,16 @@ const (
 	MsgUnlockHook         MsgID = "C2.hook"            // precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.
 	MsgUnlockPassphrase   MsgID = "C2.passphrase"      // precinto passphrase for {folder} (Ctrl-C to cancel):
 	MsgUnlockTouch        MsgID = "C2.touch"           // Touch your YubiKey...
-	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
+	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring up to {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
 	MsgUnlockCancelled    MsgID = "C2.cancelled"       // precinto: unlock cancelled. {folder} stays locked.
 	MsgUnlockBadSecret    MsgID = "C2.badsecret"       // precinto: that passphrase or recovery key is not right. {folder} stays locked.
 	MsgUnlockNoGUI        MsgID = "C2.nogui"           // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
+	MsgUnlockNeedTTY      MsgID = "C2.needtty"         // precinto: unlocking {folder} with your {factor} needs a terminal. Run precinto unlock in a terminal; every terminal unlocks at once.
+	MsgUnlockNeedTTYPlain MsgID = "C2.needtty.plain"   // precinto: unlocking {folder} needs a terminal. Run precinto unlock in a terminal; every terminal unlocks at once.
+	MsgUnlockWait         MsgID = "C2.wait"            // precinto: {folder} stays locked for now: after a cancelled or mistyped unlock, precinto waits before it asks again. Try again in {wait}: precinto unlock
+	MsgUnlockTooMany      MsgID = "C2.toomany"         // precinto: {folder} stays locked for now: precinto asks for it at most {n} times a minute. Try again in {wait}: precinto unlock
+	MsgUnlockPromptsOff   MsgID = "C2.promptsoff"      // precinto: {folder} stays locked: unlock prompts are turned off (policy.prompt_rate_per_minute is 0 in the settings in force). Set it to 1 or more in config.toml, then run precinto unlock.
+	MsgUnlockRetry        MsgID = "C2.retry"           // precinto: you can try again in {wait}: precinto unlock
 	MsgUnlockPassFallback MsgID = "C2.passfallback"    // Using your precinto passphrase instead.
 	MsgUnlockConfirmAll   MsgID = "C2.confirmall"      // precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type "unlock" to confirm:
 	MsgPromptBlocked      MsgID = "C3.blocked"         // precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.
@@ -5969,6 +6014,7 @@ const (
 	MsgPolicyPending      MsgID = "C13.policy"         // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
 	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
 	MsgPolicyConfirm      MsgID = "C13.confirm"        // Confirm these changes? [y/N]
+	MsgPolicyReview       MsgID = "C13.review"         // precinto: these config.toml changes weaken protection and wait for your confirmation ({n}):
 	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
 	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
 	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
@@ -5982,10 +6028,13 @@ const (
 	MsgPassphraseDiff     MsgID = "B.passphrase.diff"  // the two passphrases differ. Try again.
 	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase:
 	MsgRecoveryHeader     MsgID = "B.recovery.header"  // Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.
+	MsgTypeBack           MsgID = "B.typeback"         // Type its last {n} characters to continue:
+	MsgTypeBackWrong      MsgID = "B.typeback.wrong"   // Those are not its last {n} characters. Type them again:
 	MsgRecoveryAgain      MsgID = "B.recovery.again"   // The recovery key is shown only now. Show it again? [Y/n]
 	MsgRecoveryLost       MsgID = "B.recovery.lost"    // WARNING: the recovery key was not confirmed and cannot be shown again. Keep your other ways to unlock safe.
 	MsgRecoveryWritten    MsgID = "B.recovery.written" // recovery key written to {file}. Move it offline (it opens every sealed folder).
 	MsgRecoveryPrompt     MsgID = "B.recovery.prompt"  // precinto recovery key:
+	MsgRecoveryWrongKey   MsgID = "B.recovery.wrong"   // precinto: that is not the recovery key of this precinto installation; nothing was changed. Check the key you wrote down and try again.
 	MsgServiceOffer       MsgID = "B.service"          // Seal in the background every 10 minutes (installs a LaunchAgent)? [Y/n]
 	MsgNotProtected       MsgID = "E.notprotected"     // {folder} is not inside a protected folder. Protect it with: precinto protect DIR
 	MsgNotInitialized     MsgID = "E.notinit"          // precinto is not set up yet. Run: precinto init
@@ -6063,18 +6112,19 @@ type Vars struct {
 	N        int    // {n}
 	Until    time.Time
 	Limit    time.Duration
-	SID      string // {sid}: short sid (first 8 characters are shown)
-	PID      int    // {pid}
-	Files    int    // {files}
-	Bytes    int64  // {size}: HumanBytes
-	Cause    string // {cause}: short error class, never an OS error string
-	Resume   string // {resume}: resume command
-	Days     int    // {days}
-	File     string // {file}
-	Conflict string // {conflict}
-	Action   string // {action}
-	Command  string // {command}
-	Unit     string // {unit}: unit key (note markers)
+	Wait     time.Duration // {wait}: time left before precinto asks again ("30 s", "1 min")
+	SID      string        // {sid}: short sid (first 8 characters are shown)
+	PID      int           // {pid}
+	Files    int           // {files}
+	Bytes    int64         // {size}: HumanBytes
+	Cause    string        // {cause}: short error class, never an OS error string
+	Resume   string        // {resume}: resume command
+	Days     int           // {days}
+	File     string        // {file}
+	Conflict string        // {conflict}
+	Action   string        // {action}
+	Command  string        // {command}
+	Unit     string        // {unit}: unit key (note markers)
 }
 
 // Writer prints status/summary lines to w with the "precinto: " prefix.
@@ -6103,6 +6153,9 @@ func (w Writer) Line(id MsgID, v Vars)
 // as status attention items reuse the ipc.Attn* constants, so `status` and
 // `doctor` speak one kebab-case vocabulary.
 const (
+	// CheckConfig: config.toml does not load (its key, line and reason);
+	// commands that read it stop until it is fixed (UX-09).
+	CheckConfig            = "config"
 	CheckDiskEncryption    = "disk-encryption" // FileVault / encrypted home (S18)
 	CheckUnhardenedBuild   = ipc.AttnUnhardenedBuild
 	CheckLoaderEnv         = "loader-env"          // DYLD_*/LD_* present
@@ -6184,6 +6237,10 @@ type Options struct {
 	Procs   platform.ProcTable
 	Leaks   bool   // also scan residue locations (slow)
 	Harness string // limit to one harness
+	// ConfigErr is why config.toml did not load (config.Load), nil when it
+	// did: the config check fails with it, and the other checks run with
+	// Cfg, the settings confirmed last or the defaults (UX-09).
+	ConfigErr error
 }
 
 // Severity of a finding.
@@ -6329,6 +6386,14 @@ const Module = "github.com/precinto/precinto"
 // (Value elided here: it is rendered as the per-package headers of docs/API.md.)
 var Packages []Package
 
+// ContractPath is ImportPath's inverse for a path of the module (ok is
+// false for any other import path).
+func ContractPath(importPath string) (string, bool)
+
+// ImportPath returns the import path of the contract path rel ("." is the
+// module root package).
+func ImportPath(rel string) string
+
 // Package describes one package of the contract.
 type Package struct {
 	Path     string   // relative to Module
@@ -6364,7 +6429,7 @@ type Package struct {
 ### `cmd/precinto`
 
 - Owner: **G7 CLI** · layer 10 · production
-- May import (module): `internal/fsx`, `internal/fsx/failpoint`, `internal/paths`, `internal/platform`, `internal/config`, `internal/capsule`, `internal/vault`, `internal/ui`, `internal/sweep/journal`, `internal/sweep/capslog`, `internal/sweep/queue`, `internal/ledger`, `internal/ipc`, `internal/live`, `inventories`, `internal/harness`, `internal/harness/claude`, `internal/harness/codex`, `internal/harness/generic`, `internal/sweep`, `internal/agent`, `internal/hook`, `internal/shellinit`, `internal/wrapper`, `internal/doctor`
+- May import (module): `.`, `internal/fsx`, `internal/fsx/failpoint`, `internal/paths`, `internal/platform`, `internal/config`, `internal/capsule`, `internal/vault`, `internal/ui`, `internal/sweep/journal`, `internal/sweep/capslog`, `internal/sweep/queue`, `internal/ledger`, `internal/ipc`, `internal/live`, `inventories`, `internal/harness`, `internal/harness/claude`, `internal/harness/codex`, `internal/harness/generic`, `internal/sweep`, `internal/agent`, `internal/hook`, `internal/shellinit`, `internal/wrapper`, `internal/doctor`
 - May import (third party): stdlib, `filippo.io/age`, `github.com/awnumar/memguard`, `golang.org/x/term`
 - Tests: unit: seam assertions compile (seams.go), marker text mirrors ui C11.marker; integration (test/integration, -tags testing): every subcommand's flags, exit codes and messages against testkit homes; E2E (PRECINTO_E2E=1): real claude/codex flows
 

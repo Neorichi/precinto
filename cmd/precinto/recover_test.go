@@ -6,6 +6,7 @@ import (
 
 	"filippo.io/age"
 
+	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/vault"
 )
 
@@ -85,5 +86,30 @@ func TestRecoverVerifyNewestCapsuleSealedElsewhere(t *testing.T) {
 	}
 	if len(e.vaults.verifiedAt) != 0 {
 		t.Fatalf("a failed verify was recorded: %v", e.vaults.verifiedAt)
+	}
+}
+
+// UX-18: a wrong key at recover says so in recover's own words: no folder
+// is being unlocked, so it never says "the folder stays locked".
+func TestRecoverWrongKeyMessage(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t)
+	e.tty = nil
+	m := e.vaults.metas[vault.GlobalID]
+	m.RecoveryRecipient = id.Recipient().String()
+	e.vaults.metas[vault.GlobalID] = m
+	e.in.WriteString(other.String() + "\n")
+	if code := e.run("recover", "--verify"); code != exitLocked {
+		t.Fatalf("exit %d (stderr %q)", code, e.stderr())
+	}
+	if got, want := e.stderr(), ui.Format(ui.MsgRecoveryWrongKey, ui.Vars{})+"\n"; got != want {
+		t.Fatalf("stderr %q, want %q", got, want)
 	}
 }

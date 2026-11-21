@@ -87,7 +87,7 @@ func run(ctx context.Context, o Options, d *deps) ([]Finding, error) {
 	var out []Finding
 	for _, c := range registry() {
 		if err := ctx.Err(); err != nil {
-			return finalize(out), err
+			return e.standIn(finalize(out)), err
 		}
 		if c.leaks && !o.Leaks {
 			continue
@@ -98,7 +98,29 @@ func run(ctx context.Context, o Options, d *deps) ([]Finding, error) {
 		out = append(out, e.runCheck(c)...)
 	}
 	out = append(out, e.attentionFindings()...)
-	return finalize(out), ctx.Err()
+	return e.standIn(finalize(out)), ctx.Err()
+}
+
+// standInNote ends the message of a folder check that found nothing while
+// config.toml does not load.
+const standInNote = " (checked without config.toml, which does not load)"
+
+// standIn marks a Run without config.toml (Options.ConfigErr): a folder
+// check that found nothing looked only at the settings standing in for the
+// file, which may lack folders or settings it holds, so it is info, never
+// ok (UX-09). The config finding says what to fix.
+func (e *env) standIn(fs []Finding) []Finding {
+	if e.o.ConfigErr == nil {
+		return fs
+	}
+	folders := folderChecks()
+	for i := range fs {
+		if fs[i].Severity == OK && folders[fs[i].Code] {
+			fs[i].Severity = Info
+			fs[i].Message += standInNote
+		}
+	}
+	return fs
 }
 
 // selectHarness validates Options.Harness: "" selects every harness, a

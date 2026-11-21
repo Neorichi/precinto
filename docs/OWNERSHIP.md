@@ -42,6 +42,7 @@ Eight groups implement precinto in parallel against the frozen contract in `docs
 | `plugin/` (to create: `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.github/plugin/plugin.json`, `hooks/hooks.json`, `hooks/cursor.json`, `hooks/copilot.json`, `scripts/precinto-hook`, `commands/lock.md`, `commands/status.md`, `skills/precinto/SKILL.md`) | **G5** | exact hooks files in HOOKS-IO §2.2; no unlock command |
 | `plugins/codex/` (to create: `.codex-plugin/plugin.json`, `hooks/codex.json`, `scripts/precinto-hook`) | **G5** | byte-stable across releases (D41); HOOKS-IO §3.2 |
 | `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json` (to create) | **G5** | marketplaces (SPEC §21) |
+| `plugins.go` (module root package `precinto`) | **G5** | embeds both marketplaces and plugin roots for `precinto integrate` (D116); its test keeps the embedded files equal to the repository's |
 | `test/e2e/hooks/` (to create) | **G5** | opt-in E2E with real `claude` |
 | `internal/wrapper/` | **G6** | PTY proxy, lock screen, scrollback replay, input gating, signals, run orchestration via `Backend` |
 | `test/e2e/wrapper/` (to create) | **G6** | opt-in E2E of the lock screen and resume |

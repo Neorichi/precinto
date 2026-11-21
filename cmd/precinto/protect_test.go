@@ -323,7 +323,9 @@ func TestUnprotectFlow(t *testing.T) {
 	if n := len(e.daemon.policies); n != 2 || !e.daemon.policies[1].Confirm {
 		t.Fatalf("policy calls %+v", e.daemon.policies)
 	}
-	if !strings.Contains(e.stderr(), ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1})) {
+	// UX-14: the review happens now, in this terminal: C13.review, never
+	// C13.policy's "at your next unlock".
+	if !strings.Contains(e.stderr(), ui.Format(ui.MsgPolicyReview, ui.Vars{N: 1})) || strings.Contains(e.stderr(), ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1})) {
 		t.Fatalf("stderr %q", e.stderr())
 	}
 }

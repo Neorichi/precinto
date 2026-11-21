@@ -257,10 +257,16 @@ const (
 	MsgUnlockHook         MsgID = "C2.hook"            // precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.
 	MsgUnlockPassphrase   MsgID = "C2.passphrase"      // precinto passphrase for {folder} (Ctrl-C to cancel):
 	MsgUnlockTouch        MsgID = "C2.touch"           // Touch your YubiKey...
-	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
+	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring up to {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
 	MsgUnlockCancelled    MsgID = "C2.cancelled"       // precinto: unlock cancelled. {folder} stays locked.
 	MsgUnlockBadSecret    MsgID = "C2.badsecret"       // precinto: that passphrase or recovery key is not right. {folder} stays locked.
 	MsgUnlockNoGUI        MsgID = "C2.nogui"           // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
+	MsgUnlockNeedTTY      MsgID = "C2.needtty"         // precinto: unlocking {folder} with your {factor} needs a terminal. Run precinto unlock in a terminal; every terminal unlocks at once.
+	MsgUnlockNeedTTYPlain MsgID = "C2.needtty.plain"   // precinto: unlocking {folder} needs a terminal. Run precinto unlock in a terminal; every terminal unlocks at once.
+	MsgUnlockWait         MsgID = "C2.wait"            // precinto: {folder} stays locked for now: after a cancelled or mistyped unlock, precinto waits before it asks again. Try again in {wait}: precinto unlock
+	MsgUnlockTooMany      MsgID = "C2.toomany"         // precinto: {folder} stays locked for now: precinto asks for it at most {n} times a minute. Try again in {wait}: precinto unlock
+	MsgUnlockPromptsOff   MsgID = "C2.promptsoff"      // precinto: {folder} stays locked: unlock prompts are turned off (policy.prompt_rate_per_minute is 0 in the settings in force). Set it to 1 or more in config.toml, then run precinto unlock.
+	MsgUnlockRetry        MsgID = "C2.retry"           // precinto: you can try again in {wait}: precinto unlock
 	MsgUnlockPassFallback MsgID = "C2.passfallback"    // Using your precinto passphrase instead.
 	MsgUnlockConfirmAll   MsgID = "C2.confirmall"      // precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type "unlock" to confirm:
 	MsgPromptBlocked      MsgID = "C3.blocked"         // precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.
@@ -312,6 +318,7 @@ const (
 	MsgPolicyPending      MsgID = "C13.policy"         // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
 	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
 	MsgPolicyConfirm      MsgID = "C13.confirm"        // Confirm these changes? [y/N]
+	MsgPolicyReview       MsgID = "C13.review"         // precinto: these config.toml changes weaken protection and wait for your confirmation ({n}):
 	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
 	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
 	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
@@ -325,10 +332,13 @@ const (
 	MsgPassphraseDiff     MsgID = "B.passphrase.diff"  // the two passphrases differ. Try again.
 	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase:
 	MsgRecoveryHeader     MsgID = "B.recovery.header"  // Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.
+	MsgTypeBack           MsgID = "B.typeback"         // Type its last {n} characters to continue:
+	MsgTypeBackWrong      MsgID = "B.typeback.wrong"   // Those are not its last {n} characters. Type them again:
 	MsgRecoveryAgain      MsgID = "B.recovery.again"   // The recovery key is shown only now. Show it again? [Y/n]
 	MsgRecoveryLost       MsgID = "B.recovery.lost"    // WARNING: the recovery key was not confirmed and cannot be shown again. Keep your other ways to unlock safe.
 	MsgRecoveryWritten    MsgID = "B.recovery.written" // recovery key written to {file}. Move it offline (it opens every sealed folder).
 	MsgRecoveryPrompt     MsgID = "B.recovery.prompt"  // precinto recovery key:
+	MsgRecoveryWrongKey   MsgID = "B.recovery.wrong"   // precinto: that is not the recovery key of this precinto installation; nothing was changed. Check the key you wrote down and try again.
 	MsgServiceOffer       MsgID = "B.service"          // Seal in the background every 10 minutes (installs a LaunchAgent)? [Y/n]
 	MsgNotProtected       MsgID = "E.notprotected"     // {folder} is not inside a protected folder. Protect it with: precinto protect DIR
 	MsgNotInitialized     MsgID = "E.notinit"          // precinto is not set up yet. Run: precinto init
@@ -348,10 +358,16 @@ var catalog = map[MsgID]string{
 	MsgUnlockHook:         "precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.",
 	MsgUnlockPassphrase:   "precinto passphrase for {folder} (Ctrl-C to cancel):",
 	MsgUnlockTouch:        "Touch your YubiKey...",
-	MsgUnlockOK:           "precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.",
+	MsgUnlockOK:           "precinto: {folder} unlocked. Restoring up to {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.",
 	MsgUnlockCancelled:    "precinto: unlock cancelled. {folder} stays locked.",
 	MsgUnlockBadSecret:    "precinto: that passphrase or recovery key is not right. {folder} stays locked.",
 	MsgUnlockNoGUI:        "precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.",
+	MsgUnlockNeedTTY:      "precinto: unlocking {folder} with your {factor} needs a terminal. Run precinto unlock in a terminal; every terminal unlocks at once.",
+	MsgUnlockNeedTTYPlain: "precinto: unlocking {folder} needs a terminal. Run precinto unlock in a terminal; every terminal unlocks at once.",
+	MsgUnlockWait:         "precinto: {folder} stays locked for now: after a cancelled or mistyped unlock, precinto waits before it asks again. Try again in {wait}: precinto unlock",
+	MsgUnlockTooMany:      "precinto: {folder} stays locked for now: precinto asks for it at most {n} times a minute. Try again in {wait}: precinto unlock",
+	MsgUnlockPromptsOff:   "precinto: {folder} stays locked: unlock prompts are turned off (policy.prompt_rate_per_minute is 0 in the settings in force). Set it to 1 or more in config.toml, then run precinto unlock.",
+	MsgUnlockRetry:        "precinto: you can try again in {wait}: precinto unlock",
 	MsgUnlockPassFallback: "Using your precinto passphrase instead.",
 	MsgUnlockConfirmAll:   "precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type \"unlock\" to confirm:",
 	MsgPromptBlocked:      "precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.",
@@ -403,6 +419,7 @@ var catalog = map[MsgID]string{
 	MsgPolicyPending:      "precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.",
 	MsgPolicyTampered:     "precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.",
 	MsgPolicyConfirm:      "Confirm these changes? [y/N]",
+	MsgPolicyReview:       "precinto: these config.toml changes weaken protection and wait for your confirmation ({n}):",
 	MsgVaultTampered:      "precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}",
 	MsgVaultRepairConfirm: "precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type \"repair\" to confirm:",
 	MsgVaultRepaired:      "precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.",
@@ -416,10 +433,13 @@ var catalog = map[MsgID]string{
 	MsgPassphraseDiff:     "the two passphrases differ. Try again.",
 	MsgPassphraseGen:      "Your new precinto passphrase:",
 	MsgRecoveryHeader:     "Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.",
+	MsgTypeBack:           "Type its last {n} characters to continue:",
+	MsgTypeBackWrong:      "Those are not its last {n} characters. Type them again:",
 	MsgRecoveryAgain:      "The recovery key is shown only now. Show it again? [Y/n]",
 	MsgRecoveryLost:       "WARNING: the recovery key was not confirmed and cannot be shown again. Keep your other ways to unlock safe.",
 	MsgRecoveryWritten:    "recovery key written to {file}. Move it offline (it opens every sealed folder).",
 	MsgRecoveryPrompt:     "precinto recovery key:",
+	MsgRecoveryWrongKey:   "precinto: that is not the recovery key of this precinto installation; nothing was changed. Check the key you wrote down and try again.",
 	MsgServiceOffer:       "Seal in the background every 10 minutes (installs a LaunchAgent)? [Y/n]",
 	MsgNotProtected:       "{folder} is not inside a protected folder. Protect it with: precinto protect DIR",
 	MsgNotInitialized:     "precinto is not set up yet. Run: precinto init",
@@ -441,18 +461,19 @@ type Vars struct {
 	N        int    // {n}
 	Until    time.Time
 	Limit    time.Duration
-	SID      string // {sid}: short sid (first 8 characters are shown)
-	PID      int    // {pid}
-	Files    int    // {files}
-	Bytes    int64  // {size}: HumanBytes
-	Cause    string // {cause}: short error class, never an OS error string
-	Resume   string // {resume}: resume command
-	Days     int    // {days}
-	File     string // {file}
-	Conflict string // {conflict}
-	Action   string // {action}
-	Command  string // {command}
-	Unit     string // {unit}: unit key (note markers)
+	Wait     time.Duration // {wait}: time left before precinto asks again ("30 s", "1 min")
+	SID      string        // {sid}: short sid (first 8 characters are shown)
+	PID      int           // {pid}
+	Files    int           // {files}
+	Bytes    int64         // {size}: HumanBytes
+	Cause    string        // {cause}: short error class, never an OS error string
+	Resume   string        // {resume}: resume command
+	Days     int           // {days}
+	File     string        // {file}
+	Conflict string        // {conflict}
+	Action   string        // {action}
+	Command  string        // {command}
+	Unit     string        // {unit}: unit key (note markers)
 }
 
 // Format renders a catalog message: every {placeholder} of the text is
@@ -492,6 +513,7 @@ func Format(id MsgID, v Vars) string {
 		"{n}", strconv.Itoa(v.N),
 		"{until}", v.Until.Format("15:04"),
 		"{limit}", humanDuration(v.Limit),
+		"{wait}", humanDuration(v.Wait),
 		"{sid}", sid,
 		"{pid}", strconv.Itoa(v.PID),
 		"{files}", strconv.Itoa(v.Files),

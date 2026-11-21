@@ -103,7 +103,7 @@ func TestImportAllowlist(t *testing.T) {
 		}
 		allowed := map[string]bool{}
 		for _, a := range pkg.Internal {
-			allowed[Module+"/"+a] = true
+			allowed[ImportPath(a)] = true
 		}
 		for _, a := range pkg.External {
 			allowed[a] = true
@@ -122,8 +122,8 @@ func TestImportAllowlist(t *testing.T) {
 					t.Errorf("%s imports %s, which is not in its allowlist (docs/API.md)", rel, path)
 					continue
 				}
-				if strings.HasPrefix(path, Module+"/") {
-					dep := contract[strings.TrimPrefix(path, Module+"/")]
+				if rel, ok := ContractPath(path); ok {
+					dep := contract[rel]
 					if dep.TestOnly && !pkg.TestOnly {
 						t.Errorf("%s (production) imports test-only %s", rel, dep.Path)
 					}

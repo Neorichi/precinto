@@ -33,7 +33,7 @@ func TestAnswererRepliesToCatalogPrompts(t *testing.T) {
 		ui.Format(ui.MsgServiceOffer, ui.Vars{}),
 		ui.Format(ui.MsgCodexConsent, ui.Vars{Folder: folder}),
 		ui.Format(ui.MsgUnlockPassphrase, ui.Vars{Folder: folder}),
-		ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1}) + "\n  policy.unlock_on_prompt: false -> true\n" + ui.Format(ui.MsgPolicyConfirm, ui.Vars{}),
+		ui.Format(ui.MsgPolicyReview, ui.Vars{N: 1}) + "\n  policy.unlock_on_prompt: false -> true\n" + ui.Format(ui.MsgPolicyConfirm, ui.Vars{}),
 	}
 	for _, accept := range []bool{false, true} {
 		out := filepath.Join(dir, "answers.txt")

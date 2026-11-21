@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -297,5 +298,89 @@ func TestMinimalOptions(t *testing.T) {
 			t.Fatal(err)
 		}
 		checkInvariants(t, fs, nil)
+	}
+}
+
+// UX-09: a config.toml that does not load is a failing finding with the
+// key, the line and the reason, and the other checks still run (doctor is
+// the command that diagnoses a broken configuration).
+func TestConfigFinding(t *testing.T) {
+	f := newFixture(t)
+	want(t, f.run(), doctor.CheckConfig, doctor.OK)
+	path := writeFile(t, f.h.Layout.ConfigFile, "version = 1\n[policy]\nmin_free = \"2GB\"\n", 0o600)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("the broken config loaded")
+	}
+	f.o.ConfigErr = err
+	fs := f.run()
+	got := want(t, fs, doctor.CheckConfig, doctor.Fail, "config.toml", "line 3", "policy.min_free", `"2GiB"`)
+	if !strings.Contains(got.Fix, path) {
+		t.Errorf("fix %q does not name %s", got.Fix, path)
+	}
+	if strings.Contains(got.Message, "invalid configuration") {
+		t.Errorf("message keeps the Go error class: %q", got.Message)
+	}
+	want(t, fs, doctor.CheckPermissions, doctor.OK) // the rest of the run
+	if doctor.Worst(fs) != doctor.Fail {
+		t.Errorf("worst %s", doctor.Worst(fs))
+	}
+	// A folder check that found nothing looked only at the settings
+	// standing in for the file: it is info, never ok.
+	want(t, fs, doctor.CheckUnsealed, doctor.Info, "no plaintext of a locked folder was found (checked without config.toml, which does not load)")
+	for _, x := range fs {
+		if x.Severity == doctor.OK && slices.Contains([]string{doctor.CheckUnsealed, doctor.CheckHoldCapped, doctor.CheckVaultTampered, doctor.CheckSpotlight}, x.Code) {
+			t.Errorf("folder check %s is ok without config.toml: %q", x.Code, x.Message)
+		}
+	}
+	// Plaintext the stand-in settings find is still reported as found.
+	f.d.Plaintext = func(context.Context) ([]sweep.Plaintext, error) {
+		return []sweep.Plaintext{{RootID: "root-acme", Files: 1, Bytes: 11, ByReason: map[string]int{"notes": 1}}}, nil
+	}
+	fs = f.run()
+	want(t, fs, doctor.CheckUnsealed, doctor.Warn, "1 file (11 B) of "+f.tilde(f.h.Root)+" is unencrypted although the folder is locked: notes 1")
+	for _, x := range of(fs, doctor.CheckUnsealed) {
+		if strings.Contains(x.Message, "no plaintext") {
+			t.Errorf("unsealed says nothing was found next to the note: %+v", x)
+		}
+	}
+}
+
+// UX-18: no text doctor can show carries an internal decision id: every
+// string literal of the package's non-test files is checked, so a finding
+// no test triggers is covered too.
+func TestFindingTextsHaveNoDecisionIDs(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(node ast.Node) bool {
+			lit, ok := node.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			s, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			n++
+			if id := decisionID.FindString(pathToken.ReplaceAllString(s, "PATH")); id != "" {
+				t.Errorf("%s: %q shows %s", fset.Position(lit.Pos()), s, id)
+			}
+			return true
+		})
+	}
+	if n < 200 {
+		t.Fatalf("only %d literals found; the parse is wrong", n)
 	}
 }

@@ -5,10 +5,15 @@ import (
 	"errors"
 	"io/fs"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/wrapper"
 )
 
@@ -55,6 +60,13 @@ func (a *app) runHarness(h harness.ID, argv []string, noPTY bool) int {
 	if err != nil {
 		return a.fail("run", err)
 	}
+	if argv, err = a.commandArgv(eng, cfg, h, wd, argv); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			a.say(textRunNotFound, filepath.Base(argv[0]))
+			return 127
+		}
+		return a.fail("run", err)
+	}
 	b := newBackend(a, eng)
 	defer b.close()
 	code, err := a.sys.wrapperRun(ctx, wrapper.Options{
@@ -73,9 +85,14 @@ func (a *app) runHarness(h harness.ID, argv []string, noPTY bool) int {
 		// The child never started (CC-42): map the reason with the API §5
 		// table. Restore-before-launch refusals keep their class (a Codex
 		// home that diverged is exit 4, a forged capsule exit 5); an
-		// executable that cannot be started keeps the shell's 127/126.
+		// executable that cannot be started keeps the shell's 127/126. A
+		// harness that is not installed says so in one line (UX-16).
 		if err == nil {
 			err = errors.New("the harness did not start")
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			a.say(textRunNotFound, filepath.Base(argv[0]))
+			return 127
 		}
 		if c, ok := execFailureCode(err); ok {
 			return a.failWith("run", err, c)
@@ -88,6 +105,65 @@ func (a *app) runHarness(h harness.ID, argv []string, noPTY bool) int {
 		return a.failWith("run", err, code)
 	}
 	return code
+}
+
+// commandArgv keeps the command the user named (UX-18). The adapters run
+// the configured [harness.<id>].bin for a relative argv[0], which is right
+// for the harness's own name (ownCommand) but would silently replace any
+// other command given with --harness: such a command is resolved here, a
+// bare name through PATH and a relative path against the working
+// directory, so the adapter keeps it. A bare name that is not in PATH is
+// exec.ErrNotFound.
+func (a *app) commandArgv(eng engine, cfg config.Config, h harness.ID, wd string, argv []string) ([]string, error) {
+	name := argv[0]
+	if filepath.IsAbs(name) {
+		return argv, nil
+	}
+	out := append([]string(nil), argv...)
+	if strings.Contains(name, "/") {
+		out[0] = filepath.Join(wd, name)
+		return out, nil
+	}
+	if ownCommand(eng, cfg, h, name) {
+		return argv, nil
+	}
+	p, err := paths.LookPath(a.env, name)
+	if err != nil {
+		return argv, err
+	}
+	out[0] = p
+	return out, nil
+}
+
+// ownCommand reports whether the bare command name is harness h's own, the
+// one its adapter resolves to [harness.<h>].bin: the harness id, the name
+// of the configured bin, or a name its inventory recognises as the harness
+// (exe_basenames, argv_regex; claude for claude-code). Experimental
+// harnesses such as gemini have only argv_regex, which HarnessFor does not
+// read.
+func ownCommand(eng engine, cfg config.Config, h harness.ID, name string) bool {
+	if name == string(h) || name == harnessCommand(string(h)) {
+		return true
+	}
+	if bin := cfg.Harness[string(h)].Bin; bin != "" && filepath.Base(bin) == name {
+		return true
+	}
+	if id, ok := eng.HarnessFor(name); ok && id == h {
+		return true
+	}
+	inv, ok := eng.Inventory(h)
+	if !ok {
+		return false
+	}
+	if slices.Contains(inv.Process.ExeBasenames, name) {
+		return true
+	}
+	for _, expr := range inv.Process.ArgvRegex {
+		if re, err := regexp.Compile(expr); err == nil && re.MatchString(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // execFailureCode maps a failed exec of the harness to the shell's

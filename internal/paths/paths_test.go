@@ -2,6 +2,7 @@ package paths_test
 
 import (
 	"errors"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -129,6 +130,22 @@ func TestLookPath(t *testing.T) {
 	}
 	if _, err := paths.LookPath(e, "./sh"); err == nil {
 		t.Error("relative path with a slash accepted")
+	}
+}
+
+// UX-16: a command that is not in PATH (or an absolute path that is not
+// an executable) is exec.ErrNotFound, which `precinto run` maps to the
+// shell's 127, with an unchanged message.
+func TestLookPathNotFoundIsErrNotFound(t *testing.T) {
+	e := paths.FromMap(map[string]string{"PATH": "/bin:/usr/bin"})
+	for _, name := range []string{"precinto-no-such-tool", "/nonexistent/precinto-no-such-tool"} {
+		_, err := paths.LookPath(e, name)
+		if !errors.Is(err, exec.ErrNotFound) {
+			t.Errorf("LookPath(%s) = %v, want exec.ErrNotFound", name, err)
+		}
+		if err != nil && !strings.HasPrefix(err.Error(), "paths: "+name) {
+			t.Errorf("LookPath(%s) message %q", name, err)
+		}
 	}
 }
 

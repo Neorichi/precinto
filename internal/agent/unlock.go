@@ -340,8 +340,8 @@ func (d *daemon) unlockOne(ctx context.Context, cs *connState, reqID uint64, r i
 	if !leader {
 		return d.unlockErr(id, fl.wait(ctx))
 	}
-	if ok, wait := d.limiter.check(id, r.FromHook, true); !ok {
-		err := errRateLimited{wait}
+	if ok, wait, why := d.limiter.check(id, r.FromHook, true); !ok {
+		err := errRateLimited{wait: wait, why: why}
 		d.limiter.finish(id, fl, err)
 		return d.unlockErr(id, err)
 	}
@@ -360,8 +360,8 @@ func (d *daemon) unlockOne(ctx context.Context, cs *connState, reqID uint64, r i
 // single flight and never grants: the identity is checked against the
 // vault (recipient and MAC, D5) and destroyed.
 func (d *daemon) testOne(ctx context.Context, cs *connState, reqID uint64, r ipc.UnlockReq, id string) *ipc.Error {
-	if ok, wait := d.limiter.check(id, false, true); !ok {
-		return d.unlockErr(id, errRateLimited{wait})
+	if ok, wait, why := d.limiter.check(id, false, true); !ok {
+		return d.unlockErr(id, errRateLimited{wait: wait, why: why})
 	}
 	err := d.unwrapAndCheck(ctx, cs, reqID, r, id)
 	if errors.Is(err, vault.ErrCancelled) || errors.Is(err, vault.ErrBadSecret) {
@@ -391,8 +391,12 @@ func (d *daemon) unwrapAndCheck(ctx context.Context, cs *connState, reqID uint64
 	return nil
 }
 
-// errRateLimited carries the wait of a refused prompt.
-type errRateLimited struct{ wait time.Duration }
+// errRateLimited carries the wait of a refused prompt and the rule that
+// refused it.
+type errRateLimited struct {
+	wait time.Duration
+	why  limitWhy
+}
 
 func (e errRateLimited) Error() string { return "agent: unlock prompts rate-limited" }
 
@@ -453,6 +457,21 @@ func isVerifyErr(err error) bool {
 		errors.Is(err, vault.ErrRecipientsChanged) || errors.Is(err, vault.ErrPluginPin)
 }
 
+// noUIText says why no prompt could unlock vault id (UX-15): the Secure
+// Enclave's dialog cannot appear (C2.nogui: tmux, SSH, no GUI session) for
+// a folder that has that factor; a passphrase or a security key needs a
+// terminal (C2.needtty).
+func (d *daemon) noUIText(id, folder string) string {
+	kinds := d.factorKinds(id)
+	if slices.Contains(kinds, string(vault.FactorSE)) {
+		return ui.Format(ui.MsgUnlockNoGUI, ui.Vars{Folder: folder})
+	}
+	if f := ui.FactorName(kinds, false); f != "" {
+		return ui.Format(ui.MsgUnlockNeedTTY, ui.Vars{Folder: folder, Factor: f})
+	}
+	return ui.Format(ui.MsgUnlockNeedTTYPlain, ui.Vars{Folder: folder})
+}
+
 // unlockErr maps an unlock failure to a protocol error with catalog text.
 func (d *daemon) unlockErr(id string, err error) *ipc.Error {
 	if err == nil {
@@ -462,13 +481,27 @@ func (d *daemon) unlockErr(id string, err error) *ipc.Error {
 	var rl errRateLimited
 	switch {
 	case errors.As(err, &rl):
-		return &ipc.Error{Code: ipc.CodeRateLimited, Msg: "precinto: too many unlock prompts for " + folder + "; try again in " + strconv.Itoa(int(rl.wait.Round(time.Second)/time.Second)) + " s"}
+		// UX-08: catalog text that says why precinto waits (D27) and how
+		// long is left, in whole seconds rounded up.
+		wait := (rl.wait + time.Second - 1).Truncate(time.Second)
+		if wait < time.Second {
+			wait = time.Second
+		}
+		switch rl.why {
+		case limitOff:
+			// prompt_rate_per_minute = 0 turns prompts off: no wait ends
+			// it, so say which setting and what to change.
+			return &ipc.Error{Code: ipc.CodeRateLimited, Msg: ui.Format(ui.MsgUnlockPromptsOff, ui.Vars{Folder: folder})}
+		case limitRate:
+			return &ipc.Error{Code: ipc.CodeRateLimited, Msg: ui.Format(ui.MsgUnlockTooMany, ui.Vars{Folder: folder, N: d.limiter.perMinuteLimit(), Wait: wait})}
+		}
+		return &ipc.Error{Code: ipc.CodeRateLimited, Msg: ui.Format(ui.MsgUnlockWait, ui.Vars{Folder: folder, Wait: wait})}
 	case errors.Is(err, vault.ErrBadSecret):
 		return &ipc.Error{Code: ipc.CodeBadSecret, Msg: ui.Format(ui.MsgUnlockBadSecret, ui.Vars{Folder: folder})}
 	case errors.Is(err, vault.ErrCancelled), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return &ipc.Error{Code: ipc.CodeCancelled, Msg: ui.Format(ui.MsgUnlockCancelled, ui.Vars{Folder: folder})}
 	case errors.Is(err, vault.ErrNoUI):
-		return &ipc.Error{Code: ipc.CodeNoUI, Msg: ui.Format(ui.MsgUnlockNoGUI, ui.Vars{Folder: folder})}
+		return &ipc.Error{Code: ipc.CodeNoUI, Msg: d.noUIText(id, folder)}
 	case isVerifyErr(err):
 		return &ipc.Error{Code: ipc.CodeVerify, Msg: ui.Format(ui.MsgVaultTampered, ui.Vars{Folder: folder})}
 	case errors.Is(err, errNoVault), errors.Is(err, vault.ErrNotFound):

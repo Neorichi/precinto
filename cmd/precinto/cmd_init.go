@@ -227,7 +227,7 @@ func pluginName(r string) (string, bool) {
 func cmdInit(a *app, args []string) int {
 	f := newFlags("init")
 	var factors stringList
-	f.Var(&factors, "factor", "unlock method: se, passphrase or plugin:<recipient> (repeatable; default se on macOS, passphrase on linux)")
+	f.Var(&factors, "factor", "unlock `METHOD`: se, passphrase or plugin:<recipient> (repeatable; default se on macOS, passphrase on linux)")
 	plugin := addPluginFlags(f)
 	recoveryOut := f.String("recovery-out", "", "write the recovery key to `FILE` (new file, mode 0600) instead of showing it")
 	showRecovery := f.Bool("show-recovery", false, "show the recovery key on screen even with --recovery-out")
@@ -311,27 +311,49 @@ func cmdInit(a *app, args []string) int {
 	if err != nil {
 		abandon()
 		destroySpecs(fspecs)
+		if errors.Is(err, ui.ErrCancelled) {
+			a.say(textInitCancelled)
+			return exitLocked
+		}
 		return a.fail("init", err)
 	}
-	recovery, err := vs.Init(ctx, vault.InitOptions{Factors: fspecs, UI: vaultUI{t: t, gui: uictx.GUI}, Now: a.now})
+	// The recovery key is written or confirmed before Init creates
+	// anything (UX-07): a user who stops at its screen leaves nothing set
+	// up, and init can run again with a new key.
+	confirmed := false
+	confirm := func(recovery *memguard.LockedBuffer) error {
+		written := false
+		if out != nil {
+			if err := writeSecretFile(out, recovery); err != nil {
+				return err
+			}
+			written = true
+			a.line(ui.MsgRecoveryWritten, ui.Vars{File: a.display(out.Name())})
+		}
+		if out == nil || *showRecovery {
+			if err := a.showRecovery(t, recovery); err != nil && !(written && errors.Is(err, ui.ErrCancelled)) {
+				return err // a cancelled extra screen is fine: the key is in the file
+			}
+		}
+		confirmed = true
+		return nil
+	}
+	recovery, err := vs.Init(ctx, vault.InitOptions{Factors: fspecs, UI: vaultUI{t: t, gui: uictx.GUI}, Now: a.now, Confirm: confirm})
 	destroySpecs(fspecs)
 	if err != nil {
 		abandon()
+		switch {
+		case !confirmed && errors.Is(err, ui.ErrCancelled):
+			a.say(textInitNotConfirmed)
+			return exitLocked
+		case confirmed:
+			code := a.fail("init", err)
+			a.say(textInitKeyUnused)
+			return code
+		}
 		return a.fail("init", err)
 	}
-	defer recovery.Destroy()
-	if out != nil {
-		if err := writeSecretFile(out, recovery); err != nil {
-			abandon()
-			return a.fail("init", err)
-		}
-		a.line(ui.MsgRecoveryWritten, ui.Vars{File: a.display(out.Name())})
-	}
-	if out == nil || *showRecovery {
-		if err := a.showRecovery(t, recovery); err != nil {
-			return a.fail("init", err)
-		}
-	}
+	recovery.Destroy()
 	if a.sys.goos == "darwin" {
 		if yes, err := t.YesNo(ui.Format(ui.MsgServiceOffer, ui.Vars{}), true); err == nil && yes {
 			if code := a.serviceInstall(); code != exitOK {
@@ -344,9 +366,10 @@ func cmdInit(a *app, args []string) int {
 }
 
 // showRecovery shows the recovery key on the alternate screen until the
-// user types back its last 4 characters (D7). The key exists only in this
-// buffer (Init returns it once), so a cancelled type-back offers to show
-// it again instead of losing it.
+// user types back its last 4 characters (D7). It runs inside Init's
+// Confirm, before any vault exists: a cancelled type-back offers to show
+// the key again, and a final no is ui.ErrCancelled, after which Init
+// creates nothing (UX-07).
 func (a *app) showRecovery(t terminal, recovery *memguard.LockedBuffer) error {
 	header := strings.Split(ui.Format(ui.MsgRecoveryHeader, ui.Vars{}), "\n")
 	for {
@@ -359,8 +382,7 @@ func (a *app) showRecovery(t terminal, recovery *memguard.LockedBuffer) error {
 		}
 		again, yerr := t.YesNo(ui.Format(ui.MsgRecoveryAgain, ui.Vars{}), true)
 		if yerr != nil || !again {
-			a.line(ui.MsgRecoveryLost, ui.Vars{})
-			return err
+			return ui.ErrCancelled
 		}
 	}
 }
@@ -1074,6 +1096,11 @@ func (a *app) recoverVerify(ctx context.Context, key *memguard.LockedBuffer) int
 		return exitVerify
 	}
 	if err := vault.VerifyRecovery(key, header); err != nil {
+		if isBadSecret(err) {
+			// UX-18: recover's own words; no folder is being unlocked.
+			a.line(ui.MsgRecoveryWrongKey, ui.Vars{})
+			return exitLocked
+		}
 		return a.fail("recover", err)
 	}
 	if eng, err := a.engine(ctx, false); err == nil {
@@ -1143,6 +1170,10 @@ func (a *app) recoverUse(ctx context.Context, key *memguard.LockedBuffer, t term
 		Deadline:  wireDeadline(5 * time.Minute),
 	}, secretAnswer{secret: key, next: next})
 	if err != nil {
+		if isBadSecret(err) {
+			a.line(ui.MsgRecoveryWrongKey, ui.Vars{})
+			return exitLocked
+		}
 		return a.fail("recover", err)
 	}
 	a.say(textRecovered, len(resp.Unlocked))

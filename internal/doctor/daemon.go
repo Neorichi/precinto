@@ -136,25 +136,25 @@ func (e *env) fromAttention(a ipc.Attention) Finding {
 				a.Fix = ungatedFix(name)
 			}
 		}
-		msg = fmt.Sprintf("%s (pid %d) runs%s without precinto's hooks, so it cannot be paused when the folder locks (D52)", what, a.PID, where)
+		msg = fmt.Sprintf("%s (pid %d) runs%s without precinto's hooks, so it cannot be paused when the folder locks", what, a.PID, where)
 	case ipc.AttnUnsealed:
 		msg = plural(a.Count, "file", "files") + where + " " + verb(a.Count, "is", "are") + " still unencrypted although the folder is locked"
 	case ipc.AttnHoldCapped:
-		msg = plural(a.Count, "unit", "units") + where + " " + verb(a.Count, "is", "are") + " kept unsealed only by weak signs of activity (S14)"
+		msg = plural(a.Count, "unit", "units") + where + " " + verb(a.Count, "is", "are") + " kept unsealed only by weak signs of activity"
 	case ipc.AttnHistoryPending:
 		msg = plural(a.Count, "line", "lines") + " of Claude's prompt history" + fromWhere(folder) + " " + verb(a.Count, "is", "are") + " still in plaintext"
 	case ipc.AttnQuarantine:
-		msg = plural(a.Count, "capsule", "capsules") + " without provenance " + verb(a.Count, "is", "are") + " quarantined (D8)"
+		msg = plural(a.Count, "capsule", "capsules") + " without provenance " + verb(a.Count, "is", "are") + " quarantined"
 	case ipc.AttnRecoveryTested:
-		msg = "the recovery key has never been tested (D7)"
+		msg = "the recovery key has never been tested"
 	case ipc.AttnUnhardenedBuild:
-		msg = "this precinto build is not signed with the hardened runtime (S15)"
+		msg = "this precinto build is not signed with the hardened runtime"
 	case ipc.AttnCodexHooksTrust:
 		msg = "Codex has not trusted precinto's hooks" + where
 	case ipc.AttnConflict:
-		msg = plural(a.Count, "file", "files") + where + " " + verb(a.Count, "has", "have") + " two versions kept side by side (D11)"
+		msg = plural(a.Count, "file", "files") + where + " " + verb(a.Count, "has", "have") + " two versions kept side by side"
 	case ipc.AttnExposed:
-		msg = plural(a.Count, "capsule", "capsules") + fromWhere(folder) + " " + verb(a.Count, "was", "were") + " sealed to a foreign set of keys (D5)"
+		msg = plural(a.Count, "capsule", "capsules") + fromWhere(folder) + " " + verb(a.Count, "was", "were") + " sealed to a foreign set of keys"
 	default:
 		msg = "the precinto agent reports " + code + where
 	}
@@ -197,7 +197,7 @@ func ungatedFix(name string) string { return "quit it, or start it with: precint
 // whose working directory cannot be read: it may run in a protected folder
 // (unknown counts as inside, D47, D52), but no folder can be named.
 func ungatedUnknownCwdText(name string, pid int) string {
-	return fmt.Sprintf("%s (pid %d) runs without precinto's hooks and its working folder cannot be read: if it runs in a protected folder, it can't be paused when the folder locks (D52)", name, pid)
+	return fmt.Sprintf("%s (pid %d) runs without precinto's hooks and its working folder cannot be read: if it runs in a protected folder, it can't be paused when the folder locks", name, pid)
 }
 
 // hookWindow is the hook-presence window after a harness starts (SPEC

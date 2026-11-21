@@ -3,11 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
+	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
@@ -258,5 +263,206 @@ func TestStatusUngatedClaudeNamesTheCommand(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no ungated item for the Claude session: %+v", s.Attention)
+	}
+}
+
+// UX-09: status still answers when config.toml does not load: the error,
+// with its key and line, is an attention item (doctor's config code), and
+// the folders come from the settings precinto last confirmed and the
+// agent's status.
+func TestStatusWithBrokenConfig(t *testing.T) {
+	e := statusEnv(t)
+	writeBrokenConfig(t, e)
+	e.daemon.status.Vaults[0].RootPath = e.h.Root
+	if code := e.run("status", "--json"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	var s statusV1
+	if err := json.Unmarshal(e.out.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, at := range s.Attention {
+		if at.Code == doctor.CheckConfig {
+			found = true
+			if !strings.Contains(at.Detail, "policy.min_free") || !strings.Contains(at.Detail, "line 3") || at.Fix == "" {
+				t.Errorf("config item %+v", at)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no %s attention item: %+v", doctor.CheckConfig, s.Attention)
+	}
+	if len(s.Folders) != 1 || s.Folders[0].ID != "root-acme" || s.Folders[0].State != "unlocked" {
+		t.Fatalf("folders %+v", s.Folders)
+	}
+	e.out.Reset()
+	if code := e.run("status"); code != exitOK {
+		t.Fatalf("human: exit %d (%s)", code, e.stderr())
+	}
+	if !strings.Contains(e.stdout(), "\n  config  ") || !strings.Contains(e.stdout(), "policy.min_free") {
+		t.Errorf("human status lacks the config item:\n%s", e.stdout())
+	}
+}
+
+// UX-12: the AGENTS line's fix for a missing wrapper is a command that
+// runs: shell-init needs the shell's name, taken from $SHELL when it is
+// one precinto supports.
+func TestStatusWrapperHintNamesTheShell(t *testing.T) {
+	for shell, want := range map[string]string{
+		"/bin/zsh":               "wrapper not installed (precinto shell-init zsh --install)",
+		"/opt/homebrew/bin/fish": "wrapper not installed (precinto shell-init fish --install)",
+		"/bin/bash":              "wrapper not installed (precinto shell-init bash --install)",
+		"/usr/local/bin/tcsh":    "wrapper not installed (precinto shell-init zsh|bash|fish --install)",
+		"":                       "wrapper not installed (precinto shell-init zsh|bash|fish --install)",
+	} {
+		e := statusEnv(t)
+		e.h.Env = e.h.Env.With("SHELL", shell)
+		if code := e.run("status"); code != exitOK {
+			t.Fatalf("%q: exit %d", shell, code)
+		}
+		if !strings.Contains(e.stdout(), want) {
+			t.Errorf("SHELL=%q: status lacks %q:\n%s", shell, want, e.stdout())
+		}
+		if strings.Contains(e.stdout(), "shell-init --install") {
+			t.Errorf("SHELL=%q: status suggests the invalid shell-init --install", shell)
+		}
+	}
+}
+
+// UX-14: status quotes the idle time in force: an unconfirmed weakening
+// edit of config.toml (idle_soft 15m → 30m) is not what locks the folder.
+func TestStatusQuotesTheIdleInForce(t *testing.T) {
+	e := statusEnv(t)
+	pinPolicy(t, e, e.loadConfig())
+	c := e.loadConfig()
+	c.Policy.IdleSoft = config.Duration(30 * time.Minute)
+	e.saveConfig(c)
+	if code := e.run("status"); code != exitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(e.stdout(), "unlocked until 17:00 (locks after 15 min idle)") {
+		t.Errorf("status quotes config.toml's unconfirmed value:\n%s", e.stdout())
+	}
+}
+
+// UX-09 (regression of the first fix): a config.toml that does not load
+// never makes `status --check` pass. The folders are still scanned, with
+// the settings standing in for the file (the settings confirmed last, or
+// the defaults, plus every folder whose vault records its path, as
+// newSweepEngine builds the engine from them): plaintext in a locked
+// folder is exit 3 as always; finding none is exit 1, because the file may
+// hold more than the stand-in settings show. The counts say how they were
+// found, and the JSON marks them incomplete.
+func TestStatusCheckWithBrokenConfig(t *testing.T) {
+	// The settings confirmed last know the folder; it has a note.
+	e := newEnv(t)
+	e.dialErr = ipc.ErrNoDaemon
+	pinPolicy(t, e, e.loadConfig())
+	writeBrokenConfig(t, e)
+	e.eng.plain = []sweep.Plaintext{{RootID: "root-acme", Files: 1, Bytes: 11, ByReason: map[string]int{"notes": 1}}}
+	if code := e.run("status", "--check"); code != exitLocked {
+		t.Fatalf("plaintext in a locked folder: exit %d, want 3 (%s)", code, e.stderr())
+	}
+	if len(e.engCfg) != 1 || len(e.engCfg[0].Roots) != 1 || e.engCfg[0].Roots[0].ID != "root-acme" {
+		t.Fatalf("engine settings %+v, want the confirmed folder", e.engCfg)
+	}
+	for _, w := range []string{
+		"unencrypted: 1 files (11 B): notes 1, found with the settings confirmed last (config.toml does not load)",
+		"\n  unsealed  ~/work/acme · 1 · fix: precinto doctor\n", "\n  config  config.toml line 3, policy.min_free",
+	} {
+		if !strings.Contains(e.stdout(), w) {
+			t.Errorf("status lacks %q:\n%s", w, e.stdout())
+		}
+	}
+
+	// Nothing found with them: exit 1, never 0, and the file is named.
+	e = newEnv(t)
+	e.dialErr = ipc.ErrNoDaemon
+	pinPolicy(t, e, e.loadConfig())
+	writeBrokenConfig(t, e)
+	if code := e.run("status", "--check"); code != exitError {
+		t.Fatalf("broken config, nothing found: exit %d, want 1", code)
+	}
+	if !strings.Contains(e.stdout(), "unencrypted: none found with the settings confirmed last (config.toml does not load)") {
+		t.Errorf("status:\n%s", e.stdout())
+	}
+	if want := "precinto: " + fmt.Sprintf(textCheckConfig, `config.toml line 3, policy.min_free: size "2GB" (use e.g. "512MiB" or "2GiB")`) + "\n"; e.stderr() != want {
+		t.Errorf("stderr %q, want %q", e.stderr(), want)
+	}
+
+	// No pin and no agent: the folder comes from its vault, never
+	// "FOLDERS none", and the JSON marks its counts incomplete.
+	e = newEnv(t)
+	e.dialErr = ipc.ErrNoDaemon
+	writeBrokenConfig(t, e)
+	e.vaults.metas["root-acme"] = vault.Meta{ID: "root-acme", RootPath: e.h.Root}
+	if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.run("status", "--json", "--check"); code != exitError {
+		t.Fatalf("no pin: exit %d, want 1", code)
+	}
+	var s statusV1
+	if err := json.Unmarshal(e.out.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Folders) != 1 || s.Folders[0].ID != "root-acme" || s.Folders[0].Path != e.h.Root || !s.Folders[0].Unencrypted.Incomplete {
+		t.Fatalf("folders %+v", s.Folders)
+	}
+	if len(e.engCfg) != 1 || len(e.engCfg[0].Roots) != 1 || e.engCfg[0].Roots[0].Path != e.h.Root {
+		t.Fatalf("engine settings %+v, want the folder of its vault", e.engCfg)
+	}
+	e.out.Reset()
+	if code := e.run("status"); code != exitOK || strings.Contains(e.stdout(), "none (protect one") ||
+		!strings.Contains(e.stdout(), "unencrypted: none found with the default settings (config.toml does not load)") {
+		t.Errorf("no pin, human: exit %d\n%s", code, e.stdout())
+	}
+}
+
+// A locked folder that could not be scanned is "unknown", never "none",
+// and --check does not pass on it (exit 1).
+func TestStatusCheckWhenTheScanFails(t *testing.T) {
+	e := newEnv(t)
+	e.dialErr = ipc.ErrNoDaemon
+	e.engErr = errors.New("name salt unreadable")
+	if code := e.run("status", "--check"); code != exitError {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	if !strings.Contains(e.stdout(), "unencrypted: unknown (the folders could not be scanned)") {
+		t.Errorf("status:\n%s", e.stdout())
+	}
+	if want := "precinto: " + fmt.Sprintf(textCheckUnscanned, textPlainUnscanned) + "\n"; e.stderr() != want {
+		t.Errorf("stderr %q, want %q", e.stderr(), want)
+	}
+	// An unlocked folder may hold plaintext: the check passes.
+	e = statusEnv(t)
+	e.engErr = errors.New("name salt unreadable")
+	if code := e.run("status", "--check"); code != exitOK {
+		t.Fatalf("unlocked folder: exit %d (%s)", code, e.stderr())
+	}
+}
+
+// The stand-in settings take a pin's folders only when they are safe to
+// scan: a pin is never validated, so a forged one listing / or a relative
+// path adds nothing; a vault's folder joins once.
+func TestStandInConfigKeepsSafeFolders(t *testing.T) {
+	e := newEnv(t)
+	c := e.loadConfig()
+	c.Roots = append(c.Roots, config.Root{ID: "slash", Path: "/"}, config.Root{ID: "rel", Path: "work/x"}, config.Root{ID: "", Path: "/u/none"})
+	pinPolicy(t, e, c)
+	e.vaults.metas["root-acme"] = vault.Meta{ID: "root-acme", RootPath: e.h.Root}
+	e.vaults.metas["root-beta"] = vault.Meta{ID: "root-beta", RootPath: "/u/beta"}
+	if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a := e.app()
+	got, what := a.standInConfig(e.h.Layout)
+	var ids []string
+	for _, r := range got.Roots {
+		ids = append(ids, r.ID+"="+r.Path)
+	}
+	if want := []string{"root-acme=" + e.h.Root, "root-beta=/u/beta"}; strings.Join(ids, ",") != strings.Join(want, ",") || what != textStandInPinned {
+		t.Fatalf("stand-in folders %v (%s), want %v", ids, what, want)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -168,7 +169,9 @@ func UserHome(e Env) (string, error) {
 // (exec.LookPath reads the process environment, which only this package
 // may do). A name containing '/' must be absolute and is checked as is.
 // Prefer absolute system paths (/usr/sbin/lsof, /usr/sbin/ioreg) where
-// they are fixed. Implemented in the scaffold.
+// they are fixed. A name that is not found is an error matching
+// exec.ErrNotFound (`precinto run` exits 127 for it, UX-16). Implemented
+// in the scaffold.
 func LookPath(e Env, name string) (string, error) {
 	check := func(p string) bool {
 		fi, err := os.Stat(p)
@@ -178,7 +181,7 @@ func LookPath(e Env, name string) (string, error) {
 		if filepath.IsAbs(name) && check(name) {
 			return filepath.Clean(name), nil
 		}
-		return "", fmt.Errorf("paths: %s is not an absolute executable", name)
+		return "", notFoundError{text: "paths: " + name + " is not an absolute executable"}
 	}
 	for _, dir := range filepath.SplitList(e.Get("PATH")) {
 		if !filepath.IsAbs(dir) {
@@ -188,8 +191,15 @@ func LookPath(e Env, name string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("paths: %s not found in PATH", name)
+	return "", notFoundError{text: "paths: " + name + " not found in PATH"}
 }
+
+// notFoundError is LookPath's failure: its own text, matching
+// exec.ErrNotFound for errors.Is.
+type notFoundError struct{ text string }
+
+func (e notFoundError) Error() string { return e.text }
+func (e notFoundError) Unwrap() error { return exec.ErrNotFound }
 
 // Layout is every precinto-owned path. Directories are 0700, files 0600.
 type Layout struct {
@@ -198,6 +208,11 @@ type Layout struct {
 	ConfigFile string // <base>/config.toml
 	RootsList  string // <base>/roots.list (D22; read by the POSIX shim)
 	BinLink    string // <base>/bin/precinto (pinned binary symlink written by integrate, D6)
+	// Marketplace is <base>/marketplace: precinto's plugins and their two
+	// marketplace manifests, written byte for byte from the binary by
+	// integrate, which adds it to the harness as a local marketplace
+	// (D116). Not created by EnsureDirs.
+	Marketplace string
 
 	VaultsDir     string // <base>/vaults/<vault-id>/ (D1)
 	FactorsDir    string // <base>/factors/ (non-secret factor stubs, e.g. se.identity)
@@ -254,7 +269,7 @@ func defaultBaseFor(e Env, goos string) (string, error) {
 		}
 		return filepath.Join(home, ".local", "share", "precinto"), nil
 	default:
-		return "", fmt.Errorf("paths: unsupported OS %s (D34)", goos)
+		return "", fmt.Errorf("paths: unsupported OS %s (precinto runs on macOS and Linux)", goos)
 	}
 }
 
@@ -285,6 +300,7 @@ func LayoutAt(base, runDir string) (Layout, error) {
 		ConfigFile:    j(base, "config.toml"),
 		RootsList:     j(base, "roots.list"),
 		BinLink:       j(base, "bin", "precinto"),
+		Marketplace:   j(base, "marketplace"),
 		VaultsDir:     j(base, "vaults"),
 		FactorsDir:    j(base, "factors"),
 		CapsulesDir:   j(base, "capsules"),

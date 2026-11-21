@@ -282,7 +282,8 @@ func NewRateLimiter(p config.Policy, c platform.Clock) *RateLimiter { return new
 // Allow reports whether a prompt for vault may be raised now (fromHook
 // applies the hook cooldown after a cancel).
 func (r *RateLimiter) Allow(vault string, fromHook bool) (bool, time.Duration) {
-	return r.check(vault, fromHook, true)
+	ok, wait, _ := r.check(vault, fromHook, true)
+	return ok, wait
 }
 
 // Cancelled records a cancel for vault.

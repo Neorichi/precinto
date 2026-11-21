@@ -69,9 +69,19 @@ func newRateLimiter(p config.Policy, c platform.Clock) *RateLimiter {
 	}
 }
 
+// limitWhy is the rule that refused a prompt (the text the user sees
+// depends on it, UX-08).
+type limitWhy uint8
+
+const (
+	limitBackoff limitWhy = iota // a recent cancel or wrong secret (backoff, hook cooldown)
+	limitRate                    // the per-minute limit
+	limitOff                     // no prompts at all: prompt_rate_per_minute = 0 (D62), no wait ends it
+)
+
 // check reports whether a prompt may be raised now and, if not, how long
-// to wait. record consumes a slot when allowed.
-func (r *RateLimiter) check(vault string, fromHook, record bool) (bool, time.Duration) {
+// to wait and why. record consumes a slot when allowed.
+func (r *RateLimiter) check(vault string, fromHook, record bool) (bool, time.Duration, limitWhy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.clock.Mono()
@@ -83,21 +93,28 @@ func (r *RateLimiter) check(vault string, fromHook, record bool) (bool, time.Dur
 	}
 	r.prompts[vault] = kept
 	if r.perMinute <= 0 {
-		return false, time.Minute
+		return false, time.Minute, limitOff
 	}
 	if t, ok := r.lastCancel[vault]; ok && now-t < r.backoff {
-		return false, r.backoff - (now - t)
+		return false, r.backoff - (now - t), limitBackoff
 	}
 	if t, ok := r.lastHookCxl[vault]; fromHook && ok && now-t < r.cooldown {
-		return false, r.cooldown - (now - t)
+		return false, r.cooldown - (now - t), limitBackoff
 	}
 	if len(kept) >= r.perMinute {
-		return false, kept[0] + time.Minute - now
+		return false, kept[0] + time.Minute - now, limitRate
 	}
 	if record {
 		r.prompts[vault] = append(kept, now)
 	}
-	return true, 0
+	return true, 0, 0
+}
+
+// perMinuteLimit is the per-minute prompt limit (C2.toomany's {n}).
+func (r *RateLimiter) perMinuteLimit() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.perMinute
 }
 
 func (r *RateLimiter) cancelled(vault string, fromHook bool) {

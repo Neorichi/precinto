@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
@@ -71,7 +72,7 @@ func (e *env) agentFindings() []Finding {
 	case st != nil:
 		return nil
 	case errors.Is(err, ipc.ErrUntrustedServer):
-		return []Finding{fail(CheckServiceRunning, "the process answering on precinto's socket is not this precinto binary, so unlocks and gates refuse to talk to it (D6)",
+		return []Finding{fail(CheckServiceRunning, "the process answering on precinto's socket is not this precinto binary, so unlocks and gates refuse to talk to it",
 			"precinto agent --restart")}
 	case errors.Is(err, ipc.ErrNoDaemon), err == nil:
 		return nil // not running: it starts when needed (SPEC §13.1)
@@ -91,7 +92,7 @@ func (e *env) socketFindings() []Finding {
 		out = append(out, fail(CheckAgentSocket, fmt.Sprintf("precinto's socket path is %d bytes long; the limit is %d", len(l.Socket), paths.MaxSocketPath-1), ""))
 	}
 	if p := dirProblem(l.RunDir, e.d.EUID); p.text != "" {
-		out = append(out, fail(CheckAgentSocket, "precinto's socket folder "+e.show(l.RunDir)+" "+p.text+": the agent and its clients refuse it (D6)", p.fix(e, l.RunDir, true)))
+		out = append(out, fail(CheckAgentSocket, "precinto's socket folder "+e.show(l.RunDir)+" "+p.text+": the agent and its clients refuse it", p.fix(e, l.RunDir, true)))
 	}
 	st, err := fsx.Lstat(l.Socket)
 	switch {
@@ -159,11 +160,12 @@ func pathProblem(path string, wantDir bool, euid int) problem {
 }
 
 // precintoDirs are the Layout directories EnsureDirs manages (paths
-// layout.go), parents first; the run directory is agent-socket's.
+// layout.go), parents first, and the marketplace integrate writes (a
+// missing one is no finding); the run directory is agent-socket's.
 func precintoDirs(l paths.Layout) []string {
 	return []string{l.Base, filepath.Dir(l.BinLink), l.VaultsDir, l.FactorsDir, l.CapsulesDir, l.HomesDir,
 		l.StagingDir, l.QuarantineDir, l.StateDir, l.VerifiedDir, l.GensDir, l.ReceiptsDir, l.LeasesDir,
-		l.SessionsDir, l.ProjectsDir, l.JournalDir, l.QueueDir, l.LocksDir, l.HookDedupeDir, l.LogsDir}
+		l.SessionsDir, l.ProjectsDir, l.JournalDir, l.QueueDir, l.LocksDir, l.HookDedupeDir, l.LogsDir, l.Marketplace}
 }
 
 // precintoFiles are precinto's own metadata files at fixed Layout paths
@@ -210,6 +212,21 @@ func (e *env) permissionFindings() []Finding {
 	vaults, _ := listDir(l.VaultsDir)
 	for _, v := range vaults {
 		vdir := filepath.Join(l.VaultsDir, v.Name())
+		if id, ok := vaultLockName(v.Name()); ok && vaultIDName(id) {
+			// The lock serializing vault.toml rewrites (vault
+			// metaLockPath): a private file, never deleted, never
+			// moved aside while a process may hold it (UX-05).
+			p := fileProblem(vdir, e.d.EUID)
+			if p.text != "" && !p.mode {
+				out = append(out, e.lockFinding(vdir, p))
+				continue
+			}
+			report(vdir, false, p)
+			continue
+		}
+		if !vaultIDName(v.Name()) {
+			continue // a dot name is never a vault (an interrupted creation's staging folder)
+		}
 		report(vdir, true, dirProblem(vdir, e.d.EUID))
 		files, _ := listDir(vdir)
 		for _, f := range files {
@@ -225,6 +242,38 @@ func (e *env) permissionFindings() []Finding {
 		report(p, false, fileProblem(p, e.d.EUID))
 	}
 	return out
+}
+
+// vaultIDName reports whether name can be a vault folder of vaults/: the
+// vault package's id rule (letters, digits, '-', '_', '.', never a leading
+// '.' or '-'). Lock files and interrupted creations use dot names.
+func vaultIDName(name string) bool {
+	if name == "" || len(name) > 128 || name[0] == '.' || name[0] == '-' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// vaultLockName returns the vault id of a vaults/.<id>.lock name.
+func vaultLockName(name string) (string, bool) {
+	if !strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".lock") || len(name) <= len("..lock") {
+		return "", false
+	}
+	return name[1 : len(name)-len(".lock")], true
+}
+
+// lockFinding reports a vault lock file that is not a private regular file
+// of the user. Its fix waits for every precinto process: moving or removing
+// a lock while one holds it breaks the mutual exclusion it provides.
+func (e *env) lockFinding(path string, p problem) Finding {
+	return fail(CheckPermissions, "precinto's lock file "+e.show(path)+" "+p.text+": vault settings cannot be updated safely",
+		"remove "+e.arg(path)+" while no precinto command or agent runs (precinto creates a new one)")
 }
 
 // launchAgentInstalled reports whether precinto's LaunchAgent exists
@@ -343,7 +392,7 @@ func checkServiceTCC(e *env) []Finding {
 			where = "an external or network volume"
 		}
 		if where != "" {
-			out = append(out, warn(CheckServiceTCC, "background sealing runs as a LaunchAgent, which macOS may not let read "+e.folder(r)+" (in "+where+"): its files can stay unsealed until a sweep runs from a terminal (R15)",
+			out = append(out, warn(CheckServiceTCC, "background sealing runs as a LaunchAgent, which macOS may not let read "+e.folder(r)+" (in "+where+"): its files can stay unsealed until a sweep runs from a terminal",
 				"allow precinto in System Settings > Privacy & Security > Files and Folders (or Full Disk Access), or keep the folder elsewhere"))
 		}
 	}

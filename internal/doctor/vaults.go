@@ -111,7 +111,7 @@ func checkExposed(e *env) []Finding {
 	}
 	var out []Finding
 	for _, id := range sortedKeys(counts) {
-		out = append(out, fail(CheckExposed, plural(counts[id], "capsule", "capsules")+" of "+e.folderOf(id)+" "+verb(counts[id], "was", "were")+" sealed to a different set of keys than its vault's: whoever changed the vault file may be able to read "+verb(counts[id], "it", "them")+" (D5)",
+		out = append(out, fail(CheckExposed, plural(counts[id], "capsule", "capsules")+" of "+e.folderOf(id)+" "+verb(counts[id], "was", "were")+" sealed to a different set of keys than its vault's: whoever changed the vault file may be able to read "+verb(counts[id], "it", "them"),
 			"treat what those sessions contain as exposed (precinto cannot re-encrypt them yet); precinto status lists them"))
 	}
 	if len(out) == 0 && len(log) > 0 {
@@ -140,7 +140,7 @@ func checkRecoveryTested(e *env) []Finding {
 	case !read:
 		return nil // the vaults are unreadable: vault-tampered reports it
 	case newest.IsZero():
-		return []Finding{warn(CheckRecoveryTested, "the recovery key has never been tested: if you lose your unlock factors, sealed sessions open only with it (D7)",
+		return []Finding{warn(CheckRecoveryTested, "the recovery key has never been tested: if you lose your unlock factors, sealed sessions open only with it",
 			"precinto recover --verify")}
 	}
 	return []Finding{ok(CheckRecoveryTested, "the recovery key was last tested on "+newest.UTC().Format("2006-01-02"))}
@@ -235,7 +235,7 @@ func checkPassphraseFactor(e *env) []Finding {
 			"add the passphrase again so it is re-wrapped with the current work factor: precinto factor list"))
 	}
 	if len(with) > 0 {
-		out = append(out, warn(CheckPassphraseFactor, "a passphrase unlocks "+joinNames(with)+": anyone with a copy of the vault files can try to guess it offline (D3)",
+		out = append(out, warn(CheckPassphraseFactor, "a passphrase unlocks "+joinNames(with)+": anyone with a copy of the vault files can try to guess it offline",
 			"use a long passphrase (7 random words); on a Mac prefer the Mac password factor: precinto factor list"))
 	}
 	if len(out) == 0 {

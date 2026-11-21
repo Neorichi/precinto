@@ -36,7 +36,7 @@ func cmdSeal(a *app, args []string) int {
 	adopt := f.Bool("adopt", false, "also seal transcripts found outside the ledger that reference a folder")
 	dryRun := f.Bool("dry-run", false, "show what would be sealed")
 	dormant := f.String("dormant", "", "seal the experimental harness `H` once (needs --experimental)")
-	experimental := f.Bool("experimental", false, "allow experimental harness inventories (D33)")
+	experimental := f.Bool("experimental", false, "allow experimental harness inventories")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
 		return code
@@ -191,7 +191,7 @@ func cmdRestore(a *app, args []string) int {
 	session := f.String("session", "", "restore the Claude session `ID`")
 	var recent optInt
 	f.Var(&recent, "recent", "restore the `N` most recent sessions")
-	all := f.Bool("all", false, "restore every sealed unit of the folder (fresh presence from agents, D28)")
+	all := f.Bool("all", false, "restore every sealed unit of the folder (from an agent session it asks for you again)")
 	md := f.Bool("md", false, "restore sealed notes")
 	history := f.Bool("history", false, "merge sealed prompt history back")
 	global := f.Bool("global", false, "restore the global units: Claude's global stores and experimental harnesses' units (needs unlock --global)")
@@ -732,7 +732,7 @@ func incompleteTail(b []byte) int {
 
 func cmdResolve(a *app, args []string) int {
 	f := newFlags("resolve")
-	keep := f.String("keep", "", "keep the capsule or the plaintext version")
+	keep := f.String("keep", "", "keep the `capsule|plaintext` version")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
 		return code
@@ -877,7 +877,7 @@ func cmdPrune(a *app, args []string) int {
 	f := newFlags("prune")
 	unit := f.String("unit", "", "prune only the unit `KEY`")
 	var keep optInt
-	f.Var(&keep, "keep", "keep the last `N` generations (default 3, D9)")
+	f.Var(&keep, "keep", "keep the last `N` generations (default 3)")
 	diverged := f.Bool("diverged", false, "also delete diverged generations")
 	dryRun := f.Bool("dry-run", false, "only show what would be deleted")
 	pos, err := f.parse(args)
@@ -971,7 +971,7 @@ func pruneCounts(r *sweep.Report) (units, gens int) {
 func cmdCodex(a *app, args []string) int {
 	f := newFlags("codex")
 	rootDir := f.String("root", "", "the protected folder `DIR`")
-	prefer := f.String("prefer", "", "reconcile: keep the capsule or the plaintext side in place")
+	prefer := f.String("prefer", "", "reconcile: keep the `capsule|plaintext` side in place")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
 		return code

@@ -25,6 +25,9 @@ const (
 // as status attention items reuse the ipc.Attn* constants, so `status` and
 // `doctor` speak one kebab-case vocabulary.
 const (
+	// CheckConfig: config.toml does not load (its key, line and reason);
+	// commands that read it stop until it is fixed (UX-09).
+	CheckConfig            = "config"
 	CheckDiskEncryption    = "disk-encryption" // FileVault / encrypted home (S18)
 	CheckUnhardenedBuild   = ipc.AttnUnhardenedBuild
 	CheckLoaderEnv         = "loader-env"          // DYLD_*/LD_* present
@@ -93,6 +96,10 @@ type Options struct {
 	Procs   platform.ProcTable
 	Leaks   bool   // also scan residue locations (slow)
 	Harness string // limit to one harness
+	// ConfigErr is why config.toml did not load (config.Load), nil when it
+	// did: the config check fails with it, and the other checks run with
+	// Cfg, the settings confirmed last or the defaults (UX-09).
+	ConfigErr error
 }
 
 // Run executes every applicable check.

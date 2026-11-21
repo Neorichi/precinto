@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/testkit"
@@ -353,5 +356,142 @@ func TestUnlockDeadlineIsRealTime(t *testing.T) {
 				t.Fatalf("deadline %v, want real time %v after [%v, %v] (CLI clock %v)", dl, unlockDeadline, before, after, start)
 			}
 		})
+	}
+}
+
+// writeBrokenConfig replaces config.toml with one that does not load: a
+// decimal size, an easy mistake (the README asks for binary units).
+func writeBrokenConfig(t *testing.T, e *env) {
+	t.Helper()
+	body := "version = 1\n[policy]\nmin_free = \"2GB\"\n[[roots]]\nid = \"root-acme\"\npath = \"" + e.h.Root + "\"\n"
+	if err := os.WriteFile(e.h.Layout.ConfigFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// UX-09: a config.toml that does not load never stops `precinto lock`:
+// locking every folder needs no configuration, so the request goes out
+// and the folders are named from the agent's status; the config error is
+// still reported, with the key, the line and the hint. With --root the
+// folder cannot be found: lock says so, names precinto lock, and locks
+// nothing.
+func TestLockWithBrokenConfig(t *testing.T) {
+	e := newEnv(t)
+	writeBrokenConfig(t, e)
+	e.daemon.lockRes = ipc.LockResp{Locked: []string{"root-acme"}}
+	e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", RootPath: e.h.Root, State: "locked"}}}
+	if code := e.run("lock", "--end"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if len(e.daemon.locks) != 1 || !e.daemon.locks[0].All || !e.daemon.locks[0].End {
+		t.Fatalf("lock request %+v", e.daemon.locks)
+	}
+	if !strings.Contains(e.stdout(), "locked ~/work/acme.") {
+		t.Errorf("stdout %q", e.stdout())
+	}
+	for _, w := range []string{"policy.min_free", "line 3", `"2GiB"`} {
+		if !strings.Contains(e.stderr(), w) {
+			t.Errorf("stderr %q does not say %q", e.stderr(), w)
+		}
+	}
+
+	e = newEnv(t)
+	writeBrokenConfig(t, e)
+	if code := e.run("lock", "--root", e.h.Root); code != exitError {
+		t.Fatalf("--root: exit %d (%s)", code, e.stderr())
+	}
+	if len(e.daemon.locks) != 0 {
+		t.Fatalf("--root with a broken config locked %+v", e.daemon.locks)
+	}
+	if !strings.Contains(e.stderr(), "policy.min_free") || !strings.Contains(e.stderr(), "precinto lock") {
+		t.Errorf("--root: stderr %q", e.stderr())
+	}
+}
+
+// UX-08: after a cancelled or mistyped unlock the CLI also says when it
+// can be tried again (D27's back-off, policy.prompt_backoff, 30 s by
+// default), so the agent's refusal of an immediate retry is no surprise.
+func TestUnlockSaysWhenToRetry(t *testing.T) {
+	for _, err := range []error{&ipc.Error{Code: ipc.CodeCancelled}, &ipc.Error{Code: ipc.CodeBadSecret}} {
+		e := newEnv(t)
+		e.daemon.unlockErr = err
+		if code := e.run("unlock"); code != exitLocked {
+			t.Fatalf("%v: exit %d", err, code)
+		}
+		if want := ui.Format(ui.MsgUnlockRetry, ui.Vars{Wait: 30 * time.Second}); !strings.Contains(e.stderr(), want) {
+			t.Errorf("%v: stderr %q lacks %q", err, e.stderr(), want)
+		}
+	}
+}
+
+// pinPolicy writes state/policy.pinned with the settings the user
+// confirmed last (the agent enforces Strictest(config.toml, pin), D55).
+func pinPolicy(t *testing.T, e *env, c config.Config) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(e.h.Layout.PolicyPinned), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePinned(e.h.Layout.PolicyPinned, config.Pinned{Config: c, ConfirmedAt: testkit.Epoch}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// UX-14: C2.ok quotes the policy in force, not config.toml's unconfirmed
+// edit: with idle_soft raised to 30 min in config.toml but 15 min
+// confirmed, the folder locks after 15 min until the edit is confirmed.
+// The terminal review of pending edits uses its own wording (C13.review),
+// never C13.policy's "review them at your next unlock", and C2.ok comes
+// after the decision, with the values that decision put in force. The
+// count of sessions is an upper bound ("up to").
+func TestUnlockQuotesThePolicyInForce(t *testing.T) {
+	for _, confirm := range []bool{false, true} {
+		e := newEnv(t)
+		pinPolicy(t, e, e.loadConfig())
+		c := e.loadConfig()
+		c.Policy.IdleSoft = config.Duration(30 * time.Minute)
+		e.saveConfig(c)
+		e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{"root-acme"}, Until: testkit.Epoch.Add(8 * time.Hour),
+			Pending: []string{"policy.idle_soft: 15m → 30m"}}
+		e.tty.yesno = []bool{confirm}
+		if code := e.run("unlock"); code != exitOK {
+			t.Fatalf("confirm=%v: exit %d (%s)", confirm, code, e.stderr())
+		}
+		idle := 15 * time.Minute
+		if confirm {
+			idle = 30 * time.Minute
+		}
+		ok := ui.Format(ui.MsgUnlockOK, ui.Vars{Folder: "~/work/acme", N: 5, Idle: idle, Until: testkit.Epoch.Add(8 * time.Hour)})
+		review := ui.Format(ui.MsgPolicyReview, ui.Vars{N: 1})
+		out := e.stderr()
+		if !strings.Contains(out, ok) {
+			t.Errorf("confirm=%v: stderr %q lacks %q", confirm, out, ok)
+		}
+		if !strings.Contains(out, review) || strings.Contains(out, "at your next unlock") {
+			t.Errorf("confirm=%v: stderr %q: want the review wording %q", confirm, out, review)
+		}
+		if i, j := strings.Index(out, review), strings.Index(out, ok); i < 0 || j < i {
+			t.Errorf("confirm=%v: C2.ok comes before the review: %q", confirm, out)
+		}
+		if !strings.Contains(out, "Restoring up to 5 recent sessions") {
+			t.Errorf("confirm=%v: C2.ok promises an exact count: %q", confirm, out)
+		}
+	}
+	// A confirmation the agent refuses still says the folder is unlocked
+	// (with the policy that stays in force), then reports the failure.
+	e := newEnv(t)
+	pinPolicy(t, e, e.loadConfig())
+	c := e.loadConfig()
+	c.Policy.IdleSoft = config.Duration(30 * time.Minute)
+	e.saveConfig(c)
+	e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{"root-acme"}, Until: testkit.Epoch.Add(8 * time.Hour),
+		Pending: []string{"policy.idle_soft: 15m → 30m"}}
+	e.daemon.policyErr = &ipc.Error{Code: ipc.CodeInternal, Msg: "precinto: could not save the confirmed settings"}
+	e.tty.yesno = []bool{true}
+	if code := e.run("unlock"); code == exitOK {
+		t.Fatalf("a failed confirmation exits 0 (%s)", e.stderr())
+	}
+	ok := ui.Format(ui.MsgUnlockOK, ui.Vars{Folder: "~/work/acme", N: 5, Idle: 15 * time.Minute, Until: testkit.Epoch.Add(8 * time.Hour)})
+	if out := e.stderr(); !strings.Contains(out, ok) || !strings.Contains(out, "could not save the confirmed settings") || strings.Index(out, ok) > strings.Index(out, "could not save") {
+		t.Errorf("failed confirmation: stderr %q, want %q first, then the error", out, ok)
 	}
 }

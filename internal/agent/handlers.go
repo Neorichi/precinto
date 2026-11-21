@@ -387,7 +387,7 @@ func (d *daemon) hookUnlockPossible(roots []string) bool {
 		if vs, ok := v.vaults[id]; ok && vs.State == VaultUnlocked {
 			continue
 		}
-		if ok, _ := d.limiter.check(id, true, false); !ok {
+		if ok, _, _ := d.limiter.check(id, true, false); !ok {
 			return false
 		}
 		if !d.guiFactor(id) {

@@ -74,7 +74,7 @@ func TestCatalogRenders(t *testing.T) {
 	v := Vars{
 		Folder: "~/work/acme", Other: "~/work/beta", Reason: ReasonIdle, Idle: 15 * time.Minute,
 		Harness: "claude", TTY: "ttys003", Factor: "Mac password", N: 2,
-		Until: time.Date(2026, 11, 21, 18, 30, 0, 0, time.UTC), Limit: 8 * time.Hour,
+		Until: time.Date(2026, 11, 21, 18, 30, 0, 0, time.UTC), Limit: 8 * time.Hour, Wait: 30 * time.Second,
 		SID: "0123456789abcdef", PID: 4242, Files: 3, Bytes: 12_000_000, Cause: "disk full",
 		Resume: "claude --resume 01234567", Days: 30, File: "notes.md", Conflict: "notes.conflict-20261121-1830.md",
 		Action: "delete 3 generations", Command: "prune", Unit: "0123456789abcdef0123456789abcdef",

@@ -20,10 +20,10 @@ const unlockDeadline = 3 * time.Minute
 func cmdUnlock(a *app, args []string) int {
 	f := newFlags("unlock")
 	rootDir := f.String("root", "", "unlock the protected folder containing `DIR`")
-	all := f.Bool("all", false, "unlock every folder (asks once per folder, D40)")
+	all := f.Bool("all", false, "unlock every folder (type unlock to confirm; each folder asks for you once)")
 	global := f.Bool("global", false, "unlock the global vault (Claude global stores)")
 	dur := f.Duration("for", 0, "keep it unlocked at most `DUR` (capped by policy.max_unlock)")
-	factor := f.String("factor", "", "unlock method to use (see precinto factor list)")
+	factor := f.String("factor", "", "the unlock method `NAME` to use (see precinto factor list)")
 	extend := f.Bool("extend", false, "extend the time limit of an unlocked folder (asks for presence again)")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
@@ -134,16 +134,37 @@ func cmdUnlock(a *app, args []string) int {
 		switch {
 		case isCancel(err):
 			a.line(ui.MsgUnlockCancelled, ui.Vars{Folder: a.folderList(cfg, req, targets)})
+			a.retryHint(cfg)
 			return exitLocked
 		case isBadSecret(err):
 			// CC-08: a wrong passphrase or recovery key is no tamper alert.
 			a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: a.folderList(cfg, req, targets)})
+			a.retryHint(cfg)
 			return exitLocked
 		}
 		return a.fail("unlock", err)
 	}
 	if len(resp.Unlocked) == 0 {
 		a.say(textAlreadyOpen, a.folderList(cfg, req, targets))
+	}
+	// D48: weakening config edits wait for an interactive confirmation.
+	// The review comes first, so that C2.ok quotes the policy the
+	// decision put in force (UX-14).
+	confirmed := false
+	var confirmErr error
+	if len(resp.Pending) > 0 && t != nil {
+		a.showPending(resp.Pending)
+		if ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false); err == nil && ok {
+			// A confirmation that fails still leaves the folders unlocked:
+			// C2.ok says so (with the policy in force) before the error.
+			if _, confirmErr = c.Policy(ctx, ipc.PolicyReq{Confirm: true}); confirmErr == nil {
+				confirmed = true
+			}
+		}
+	}
+	pol := a.policyInForce(cfg)
+	if confirmed {
+		pol = cfg.Policy // confirming makes config.toml the confirmed policy
 	}
 	for _, id := range resp.Unlocked {
 		folder := "the global vault"
@@ -154,21 +175,35 @@ func cmdUnlock(a *app, args []string) int {
 		}
 		a.line(ui.MsgUnlockOK, ui.Vars{
 			Folder: folder,
-			N:      cfg.Policy.RestoreRecent,
-			Idle:   cfg.Policy.IdleSoft.D(),
+			N:      pol.RestoreRecent,
+			Idle:   pol.IdleSoft.D(),
 			Until:  resp.Until.In(a.sys.loc),
 		})
 	}
-	// D48: weakening config edits wait for an interactive confirmation.
-	if len(resp.Pending) > 0 && t != nil {
-		a.showPending(resp.Pending)
-		if ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false); err == nil && ok {
-			if _, err := c.Policy(ctx, ipc.PolicyReq{Confirm: true}); err != nil {
-				return a.fail("unlock", err)
-			}
-		}
+	if confirmErr != nil {
+		return a.fail("unlock", confirmErr)
 	}
 	return exitOK
+}
+
+// policyInForce is the policy the agent enforces (floorPolicy: config.toml
+// merged with the confirmed settings), which is what the user's messages
+// quote, never an unconfirmed weakening edit of config.toml (UX-14).
+func (a *app) policyInForce(cfg config.Config) config.Policy {
+	l, err := a.layout()
+	if err != nil {
+		return cfg.Policy
+	}
+	return floorPolicy(cfg, l)
+}
+
+// retryHint says when a cancelled or mistyped unlock can be tried again:
+// the agent waits policy.prompt_backoff (the policy in force, D27) before
+// it asks again, and refuses an earlier retry (C2.wait, UX-08).
+func (a *app) retryHint(cfg config.Config) {
+	if wait := a.policyInForce(cfg).PromptBackoff.D(); wait > 0 {
+		a.line(ui.MsgUnlockRetry, ui.Vars{Wait: wait})
+	}
 }
 
 // pickLocked chooses what `precinto unlock` unlocks outside every folder on
@@ -269,13 +304,17 @@ func cmdLock(a *app, args []string) int {
 	if err := exclusive(map[string]bool{"root": *rootDir != "", "all": *all}); err != nil {
 		return a.usageFail(f, err.Error())
 	}
-	cfg, err := a.config()
-	if err != nil {
-		return a.fail("lock", err)
-	}
-	// D50: no flag locks every folder.
+	// D50: no flag locks every folder. Locking everything needs no
+	// configuration, so a config.toml that does not load never stops it
+	// (UX-09); only --root reads it, to find the folder.
 	req := ipc.LockReq{All: true, End: *end || *hard, Force: *force, LetFinish: *letFinish}
+	cfg, cfgErr := a.config()
 	if *rootDir != "" {
+		if cfgErr != nil {
+			code := a.fail("lock", cfgErr)
+			a.say(textLockAllInstead)
+			return code
+		}
 		r, err := a.rootArg(cfg, *rootDir)
 		if err != nil {
 			return a.fail("lock", err)
@@ -289,6 +328,7 @@ func cmdLock(a *app, args []string) int {
 			// Daemon start locks every vault (SPEC §12.5): nothing is
 			// unlocked when it does not run.
 			a.sayOut(textLockedNone)
+			a.reportBrokenConfig("lock", cfgErr)
 			return exitOK
 		}
 		return a.fail("lock", err)
@@ -298,10 +338,22 @@ func cmdLock(a *app, args []string) int {
 	if err != nil {
 		return a.fail("lock", err)
 	}
+	folders := map[string]string{}
+	if cfgErr != nil {
+		// The folders are named from the agent's own view: it keeps the
+		// settings it loaded last.
+		if st, err := c.Status(ctx); err == nil {
+			for _, v := range st.Vaults {
+				folders[v.VaultID] = v.RootPath
+			}
+		}
+	}
 	var names []string
 	for _, id := range resp.Locked {
 		if r, ok := cfg.RootByID(id); ok {
 			names = append(names, a.display(r.Path))
+		} else if p := folders[id]; p != "" {
+			names = append(names, a.display(p))
 		} else if id == vault.GlobalID {
 			names = append(names, "the global vault")
 		}
@@ -317,5 +369,16 @@ func cmdLock(a *app, args []string) int {
 	if len(resp.Unsealed) > 0 {
 		a.sayOut(textStillPlain, len(resp.Unsealed))
 	}
+	a.reportBrokenConfig("lock", cfgErr)
 	return exitOK
+}
+
+// reportBrokenConfig tells the user, after a command that did its work
+// without config.toml, that the file does not load and why (UX-09).
+func (a *app) reportBrokenConfig(name string, err error) {
+	if err == nil {
+		return
+	}
+	a.say("%s: %s", name, oneLineText(err.Error()))
+	a.say(textConfigBroken)
 }

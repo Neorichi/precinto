@@ -40,9 +40,9 @@ const (
 
 func cmdProtect(a *app, args []string) int {
 	f := newFlags("protect")
-	md := f.String("md", "", "Markdown policy: ledger (notes agents wrote, default), all or off")
-	onEnter := f.String("on-enter", "", "when a shell enters the folder: prompt, notify or off (default: the policy)")
-	harnessList := f.String("harness", "", "comma-separated harnesses to manage here (default: claude-code,codex)")
+	md := f.String("md", "", "which Markdown files to seal, `ledger|all|off`: the notes agents wrote (the default), all of them or none")
+	onEnter := f.String("on-enter", "", "what a shell does when it enters the folder, `prompt|notify|off` (default: policy.on_enter)")
+	harnessList := f.String("harness", "", "the harnesses precinto manages here, a comma-separated `LIST` (default: claude-code,codex)")
 	claudeSettings := f.Bool("claude-settings", false, "also write precinto's Claude settings to DIR/.claude/settings.local.json")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
@@ -877,9 +877,11 @@ func (a *app) confirmPolicy(ctx context.Context, t terminal) {
 	_, _ = c.Policy(ctx, ipc.PolicyReq{Confirm: true})
 }
 
-// showPending prints C13.policy and the pending changes.
+// showPending prints the pending changes for the terminal review that
+// follows (C13.review: the user decides now, so never C13.policy's "at
+// your next unlock", UX-14).
 func (a *app) showPending(pending []string) {
-	a.line(ui.MsgPolicyPending, ui.Vars{N: len(pending)})
+	a.line(ui.MsgPolicyReview, ui.Vars{N: len(pending)})
 	for _, ch := range pending {
 		a.say(textPolicyLine, oneLineText(ch))
 	}

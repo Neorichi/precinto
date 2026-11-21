@@ -16,8 +16,11 @@ const (
 	// Clear the screen and the scrollback (xterm ED 3; iTerm2 OSC 1337
 	// ClearScrollback ST), then leave the alternate screen.
 	seqClearLeave = "\x1b[H\x1b[2J\x1b[3J\x1b]1337;ClearScrollback\x1b\\\x1b[?1049l"
-	seqRetry      = "\x1b[1A\r\x1b[2K" // back to the prompt line, erased
-	seqRedraw     = "\r\x1b[2K"        // the prompt line, erased
+	// seqRetry goes back from below the answered prompt to the line above
+	// it (the instruction), erased, for the mismatch line (UX-07); the
+	// prompt follows on the next line, erased too.
+	seqRetry  = "\x1b[2A\r\x1b[2K"
+	seqRedraw = "\r\x1b[2K" // the prompt line, erased
 
 	typeBackPrompt = "> "
 	groupSize      = 6
@@ -105,6 +108,13 @@ func (t *TTY) showSecretScreen(header []string, secret *memguard.LockedBuffer, c
 	if err := t.writeString("\n"); err != nil {
 		return err
 	}
+	// What to type comes from the catalog (UX-07): the header the caller
+	// passes need not say it, and a mismatch replaces it with B.typeback.wrong.
+	v := Vars{N: confirmLast}
+	if err := t.write(append(SanitizeTerminal([]byte(Format(MsgTypeBack, v))), '\n')); err != nil {
+		return err
+	}
+	wrong := string(SanitizeTerminal([]byte(Format(MsgTypeBackWrong, v))))
 	prompt := typeBackPrompt
 	for {
 		n, err := s.readLine(typed.Bytes(), readOptions{
@@ -121,7 +131,7 @@ func (t *TTY) showSecretScreen(header []string, secret *memguard.LockedBuffer, c
 		if ok {
 			break
 		}
-		prompt = seqRetry + typeBackPrompt
+		prompt = seqRetry + wrong + "\n" + seqRedraw + typeBackPrompt
 	}
 	if s.end() {
 		return ErrCancelled

@@ -100,6 +100,59 @@ func TestServiceRunningPermissions(t *testing.T) {
 	}
 }
 
+// UX-05: vaults/ holds the vault folders and, next to them, the lock files
+// that serialize vault.toml rewrites (.<id>.lock, never deleted). A lock
+// file is one of precinto's private files, never a broken vault folder, and
+// doctor never advises moving one aside (a process holding the old inode
+// would no longer exclude the next writer).
+func TestPermissionsVaultLockFiles(t *testing.T) {
+	f := newFixture(t)
+	mkdir(t, f.h.Layout.VaultDir("global"), 0o700)
+	mkdir(t, f.h.Layout.VaultDir("root-acme"), 0o700)
+	global := writeFile(t, filepath.Join(f.h.Layout.VaultsDir, ".global.lock"), "", 0o600)
+	acme := writeFile(t, filepath.Join(f.h.Layout.VaultsDir, ".root-acme.lock"), "", 0o600)
+	none(t, f.run(), doctor.CheckPermissions, doctor.Warn, doctor.Fail)
+
+	if err := os.Chmod(acme, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs := f.run()
+	got := want(t, fs, doctor.CheckPermissions, doctor.Warn, acme+" can be read by other users (mode 0644)")
+	if got.Fix != "chmod 600 "+acme {
+		t.Errorf("fix %q", got.Fix)
+	}
+	if err := os.Chmod(global, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	fs = f.run()
+	want(t, fs, doctor.CheckPermissions, doctor.Fail, global+" can be changed by other users (mode 0666)")
+	for _, x := range of(fs, doctor.CheckPermissions) {
+		if strings.Contains(x.Message, "is not a directory") || strings.Contains(x.Fix, "aside") {
+			t.Errorf("a vault lock file reported as a vault folder: %q (fix %q)", x.Message, x.Fix)
+		}
+	}
+	// A lock file that is not a regular file is reported, with a fix that
+	// waits for precinto to stop instead of moving it aside.
+	if err := os.Remove(acme); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(f.h.Dir, acme); err != nil {
+		t.Fatal(err)
+	}
+	got = want(t, f.run(), doctor.CheckPermissions, doctor.Fail, acme+" is a symbolic link")
+	if strings.Contains(got.Fix, "aside") || !strings.Contains(got.Fix, "no precinto command") {
+		t.Errorf("fix %q", got.Fix)
+	}
+	// A crashed vault creation's staging folder (.<id>.new-…) is no vault,
+	// whatever its mode.
+	mkdir(t, filepath.Join(f.h.Layout.VaultsDir, ".root-new.new-0a1b2c"), 0o755)
+	for _, x := range of(f.run(), doctor.CheckPermissions) {
+		if strings.Contains(x.Message, ".root-new.new-") {
+			t.Errorf("an interrupted vault creation reported as a vault folder: %q", x.Message)
+		}
+	}
+}
+
 // CC-34: state/hookdedupe and state/notes.json are precinto's own paths
 // and must be private too.
 func TestPermissionsHookDedupeAndNotesIndex(t *testing.T) {

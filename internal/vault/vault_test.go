@@ -920,3 +920,48 @@ func TestConcurrentCreate(t *testing.T) {
 func TestTestdataHygiene(t *testing.T) {
 	testkit.Hygiene(t, "testdata")
 }
+
+// UX-07: Init hands the new recovery identity to Confirm before it writes
+// anything: the user sees and confirms the key first, and when Confirm
+// fails (the user stopped before typing it back) nothing is created, so
+// init can run again with a new key.
+func TestInitConfirmsTheRecoveryKeyFirst(t *testing.T) {
+	s, dir := newStore(t)
+	stop := errors.New("not confirmed")
+	var seen string
+	_, err := s.Init(context.Background(), vault.InitOptions{Factors: []vault.FactorSpec{passSpec(t)}, UI: uiWith().AsUI(),
+		Confirm: func(rec *memguard.LockedBuffer) error {
+			seen = string(append([]byte(nil), rec.Bytes()...)) // a copy: the buffer is destroyed on failure
+			if _, err := os.Lstat(filepath.Join(dir, "vaults", vault.GlobalID)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the global vault exists before the key was confirmed: %v", err)
+			}
+			return stop
+		}})
+	if !errors.Is(err, stop) {
+		t.Fatalf("Init = %v, want the Confirm error", err)
+	}
+	if !strings.HasPrefix(seen, "AGE-SECRET-KEY-1") {
+		t.Fatal("Confirm did not get the recovery identity")
+	}
+	if ok, err := s.Initialized(); ok || err != nil {
+		t.Fatalf("Initialized after a refused confirmation = %v %v", ok, err)
+	}
+	for _, d := range []string{"vaults", filepath.Join("state", "verified"), "factors"} {
+		if es, _ := os.ReadDir(filepath.Join(dir, d)); len(es) != 0 {
+			t.Errorf("%s holds %d entries after a refused confirmation", d, len(es))
+		}
+	}
+	// Confirmed: the identity Confirm saw is the one Init returns.
+	rec, err := s.Init(context.Background(), vault.InitOptions{Factors: []vault.FactorSpec{passSpec(t)}, UI: uiWith().AsUI(),
+		Confirm: func(r *memguard.LockedBuffer) error { seen = string(append([]byte(nil), r.Bytes()...)); return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Destroy()
+	if string(rec.Bytes()) != seen {
+		t.Fatal("Init returned another identity than the one confirmed")
+	}
+	if ok, err := s.Initialized(); !ok || err != nil {
+		t.Fatalf("Initialized = %v %v", ok, err)
+	}
+}

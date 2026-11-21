@@ -19,7 +19,9 @@ const (
 	clearScroll = "\x1b[3J"
 	iTermClear  = "\x1b]1337;ClearScrollback\x1b\\"
 	leaveAlt    = "\x1b[?1049l"
-	retryPrompt = "\x1b[1A\r\x1b[2K> "
+	// After a wrong answer the instruction line above the prompt says so
+	// (B.typeback.wrong, UX-07) and the prompt is asked again on its line.
+	retryPrompt = "\x1b[2A\r\x1b[2KThose are not its last 4 characters. Type them again:\r\n\r\x1b[2K> "
 )
 
 // syntheticKey is shaped like an age identity but is not one.
@@ -196,5 +198,41 @@ func TestShowSecretScreenNeedsATerminal(t *testing.T) {
 	buf := make([]byte, 64)
 	if n, _ := r.Read(buf); n != 0 {
 		t.Errorf("wrote %q to a pipe", buf[:n])
+	}
+}
+
+// UX-07: the screen itself says what to type, from the catalog, under the
+// secret (B.typeback), and a wrong answer says so in place of that line
+// (B.typeback.wrong) before the prompt is asked again: the catalog header
+// alone never mentions typing anything back.
+func TestShowSecretScreenSaysWhatToType(t *testing.T) {
+	p, tty := ptyTTY(t)
+	secret := lockedCopy(syntheticKey)
+	defer secret.Destroy()
+	header := strings.Split(ui.Format(ui.MsgRecoveryHeader, ui.Vars{}), "\n")
+	ask := ui.Format(ui.MsgTypeBack, ui.Vars{N: 4})
+	wrong := ui.Format(ui.MsgTypeBackWrong, ui.Vars{N: 4})
+	ch := async(func() (struct{}, error) { return struct{}{}, tty.ShowSecretScreen(header, secret, 4) })
+	p.waitOutput(ask + "\r\n> ")
+	retry := "\x1b[2A\r\x1b[2K" + wrong + "\r\n\r\x1b[2K> "
+	p.typeKeys("\r") // nothing typed
+	p.waitOutputN(retry, 1)
+	p.typeKeys("zzzz\r") // not the end of the key
+	p.waitOutputN(retry, 2)
+	p.typeKeys("qxzw\r")
+	if _, err := await(t, ch); err != nil {
+		t.Fatalf("ShowSecretScreen: %v", err)
+	}
+	p.waitOutput(clearScreen + clearScroll + iTermClear + leaveAlt)
+	out := p.output()
+	if strings.Count(out, wrong) != 2 {
+		t.Errorf("want the mismatch line after each wrong answer: %q", out)
+	}
+	keyAt, askAt := strings.Index(out, "AGE-SE"), strings.Index(out, ask)
+	if keyAt < 0 || askAt < keyAt {
+		t.Errorf("the instruction does not follow the secret: %q", out)
+	}
+	if !strings.Contains(ask, "last 4 characters") || !strings.Contains(wrong, "last 4 characters") {
+		t.Errorf("catalog texts %q / %q do not say what to type", ask, wrong)
 	}
 }
