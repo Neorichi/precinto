@@ -1,0 +1,42 @@
+# Claude Code inventory (schema 1). Built-in capsule-mode adapter: this file
+# only feeds process matching, launch-mode classification and resume parsing.
+# Owner: G3. Values are placeholders to verify against the pinned version.
+# TOML rule: top-level keys must precede the first [table] header.
+schema = 1
+id = "claude-code"
+name = "Claude Code"
+status = "verified"
+verified_versions = ">=2.1.295 <=2.1.329"
+mode = "capsule"
+
+# argv prefixes (after argv[0]) that bypass gate and restore (UX14).
+passthrough = [
+  ["update"], ["doctor"], ["mcp"], ["plugin"], ["config"], ["install"],
+  ["setup-token"], ["--version"], ["-v"], ["--help"], ["-h"],
+]
+# argv prefixes that run gated and sealed, without a PTY.
+direct = [["-p"], ["--print"], ["--output-format"]]
+
+[[bases]]
+name = "claude_config"
+default = "~/.claude"
+env = "CLAUDE_CONFIG_DIR"
+
+[[bases]]
+name = "claude_tmp"
+default = "/private/tmp/claude-{uid}"   # linux: /tmp/claude-{uid}
+env = "CLAUDE_CODE_TMPDIR"
+
+[[bases]]
+name = "claude_cache"
+default = "~/Library/Caches/claude-cli-nodejs"   # linux: $XDG_CACHE_HOME/claude-cli-nodejs
+
+[process]
+# Never match on p_comm: Claude's kernel name is its version string (IM9).
+exe_basenames = ["claude"]
+exe_paths = ["~/.local/share/claude/versions/*", "~/.claude/local/*"]
+
+[resume]
+flags = ["--resume", "-r"]
+continue = ["--continue", "-c"]
+fork = ["--fork-session"]

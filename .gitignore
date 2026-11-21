@@ -1,0 +1,22 @@
+# build output
+/dist/
+/bin/
+/precinto
+*.test
+*.out
+coverage.*
+
+# local test homes / artifacts
+/.tmp/
+/testdata/tmp/
+
+# never commit decrypted or sealed user data
+*.pcap
+*.precinto
+*.age
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

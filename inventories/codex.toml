@@ -1,0 +1,48 @@
+# Codex inventory (schema 1). Built-in home-mode adapter with per-root homes
+# (D31). Owner: G3. Values are placeholders to verify against the pinned
+# version. TOML rule: top-level keys must precede the first [table] header.
+schema = 1
+id = "codex"
+name = "Codex CLI"
+status = "verified"
+verified_versions = ">=0.154.0 <0.155.0"
+mode = "home"
+open_fd_check = true
+partition = "home"
+
+# Everything under the per-root home that is not listed here is content
+# (fail-closed, HA24). Paths are relative to the home.
+# Mirrors SPEC §7.2 exactly; `-shm` files are never sealed whatever their
+# database name. precinto-tmp/ (TMPDIR of managed launches, D44) is content.
+never_touch = [
+  "auth.json", "config.toml", "hooks.json", "plugins/**", "skills/**", "cache/**",
+  "packages/**", "models_cache.json", "installation_id", "version.json",
+  ".tmp/**", "tmp/**", "thread-writer-locks/**", "app-server-control/**", "log/**",
+  "rollout-maintenance.lock", "*-shm",
+]
+
+passthrough = [
+  ["login"], ["logout"], ["plugin"], ["features"], ["mcp"], ["completion"],
+  ["--version"], ["--help"], ["-h"],
+]
+direct = [["exec"]]
+
+[[bases]]
+name = "codex_home"
+default = "{base}/homes/codex/{root_id}"
+env = "CODEX_HOME"
+
+[process]
+exe_basenames = ["codex"]
+
+[[locks]]
+glob = "codex_home:thread-writer-locks/*.lock"
+kind = "flock"
+
+[[locks]]
+glob = "codex_home:rollout-maintenance.lock"
+kind = "flock"
+
+[resume]
+subcommand = ["resume", "fork"]
+continue = ["--last"]

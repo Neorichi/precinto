@@ -1,0 +1,22 @@
+# Gemini CLI inventory (schema 1) — EXPERIMENTAL placeholder (D33).
+# Wrapper-only; sealing requires open_fd_check and a verified version range.
+# ~/.gemini is shared with Antigravity: its paths are excluded (HA20).
+schema = 1
+id = "gemini"
+name = "Gemini CLI"
+status = "experimental"
+verified_versions = ""
+mode = "home"
+open_fd_check = true
+partition = "project-slug"
+slug_glob = "gemini_home:tmp/*"
+content = ["gemini_home:tmp/*/chats/**", "gemini_home:tmp/*/checkpoints/**", "gemini_home:history/**"]
+exclude = ["gemini_home:antigravity/**", "gemini_home:conversations/**", "gemini_home:implicit/**", "gemini_home:brain/**"]
+passthrough = [["--version"], ["--help"], ["extensions"]]
+
+[[bases]]
+name = "gemini_home"
+default = "~/.gemini"
+
+[process]
+argv_regex = ["(^|/)gemini(\\.js)?$"]

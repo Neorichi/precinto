@@ -1,0 +1,22 @@
+# Kimi Code inventory (schema 1) — EXPERIMENTAL placeholder (D33).
+schema = 1
+id = "kimi"
+name = "Kimi Code"
+status = "experimental"
+verified_versions = ""
+mode = "home"
+open_fd_check = true
+partition = "project-dir"
+content = ["kimi_home:sessions/**", "kimi_home:search-index/**"]
+
+[[bases]]
+name = "kimi_home"
+default = "~/.kimi-code"
+env = "KIMI_CODE_HOME"
+
+[process]
+exe_basenames = ["kimi"]
+
+[[locks]]
+glob = "kimi_home:locks/sessions/*.lock"
+kind = "json-pid"

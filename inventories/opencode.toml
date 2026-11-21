@@ -1,0 +1,20 @@
+# OpenCode inventory (schema 1) — EXPERIMENTAL placeholder (D33).
+# A shared service may hold opencode.db open in WAL mode: never seal while
+# any process holds it (open_fd_check); stop with `opencode service stop`.
+schema = 1
+id = "opencode"
+name = "OpenCode"
+status = "experimental"
+verified_versions = ""
+mode = "home"
+open_fd_check = true
+partition = "home"
+content = ["opencode_data:opencode.db", "opencode_data:opencode.db-wal", "opencode_data:storage/**"]
+stop_cmd = ["opencode", "service", "stop"]
+
+[[bases]]
+name = "opencode_data"
+default = "$XDG_DATA_HOME/opencode"
+
+[process]
+exe_basenames = ["opencode"]

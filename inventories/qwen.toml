@@ -1,0 +1,28 @@
+# Qwen Code inventory (schema 1) — EXPERIMENTAL placeholder (D33).
+schema = 1
+id = "qwen"
+name = "Qwen Code"
+status = "experimental"
+verified_versions = ""
+mode = "home"
+open_fd_check = true
+partition = "project-slug"
+slug_glob = "qwen_home:projects/*"
+content = ["qwen_home:projects/**", "qwen_runtime:**"]
+
+[[bases]]
+name = "qwen_home"
+default = "~/.qwen"
+env = "QWEN_HOME"
+
+[[bases]]
+name = "qwen_runtime"
+default = "~/.qwen/tmp"
+env = "QWEN_RUNTIME_DIR"
+
+[process]
+argv_regex = ["(^|/)qwen(\\.js)?$"]
+
+[[locks]]
+glob = "qwen_home:sessions/*.json"
+kind = "json-pid"

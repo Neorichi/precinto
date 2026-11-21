@@ -1,0 +1,370 @@
+package ui
+
+import (
+	"io"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/awnumar/memguard"
+
+	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
+)
+
+// TTY is an opened controlling terminal (/dev/tty), used for prompts that
+// must not go through redirected stdio. *TTY implements ipc.UIHandler
+// (Display, Secret, Confirm), asserted in cmd/precinto, so the CLI relays
+// daemon prompts without an adapter.
+type TTY struct {
+	in, out *os.File
+}
+
+// OpenTTY opens /dev/tty; it fails in hooks (no controlling terminal).
+func OpenTTY() (*TTY, error) { panic("unimplemented: ui.OpenTTY") }
+
+// Close releases the terminal.
+func (t *TTY) Close() error { panic("unimplemented: ui.TTY.Close") }
+
+// Printf writes to the terminal.
+func (t *TTY) Printf(format string, args ...any) { panic("unimplemented: ui.TTY.Printf") }
+
+// Display shows one informational line (ipc.UIHandler).
+func (t *TTY) Display(msg string) error { panic("unimplemented: ui.TTY.Display") }
+
+// Secret prompts and reads a secret with echo off directly into a locked
+// buffer; Ctrl-C returns ErrCancelled (ipc.UIHandler).
+func (t *TTY) Secret(prompt string) (*memguard.LockedBuffer, error) {
+	panic("unimplemented: ui.TTY.Secret")
+}
+
+// Confirm asks a question answered by typing yes or no (the words of the
+// relayed request, ipc.UIHandler); anything else counts as no.
+func (t *TTY) Confirm(prompt, yes, no string) (bool, error) { panic("unimplemented: ui.TTY.Confirm") }
+
+// YesNo asks a [y/N] or [Y/n] question.
+func (t *TTY) YesNo(prompt string, def bool) (bool, error) { panic("unimplemented: ui.TTY.YesNo") }
+
+// ReadLine reads one visible line (typed-back confirmations such as
+// MsgConfirmTyped and MsgUnlockConfirmAll).
+func (t *TTY) ReadLine(prompt string) (string, error) { panic("unimplemented: ui.TTY.ReadLine") }
+
+// ShowSecretScreen shows lines on the alternate screen (the secret in
+// groups of 6), requires the user to type back its last confirmLast
+// characters (4, D7), then clears screen and scrollback (ESC[2J ESC[3J,
+// iTerm2 ClearScrollback) and leaves the alternate screen. The buffer is not
+// retained.
+func (t *TTY) ShowSecretScreen(header []string, secret *memguard.LockedBuffer, confirmLast int) error {
+	panic("unimplemented: ui.TTY.ShowSecretScreen")
+}
+
+// ErrCancelled is returned when the user cancels a prompt.
+var ErrCancelled = errorString("ui: cancelled")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
+// Interactive reports whether both stdin and stdout are terminals.
+func Interactive(stdin, stdout *os.File) bool { panic("unimplemented: ui.Interactive") }
+
+// AgentContext reports whether the current process runs inside an AI agent
+// session: any paths.AgentMarkers, or an ancestor whose executable is a
+// known harness (claude, codex, droid, cursor-agent, copilot, gemini, kimi,
+// opencode). The returned string names the evidence (D7, D28). Callers of
+// content-revealing and destructive commands (cat --to, open, restore
+// --all, prune, forget, unprotect, vault repair) also treat a process
+// without a controlling terminal as an agent context (D59).
+func AgentContext(e paths.Env, t platform.ProcTable) (bool, string) {
+	panic("unimplemented: ui.AgentContext")
+}
+
+// SanitizeTerminal strips C0/C1 control characters except '\n' and '\t'
+// (escape-sequence injection defence for `precinto cat` to a TTY, S17).
+func SanitizeTerminal(b []byte) []byte { panic("unimplemented: ui.SanitizeTerminal") }
+
+// Reason is why a folder is locked, as shown to users (SPEC §16.3 C3).
+type Reason string
+
+// Lock reasons.
+const (
+	ReasonIdle   Reason = "idle"   // "idle N min"
+	ReasonScreen Reason = "screen" // "screen locked"
+	ReasonLimit  Reason = "limit"  // "8 h limit reached"
+	ReasonManual Reason = "manual" // "locked by you"
+	ReasonSleep  Reason = "sleep"  // "computer slept"
+	ReasonStart  Reason = "start"  // never unlocked since the agent started
+)
+
+// MsgID identifies a catalog message (SPEC §16.3; text from the UX review).
+type MsgID string
+
+// Catalog. The comment gives the normative English text with
+// {placeholders} (\n is a line break); Format renders the same text from
+// an unexported table that a unit test keeps identical to these comments.
+// Two texts are also frozen outside this package and asserted
+// byte-identical by tests: MsgNoteMarker (sweep.MarkerText writes it,
+// plus a final newline) and MsgShimFailed (the static block text of the
+// byte-frozen POSIX shims, D41).
+const (
+	MsgEnterNotify        MsgID = "C1.notify"       // precinto: {folder} is locked. It unlocks when you start claude or codex here, or run: precinto unlock
+	MsgEnterPrompt        MsgID = "C1.prompt"       // precinto: {folder} is locked. Unlock now with your Mac password? [Enter = yes · any other key = skip]
+	MsgEnterElsewhere     MsgID = "C1.elsewhere"    // precinto: {folder} is being unlocked in another terminal.
+	MsgUnlockSE           MsgID = "C2.se"           // precinto: unlock {folder} for {harness} ({tty}). Enter your Mac password in the system dialog. (Ctrl-C to cancel)
+	MsgUnlockHook         MsgID = "C2.hook"         // precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.
+	MsgUnlockPassphrase   MsgID = "C2.passphrase"   // precinto passphrase for {folder} (Ctrl-C to cancel):
+	MsgUnlockTouch        MsgID = "C2.touch"        // Touch your YubiKey...
+	MsgUnlockOK           MsgID = "C2.ok"           // precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
+	MsgUnlockCancelled    MsgID = "C2.cancelled"    // precinto: unlock cancelled. {folder} stays locked.
+	MsgUnlockNoGUI        MsgID = "C2.nogui"        // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
+	MsgUnlockPassFallback MsgID = "C2.passfallback" // Using your precinto passphrase instead.
+	MsgUnlockConfirmAll   MsgID = "C2.confirmall"   // precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type "unlock" to confirm:
+	MsgPromptBlocked      MsgID = "C3.blocked"      // precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.
+	MsgPromptUnlockCxl    MsgID = "C3.cancelled"    // precinto: unlock cancelled. Your message was not sent (press ↑ to get it back).
+	MsgAgentDown          MsgID = "C3.agentdown"    // precinto: the precinto agent isn't running, so {folder} stays locked. Run precinto unlock in a terminal.
+	MsgMovedFolder        MsgID = "C3.moved"        // precinto: this session moved into {other}, which is locked. Run precinto unlock --root {other}.
+	MsgToolDenied         MsgID = "C3.tooldenied"   // precinto: the user's project {folder} is locked. Do not retry this tool or use other tools. End your turn now with one short sentence asking the user to run "precinto unlock".
+	MsgCompactPaused      MsgID = "C3.compact"      // precinto: compaction is paused while {folder} is locked.
+	MsgStartLockedModel   MsgID = "C3.start.model"  // precinto: this project is locked. If precinto denies a tool, stop and ask the user to run "precinto unlock".
+	MsgStartLockedUser    MsgID = "C3.start.user"   // precinto: {folder} is locked. Your first message will ask you to unlock.
+	MsgCodexWrongHome     MsgID = "C3.codexhome"    // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
+	MsgOverlayTitle       MsgID = "C4.title"        // Locked by precinto
+	MsgOverlayLine        MsgID = "C4.line"         // {folder} · locked after {reason}
+	MsgOverlayPaused      MsgID = "C4.paused"       // Your session is paused, not closed. It continues where it was.
+	MsgOverlayKeys        MsgID = "C4.keys"         // Enter   unlock ({factor})          Ctrl-D   end session and seal it
+	MsgOverlayBusy        MsgID = "C4.busy"         // {harness} is finishing its current step. New messages wait until you unlock.
+	MsgOverlayEnding      MsgID = "C4.ending"       // Ending session... sealed.
+	MsgEnded              MsgID = "C5.ended"        // precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}
+	MsgSealedOK           MsgID = "C6.ok"           // precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.
+	MsgSealDeferred       MsgID = "C6.deferred"     // precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).
+	MsgSealFailed         MsgID = "C6.failed"       // precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.
+	MsgResumeOlder        MsgID = "C7.older"        // precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick
+	MsgResumeMiss         MsgID = "C7.miss"         // precinto: session {sid} is sealed. Resume it with: claude --resume {sid}
+	MsgResumeTwice        MsgID = "C7.twice"        // Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]
+	MsgResumeOld          MsgID = "C7.old"          // precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.
+	MsgExpiry             MsgID = "C8.expiry"       // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
+	MsgCodexUntrusted     MsgID = "C9.codex"        // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
+	MsgClaudeNoHooks      MsgID = "C9.claude"       // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
+	MsgBareWarning        MsgID = "C9.bare"         // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
+	MsgUngatedSession     MsgID = "C9.ungated"      // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
+	MsgCodexOutside       MsgID = "C9.codexoutside" // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
+	MsgCodexConsent       MsgID = "C10.consent"     // precinto keeps a separate, sealed Codex history for each protected folder. Codex started in a protected folder through precinto uses that folder's history; elsewhere Codex is unchanged. Protect Codex in {folder}? [Y/n]
+	MsgNoteConflict       MsgID = "C11.conflict"    // precinto: {file} changed while it was sealed. Kept both: {file} and {conflict}. Keep one with: precinto resolve {file}
+	MsgNoteRestored       MsgID = "C11.restored"    // precinto: restored {file} from the vault (its .md.precinto file had been deleted). To delete it for good: precinto forget {file}
+	MsgCodexConflict      MsgID = "C11.codex"       // precinto: Codex ran while its history was sealed: {n} new conversation(s) kept separately. Run: precinto doctor codex
+	MsgNoteMarker         MsgID = "C11.marker"      // This note is sealed by precinto. Run `precinto unlock` in this folder to open it.\nid: {unit}
+	MsgRefuseAgent        MsgID = "C12.agent"       // precinto: refusing to {action} {folder} from inside an AI agent session. Run precinto {command} yourself in a terminal.
+	MsgRefuseCodexLive    MsgID = "C12.codexlive"   // precinto: Codex is already running (pid {pid}) and its history is sealed. Quit it first.
+	MsgConfirmTyped       MsgID = "C12.typed"       // precinto: {action} can't be undone. Type "{command}" to confirm:
+	MsgPolicyPending      MsgID = "C13.policy"      // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
+	MsgPolicyTampered     MsgID = "C13.tampered"    // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
+	MsgVaultTampered      MsgID = "C14.tampered"    // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
+	MsgVaultRepairConfirm MsgID = "C14.confirm"     // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
+	MsgVaultRepaired      MsgID = "C14.repaired"    // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
+	MsgVaultNotGenuine    MsgID = "C14.notgenuine"  // precinto: the key you unlocked does not open {folder}'s older capsules, so its key files may have been replaced too. Nothing was changed. Use your recovery key: precinto vault repair --root {folder} --recovery
+	MsgInitRefuseAgent    MsgID = "B.refuse"        // precinto init must be run by you in your own terminal, not by an AI agent: the recovery key would end up in the agent's transcript and be sent to the model provider.
+	MsgInitNeedSE         MsgID = "B.needse"        // Unlocking with your Mac password needs age-plugin-se: brew install age-plugin-se, then run precinto init again. (Or use a passphrase only: precinto init --factor passphrase.)
+	MsgInitRemote         MsgID = "B.remote"        // precinto: you're in tmux, screen or SSH, where the Mac password dialog can't appear. Add a passphrase as a second way to unlock? [Y/n]
+	MsgShimFailed         MsgID = "D.shim"          // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
+)
+
+// catalog holds the text of every MsgID (identical to the comments above).
+var catalog = map[MsgID]string{
+	MsgEnterNotify:        "precinto: {folder} is locked. It unlocks when you start claude or codex here, or run: precinto unlock",
+	MsgEnterPrompt:        "precinto: {folder} is locked. Unlock now with your Mac password? [Enter = yes · any other key = skip]",
+	MsgEnterElsewhere:     "precinto: {folder} is being unlocked in another terminal.",
+	MsgUnlockSE:           "precinto: unlock {folder} for {harness} ({tty}). Enter your Mac password in the system dialog. (Ctrl-C to cancel)",
+	MsgUnlockHook:         "precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.",
+	MsgUnlockPassphrase:   "precinto passphrase for {folder} (Ctrl-C to cancel):",
+	MsgUnlockTouch:        "Touch your YubiKey...",
+	MsgUnlockOK:           "precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.",
+	MsgUnlockCancelled:    "precinto: unlock cancelled. {folder} stays locked.",
+	MsgUnlockNoGUI:        "precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.",
+	MsgUnlockPassFallback: "Using your precinto passphrase instead.",
+	MsgUnlockConfirmAll:   "precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type \"unlock\" to confirm:",
+	MsgPromptBlocked:      "precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.",
+	MsgPromptUnlockCxl:    "precinto: unlock cancelled. Your message was not sent (press ↑ to get it back).",
+	MsgAgentDown:          "precinto: the precinto agent isn't running, so {folder} stays locked. Run precinto unlock in a terminal.",
+	MsgMovedFolder:        "precinto: this session moved into {other}, which is locked. Run precinto unlock --root {other}.",
+	MsgToolDenied:         "precinto: the user's project {folder} is locked. Do not retry this tool or use other tools. End your turn now with one short sentence asking the user to run \"precinto unlock\".",
+	MsgCompactPaused:      "precinto: compaction is paused while {folder} is locked.",
+	MsgStartLockedModel:   "precinto: this project is locked. If precinto denies a tool, stop and ask the user to run \"precinto unlock\".",
+	MsgStartLockedUser:    "precinto: {folder} is locked. Your first message will ask you to unlock.",
+	MsgCodexWrongHome:     "precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.",
+	MsgOverlayTitle:       "Locked by precinto",
+	MsgOverlayLine:        "{folder} · locked after {reason}",
+	MsgOverlayPaused:      "Your session is paused, not closed. It continues where it was.",
+	MsgOverlayKeys:        "Enter   unlock ({factor})          Ctrl-D   end session and seal it",
+	MsgOverlayBusy:        "{harness} is finishing its current step. New messages wait until you unlock.",
+	MsgOverlayEnding:      "Ending session... sealed.",
+	MsgEnded:              "precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}",
+	MsgSealedOK:           "precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.",
+	MsgSealDeferred:       "precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).",
+	MsgSealFailed:         "precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.",
+	MsgResumeOlder:        "precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick",
+	MsgResumeMiss:         "precinto: session {sid} is sealed. Resume it with: claude --resume {sid}",
+	MsgResumeTwice:        "Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]",
+	MsgResumeOld:          "precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.",
+	MsgExpiry:             "precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.",
+	MsgCodexUntrusted:     "precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust \"precinto\". Start anyway? [Y/n]",
+	MsgClaudeNoHooks:      "precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.",
+	MsgBareWarning:        "precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]",
+	MsgUngatedSession:     "precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}",
+	MsgCodexOutside:       "precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex",
+	MsgCodexConsent:       "precinto keeps a separate, sealed Codex history for each protected folder. Codex started in a protected folder through precinto uses that folder's history; elsewhere Codex is unchanged. Protect Codex in {folder}? [Y/n]",
+	MsgNoteConflict:       "precinto: {file} changed while it was sealed. Kept both: {file} and {conflict}. Keep one with: precinto resolve {file}",
+	MsgNoteRestored:       "precinto: restored {file} from the vault (its .md.precinto file had been deleted). To delete it for good: precinto forget {file}",
+	MsgCodexConflict:      "precinto: Codex ran while its history was sealed: {n} new conversation(s) kept separately. Run: precinto doctor codex",
+	MsgNoteMarker:         "This note is sealed by precinto. Run `precinto unlock` in this folder to open it.\nid: {unit}",
+	MsgRefuseAgent:        "precinto: refusing to {action} {folder} from inside an AI agent session. Run precinto {command} yourself in a terminal.",
+	MsgRefuseCodexLive:    "precinto: Codex is already running (pid {pid}) and its history is sealed. Quit it first.",
+	MsgConfirmTyped:       "precinto: {action} can't be undone. Type \"{command}\" to confirm:",
+	MsgPolicyPending:      "precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.",
+	MsgPolicyTampered:     "precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.",
+	MsgVaultTampered:      "precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}",
+	MsgVaultRepairConfirm: "precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type \"repair\" to confirm:",
+	MsgVaultRepaired:      "precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.",
+	MsgVaultNotGenuine:    "precinto: the key you unlocked does not open {folder}'s older capsules, so its key files may have been replaced too. Nothing was changed. Use your recovery key: precinto vault repair --root {folder} --recovery",
+	MsgInitRefuseAgent:    "precinto init must be run by you in your own terminal, not by an AI agent: the recovery key would end up in the agent's transcript and be sent to the model provider.",
+	MsgInitNeedSE:         "Unlocking with your Mac password needs age-plugin-se: brew install age-plugin-se, then run precinto init again. (Or use a passphrase only: precinto init --factor passphrase.)",
+	MsgInitRemote:         "precinto: you're in tmux, screen or SSH, where the Mac password dialog can't appear. Add a passphrase as a second way to unlock? [Y/n]",
+	MsgShimFailed:         "precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor",
+}
+
+// Vars fills catalog placeholders.
+type Vars struct {
+	Folder   string // {folder}: display path (paths.Tilde)
+	Other    string // {other}
+	Reason   Reason // {reason}: ReasonText(Reason, Idle or Limit)
+	Idle     time.Duration
+	Harness  string // {harness}
+	TTY      string // {tty}
+	Factor   string // {factor}
+	N        int    // {n}
+	Until    time.Time
+	Limit    time.Duration
+	SID      string // {sid}: short sid (first 8 characters are shown)
+	PID      int    // {pid}
+	Files    int    // {files}
+	Bytes    int64  // {size}: HumanBytes
+	Cause    string // {cause}: short error class, never an OS error string
+	Resume   string // {resume}: resume command
+	Days     int    // {days}
+	File     string // {file}
+	Conflict string // {conflict}
+	Action   string // {action}
+	Command  string // {command}
+	Unit     string // {unit}: unit key (note markers)
+}
+
+// Format renders a catalog message: every {placeholder} of the text is
+// replaced from v ({idle} and {limit} as "15 min" / "8 h", {until} as
+// 15:04 in v.Until's location, {size} with HumanBytes). An unknown id
+// renders as the id itself so a missing entry is visible. Implemented in
+// the scaffold.
+func Format(id MsgID, v Vars) string {
+	text, ok := catalog[id]
+	if !ok {
+		return string(id)
+	}
+	sid := v.SID
+	if len(sid) > 8 {
+		sid = sid[:8]
+	}
+	reasonDur := v.Idle
+	if v.Reason == ReasonLimit {
+		reasonDur = v.Limit
+	}
+	r := strings.NewReplacer(
+		"{folder}", v.Folder,
+		"{other}", v.Other,
+		"{reason}", ReasonText(v.Reason, reasonDur),
+		"{idle}", humanDuration(v.Idle),
+		"{harness}", v.Harness,
+		"{tty}", v.TTY,
+		"{factor}", v.Factor,
+		"{n}", strconv.Itoa(v.N),
+		"{until}", v.Until.Format("15:04"),
+		"{limit}", humanDuration(v.Limit),
+		"{sid}", sid,
+		"{pid}", strconv.Itoa(v.PID),
+		"{files}", strconv.Itoa(v.Files),
+		"{size}", HumanBytes(v.Bytes),
+		"{cause}", v.Cause,
+		"{resume}", v.Resume,
+		"{days}", strconv.Itoa(v.Days),
+		"{file}", v.File,
+		"{conflict}", v.Conflict,
+		"{action}", v.Action,
+		"{command}", v.Command,
+		"{unit}", v.Unit,
+	)
+	return r.Replace(text)
+}
+
+// ReasonText renders a Reason with its parameter d, the idle time for
+// ReasonIdle ("idle 15 min") or the limit for ReasonLimit ("8 h limit
+// reached"). Implemented in the scaffold.
+func ReasonText(r Reason, d time.Duration) string {
+	switch r {
+	case ReasonIdle:
+		return "idle " + humanDuration(d)
+	case ReasonScreen:
+		return "screen locked"
+	case ReasonLimit:
+		return humanDuration(d) + " limit reached"
+	case ReasonManual:
+		return "locked by you"
+	case ReasonSleep:
+		return "computer slept"
+	case ReasonStart:
+		return "not unlocked yet"
+	default:
+		return string(r)
+	}
+}
+
+// humanDuration renders "45 s", "15 min", "8 h" or "1 h 30 min".
+func humanDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return strconv.Itoa(int(d/time.Second)) + " s"
+	case d < time.Hour:
+		return strconv.Itoa(int(d/time.Minute)) + " min"
+	case d%time.Hour < time.Minute:
+		return strconv.Itoa(int(d/time.Hour)) + " h"
+	default:
+		return strconv.Itoa(int(d/time.Hour)) + " h " + strconv.Itoa(int(d%time.Hour/time.Minute)) + " min"
+	}
+}
+
+// HumanBytes renders sizes with decimal units: 512 B, 12 kB, 12 MB, 1.2 GB.
+// Implemented in the scaffold.
+func HumanBytes(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10) + " B"
+	case n < 1000*1000:
+		return strconv.FormatInt(n/1000, 10) + " kB"
+	case n < 1000*1000*1000:
+		return strconv.FormatInt(n/(1000*1000), 10) + " MB"
+	default:
+		return strconv.FormatFloat(float64(n)/1e9, 'f', 1, 64) + " GB"
+	}
+}
+
+// Writer prints status/summary lines to w with the "precinto: " prefix.
+type Writer struct {
+	W io.Writer
+}
+
+// Line prints one message followed by a newline, adding the "precinto: "
+// prefix when the text lacks it. Implemented in the scaffold.
+func (w Writer) Line(id MsgID, v Vars) {
+	s := Format(id, v)
+	if !strings.HasPrefix(s, "precinto") {
+		s = "precinto: " + s
+	}
+	io.WriteString(w.W, s+"\n")
+}
