@@ -70,7 +70,9 @@ func helpers(t *testing.T) helperBins {
 			helpersErr = err
 			return
 		}
-		cmd := exec.Command(gotool, "build", "-o", dir+string(os.PathSeparator), "./testdata/tuichild", "./testdata/jobshell")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, gotool, "build", "-o", dir+string(os.PathSeparator), "./testdata/tuichild", "./testdata/jobshell")
 		cmd.Env = buildEnv()
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -112,9 +114,12 @@ func goTool() (string, error) {
 		if fi, err := os.Stat(c); err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		v := exec.Command(c, "version")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		v := exec.CommandContext(ctx, c, "version")
 		v.Env = buildEnv()
-		if v.Run() == nil {
+		err := v.Run()
+		cancel()
+		if err == nil {
 			return c, nil
 		}
 	}

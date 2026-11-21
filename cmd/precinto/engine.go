@@ -182,12 +182,29 @@ func newSweepEngine(ctx context.Context, a *app, experimental bool) (engine, err
 		Procs:    procs,
 		Clock:    clock,
 		Grants:   a.grants(),
-		Floor:    fsx.DefaultFloor,
+		Floor:    floorPolicy(cfg, l).Floor(),
 		Sealer:   "precinto " + buildVersion(),
 		Parallel: 2,
 		Sleep:    a.sys.sweepSleep, // nil in production: a real timer (D63)
 	}
 	return e, nil
+}
+
+// floorPolicy is the policy whose min_free every seal and restore of this
+// process keeps free on its volume (D76): config.toml merged with
+// state/policy.pinned by config.Strictest, the policy the daemon enforces
+// (D55); without a readable pin — before the first protect (D68) or after
+// tampering — the compiled-in defaults take the pin's place, as in the
+// daemon. User commands and the daemon's workers (this same binary) build
+// their sweep.Env the same way. A process without keys cannot verify the
+// pin's MACs: a forged pin can only raise the floor above config.toml's;
+// lowering it below the pinned value needs the TTY confirmation (D48).
+func floorPolicy(cfg config.Config, l paths.Layout) config.Policy {
+	other := config.Default()
+	if pinned, ok, err := config.LoadPinned(l.PolicyPinned); err == nil && ok {
+		other = pinned.Config
+	}
+	return config.Strictest(cfg, other).Policy
 }
 
 // withErr folds the report's own failure summary into err.

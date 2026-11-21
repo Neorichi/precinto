@@ -118,7 +118,7 @@ func TestNormativeTexts(t *testing.T) {
 		ui.MsgToolStop:         "precinto: ~/work/acme is locked",
 		ui.MsgGateFailed:       "precinto: precinto could not check ~/work/acme, so it stays locked. Run precinto unlock in a terminal, then precinto doctor if this repeats.",
 		ui.MsgSettingsKept:     "precinto: you passed your own --settings, so precinto did not add its settings that stop Claude compacting or summarizing while you are away. Add idleCompaction: false and awaySummaryEnabled: false to them.",
-		ui.MsgPurgeForget:      "precinto: also delete precinto's sealed copies of the sessions claude purge removes? [y/N]",
+		ui.MsgPurgeForget:      "precinto: claude purge deletes Claude's own copies of these sessions. precinto keeps its sealed copies (precinto forget deletes them). Run claude purge? [y/N]", // D79: yes runs purge and keeps the capsules, no starts nothing
 		ui.MsgUnlockBadSecret:  "precinto: that passphrase or recovery key is not right. ~/work/acme stays locked.",
 		ui.MsgOverlayKeysPlain: "Enter   unlock          Ctrl-D   end session and seal it",
 		ui.MsgEnterPromptPlain: "precinto: ~/work/acme is locked. Unlock now? [Enter = yes · any other key = skip]",
@@ -134,6 +134,7 @@ func TestNormativeTexts(t *testing.T) {
 		ui.MsgRecoveryWritten:  "recovery key written to ~/rec.txt. Move it offline (it opens every sealed folder).",
 		ui.MsgRecoveryPrompt:   "precinto recovery key:",
 		ui.MsgServiceOffer:     "Seal in the background every 10 minutes (installs a LaunchAgent)? [Y/n]",
+		ui.MsgPolicyConfirm:    "Confirm these changes? [y/N]", // the text cmd/precinto asked before it moved (D70)
 		ui.MsgNotProtected:     "~/work/acme is not inside a protected folder. Protect it with: precinto protect DIR",
 		ui.MsgNotInitialized:   "precinto is not set up yet. Run: precinto init",
 		ui.MsgAgentDownAll:     "the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock",

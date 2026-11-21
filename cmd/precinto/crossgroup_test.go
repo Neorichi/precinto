@@ -15,13 +15,26 @@ import (
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
+	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/testkit"
 )
 
-// realApp wires the production system over a testkit home: the real
-// engine (sweep, harness adapters, live, ledger), the real vault store and
-// the real ipc client (Insecure: the agent runs in this test process).
+// realHome is a testkit home whose clock follows the real one
+// (fakeplatform.NewRealClock): the real engine compares it with the mtimes
+// the kernel stamps on the home's files, and the real vault store refuses
+// times in its future (D77). Start the agent with h.Clock after it.
+func realHome(t *testing.T) *testkit.Home {
+	t.Helper()
+	h := testkit.NewHome(t)
+	h.Clock = fakeplatform.NewRealClock()
+	return h
+}
+
+// realApp wires the production system over a testkit home (realHome): the
+// real engine (sweep, harness adapters, live, ledger), the real vault
+// store and the real ipc client (Insecure: the agent runs in this test
+// process).
 func realApp(t *testing.T, h *testkit.Home) (*app, *env) {
 	t.Helper()
 	e := newEnv(t)
@@ -60,7 +73,7 @@ func realApp(t *testing.T, h *testkit.Home) (*app, *env) {
 // (agenttest): every vault starts locked, key release for an unlogged
 // capsule is denied (I14), lock answers (I15).
 func TestCrossgroupAdaptersOverAgent(t *testing.T) {
-	h := testkit.NewHome(t)
+	h := realHome(t)
 	ag := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
 	defer ag.Stop()
 	a, e := realApp(t, h)
@@ -97,7 +110,7 @@ func TestCrossgroupAdaptersOverAgent(t *testing.T) {
 // The production engine builds over a testkit home and derives unit keys
 // exactly as harness.UnitKeyFor (SPEC §6.2).
 func TestCrossgroupEngineWiring(t *testing.T) {
-	h := testkit.NewHome(t)
+	h := realHome(t)
 	a, _ := realApp(t, h)
 	ctx := context.Background()
 	eng, err := a.engine(ctx, false)

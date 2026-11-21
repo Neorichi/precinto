@@ -1,7 +1,10 @@
 package testkit
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,7 +91,9 @@ func TestModuleRoot(t *testing.T) {
 func TestBuildBinaryOnce(t *testing.T) {
 	const probe = "./internal/testkit/testdata/buildprobe"
 	run := func(bin string) string {
-		cmd := exec.Command(bin)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin)
 		cmd.Env = []string{}
 		out, err := cmd.Output()
 		if err != nil {
@@ -237,5 +242,60 @@ func mustFatalInternal(t *testing.T, want string, f func(tb testing.TB)) {
 	<-done
 	if !r.fatal || !strings.Contains(r.msg, want) {
 		t.Errorf("want a fatal failure containing %q, got %v %q", want, r.fatal, r.msg)
+	}
+}
+
+// removeChildEnv runs TestRemoveBinaries as its child.
+const removeChildEnv = "TESTKIT_REMOVE_BINARIES_CHILD"
+
+// TestRemoveBinaries: RemoveBinaries deletes the process's binary
+// directory and makes later builds fail instead of handing out a path into
+// it. It ends BuildBinary for the whole process, so it runs in a child
+// process (with a lifeline and a bounded wait, TESTPLAN §1.8).
+func TestRemoveBinaries(t *testing.T) {
+	if os.Getenv(removeChildEnv) == "1" {
+		go func() { // the lifeline: the parent test went away
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			os.Exit(70)
+		}()
+		bin := buildBinary(t, "./internal/testkit/testdata/buildprobe", nil)
+		dir, err := processBinDir()
+		if err != nil || !strings.HasPrefix(bin, dir+string(filepath.Separator)) {
+			t.Fatalf("binary %s outside the process directory %s (%v)", bin, dir, err)
+		}
+		RemoveBinaries()
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after RemoveBinaries: %v", dir, err)
+		}
+		if _, err := processBinDir(); !errors.Is(err, errRemoved) {
+			t.Fatalf("processBinDir after RemoveBinaries = %v, want errRemoved", err)
+		}
+		buildsMu.Lock()
+		n := len(builds)
+		buildsMu.Unlock()
+		if n != 0 {
+			t.Fatalf("%d cached builds still name the removed directory", n)
+		}
+		return
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, self, "-test.run=^TestRemoveBinaries$", "-test.count=1", "-test.v")
+	cmd.Env = append(startEnv.Environ(), removeChildEnv+"=1")
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lifeline.Close()
+	cmd.Stdin = life
+	cmd.WaitDelay = 10 * time.Second
+	out, err := cmd.CombinedOutput()
+	life.Close()
+	if err != nil || !strings.Contains(string(out), "--- PASS: TestRemoveBinaries") {
+		t.Fatalf("child: %v\n%s", err, out)
 	}
 }

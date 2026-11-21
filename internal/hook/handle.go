@@ -509,12 +509,15 @@ func unlockOnPrompt(ctx context.Context, d Deps, p Payload, s *session, req ipc.
 	if len(roots) == 0 {
 		roots = s.rootIDs
 	}
+	// The wire deadline is the unlock context's own: real time, which the
+	// daemon checks with its clock, never the decision clock d.Now (D77).
+	deadline, _ := uctx.Deadline()
 	_, err = cl.Unlock(uctx, ipc.UnlockReq{
 		RootIDs:  roots,
 		FromHook: true,
 		SID:      p.SID,
 		TTY:      false,
-		Deadline: s.now.Add(wait),
+		Deadline: deadline,
 	}, headlessUI{})
 	if err != nil {
 		var ie *ipc.Error

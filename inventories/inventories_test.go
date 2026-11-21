@@ -8,6 +8,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/inventories"
 )
 
@@ -80,5 +81,42 @@ func TestCodexNeverTouchMatchesSpec(t *testing.T) {
 		if inv.NeverTouch[i] != want[i] {
 			t.Fatalf("never_touch[%d] = %q, want %q", i, inv.NeverTouch[i], want[i])
 		}
+	}
+}
+
+// The Codex inventory matches the native binary and an npm install (node
+// running the codex bin script or its shim as argv[1]), the process
+// `precinto run codex` registers; never another program that merely names
+// a file "codex", nor a zombie.
+func TestCodexInventoryMatchesNpmInstalls(t *testing.T) {
+	t.Parallel()
+	inv, err := harness.LoadInventory(inventories.FS, "codex.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := func(exe string, argv ...string) platform.ProcInfo {
+		return platform.ProcInfo{ID: platform.ProcID{PID: 4242, StartUS: 1}, Exe: exe, Argv: argv}
+	}
+	for _, c := range []struct {
+		name string
+		p    platform.ProcInfo
+		want bool
+	}{
+		{"native", proc("/opt/homebrew/bin/codex", "codex"), true},
+		{"npm bin script", proc("/usr/local/bin/node", "node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js"), true},
+		{"npm shim", proc("/opt/homebrew/bin/node", "node", "/opt/homebrew/bin/codex", "exec"), true},
+		{"versioned node", proc("/usr/local/bin/node22", "node22", "/x/@openai/codex/bin/codex.js"), true},
+		{"editor on a file named codex", proc("/usr/bin/vim", "vim", "codex"), false},
+		{"node running another script", proc("/usr/local/bin/node", "node", "/x/codexify.js"), false},
+		{"a shell script", proc("/bin/sh", "/bin/sh", "/usr/local/bin/codex"), false},
+	} {
+		if got := inv.MatchProcess(c.p); got != c.want {
+			t.Errorf("%s: MatchProcess = %v, want %v", c.name, got, c.want)
+		}
+	}
+	z := proc("/usr/local/bin/node", "node", "/x/@openai/codex/bin/codex.js")
+	z.State = platform.StateZombie
+	if inv.MatchProcess(z) {
+		t.Error("a zombie npm codex matched")
 	}
 }

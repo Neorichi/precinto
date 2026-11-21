@@ -519,6 +519,19 @@ func TestFactorRepin(t *testing.T) {
 	if code := e.run("factor", "repin", "se"); code != exitOK || len(e.vaults.repinned) != 0 {
 		t.Fatalf("unchanged: exit %d repinned %v", code, e.vaults.repinned)
 	}
+	// A repin that failed half way: the global vault pins the new binary,
+	// root-acme the old one. Repin runs again (for root-acme).
+	e, bin, newSHA := setup(t)
+	m = e.vaults.metas[vault.GlobalID]
+	m.Factors[0].PluginSHA256 = newSHA
+	e.vaults.metas[vault.GlobalID] = m
+	r := e.vaults.metas["root-acme"]
+	r.Factors = []vault.Factor{{Name: "se", Kind: vault.FactorSE, PluginPath: bin, PluginSHA256: strings.Repeat("a", 64)}}
+	e.vaults.metas["root-acme"] = r
+	e.tty.lines = []string{wordRepin}
+	if code := e.run("factor", "repin", "se"); code != exitOK || len(e.vaults.repinned) != 1 {
+		t.Fatalf("half-done repin: exit %d repinned %v (%s)", code, e.vaults.repinned, e.stderr())
+	}
 	// Not a plugin factor.
 	e, _, _ = setup(t)
 	if code := e.run("factor", "repin", "recovery"); code != exitUsage {

@@ -177,9 +177,12 @@ lock_on_screen_lock = true
 screen_lock_hard_after = "15m"
 on_enter = "prompt"            # offer to unlock when you cd into a locked folder
 unlock_on_prompt = false       # let a prompt typed in a locked session raise the unlock dialog
+min_free = "2GiB"              # free space precinto always leaves on the disk when it seals or restores
 ```
 
-Edits that **weaken** protection (removing a folder or a harness, raising a timer, disabling a trigger, sealing fewer notes, relaxing the unlock prompts) wait until your next unlock in a terminal shows you the change and you confirm it. Stricter edits apply at once. This keeps another program running as you, or an agent, from quietly turning protection down. `unlock_on_prompt` ships off and is planned to turn on once its end-to-end test passes on the pinned Claude Code version.
+`min_free` takes a size such as `"512MiB"` or `"4GiB"` (binary units; at least `512MiB`). When sealing a session would leave less free space than that, precinto keeps the session as it is and reports "disk full" instead of filling the disk; the same floor applies to restores.
+
+Edits that **weaken** protection (removing a folder or a harness, raising a timer, disabling a trigger, sealing fewer notes, relaxing the unlock prompts, lowering `min_free`) wait until your next unlock in a terminal shows you the change and you confirm it. Stricter edits apply at once. This keeps another program running as you, or an agent, from quietly turning protection down. `unlock_on_prompt` ships off and is planned to turn on once its end-to-end test passes on the pinned Claude Code version.
 
 ## Supported harnesses
 
@@ -246,7 +249,7 @@ Yes. All sessions in a folder share its lock: one unlock opens the folder in eve
 
 ### What if unlock fails after I upgrade an age plugin?
 
-precinto pins every age plugin it runs (`age-plugin-se`, `age-plugin-yubikey` and others) by path and SHA-256, so that a binary someone replaced never handles your vault keys. After an upgrade the hash no longer matches: unlocking with that factor fails (exit 5), and `precinto doctor` reports `plugin-pin`. If you expected the upgrade, re-pin the plugin yourself, in your own terminal: `precinto factor repin se`, or the factor's name from `precinto factor list`. It shows the pinned path, the old and the new SHA-256, and the file's owner and modification time, asks you to type `repin`, and then updates the pin in every vault. It accepts only a regular file owned by you or by root that nobody else can write, and it is refused inside an agent session. If you did not expect the change, do not re-pin: `precinto recover` can still unlock your folders with the recovery key.
+precinto pins every age plugin it runs (`age-plugin-se`, `age-plugin-yubikey` and others) by path and SHA-256, so that a binary someone replaced never handles your vault keys. After an upgrade the hash no longer matches: unlocking with that factor fails (exit 5), and `precinto doctor` reports `plugin-pin`. If you expected the upgrade, re-pin the plugin yourself, in your own terminal: `precinto factor repin se`, or the factor's name from `precinto factor list`. precinto remembers the path you enrolled the plugin with, such as Homebrew's `/opt/homebrew/bin/age-plugin-se`, so after `brew upgrade` repin follows it to the new version. It shows that path, the pinned binary and its SHA-256, the binary the path leads to now and its SHA-256, and the file's owner and modification time, asks you to type `repin`, and then updates the pin in every vault. Check that the new binary is the one you installed (for Homebrew, a `Cellar/age-plugin-se/<version>` path): a program running as you could re-point that link, and only you can tell. repin accepts only a regular file with the plugin's name, owned by you or by root, that nobody else can write, and it is refused inside an agent session. If you did not expect the change, do not re-pin: `precinto recover` can still unlock your folders with the recovery key.
 
 ### Can an agent unlock the folder or read sealed files?
 

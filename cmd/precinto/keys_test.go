@@ -119,14 +119,18 @@ func TestGrants(t *testing.T) {
 }
 
 // watchLocks closes its channel (and destroys keys) on a lock of a watched
-// folder, and at once when no subscription can be made.
+// folder, and at once when no subscription can be made. The first event of
+// each folder is its state when the subscription starts (D71), not a lock
+// during the operation: a folder locked then is refused by the key request.
 func TestWatchLocks(t *testing.T) {
 	e := newEnv(t)
-	e.daemon.events = make(chan ipc.Event, 1)
+	e.daemon.events = make(chan ipc.Event, 4)
 	a := e.app()
 	fired := make(chan struct{})
 	abort, stop := a.watchLocks(context.Background(), []string{"root-acme"}, func() { close(fired) })
 	defer stop()
+	e.daemon.events <- ipc.Event{Kind: ipc.EventUnlocked, RootIDs: []string{"root-acme"}} // initial state
+	e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-beta"}}   // not watched
 	e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}}
 	select {
 	case <-abort:
@@ -134,6 +138,37 @@ func TestWatchLocks(t *testing.T) {
 		t.Fatal("abort not closed within 2 s of the lock (REST-8)")
 	}
 	<-fired
+
+	// Locked when the subscription starts: no abort; a later lock aborts.
+	e = newEnv(t)
+	e.daemon.events = make(chan ipc.Event, 4)
+	abort, stop = e.app().watchLocks(context.Background(), []string{"root-acme"}, nil)
+	defer stop()
+	e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}} // initial state
+	select {
+	case <-abort:
+		t.Fatal("the initial locked state of the folder aborted the operation (D71)")
+	case <-time.After(200 * time.Millisecond):
+	}
+	e.daemon.events <- ipc.Event{Kind: ipc.EventUnlocked, RootIDs: []string{"root-acme"}}
+	e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}}
+	select {
+	case <-abort:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a lock after the initial state did not abort")
+	}
+
+	// A lock event naming no folder locks every folder.
+	e = newEnv(t)
+	e.daemon.events = make(chan ipc.Event, 1)
+	abort, stop = e.app().watchLocks(context.Background(), nil, nil)
+	defer stop()
+	e.daemon.events <- ipc.Event{Kind: ipc.EventLocked}
+	select {
+	case <-abort:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a lock of every folder did not abort")
+	}
 
 	e = newEnv(t)
 	e.dialErr = ipc.ErrNoDaemon

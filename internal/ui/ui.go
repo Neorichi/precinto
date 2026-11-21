@@ -289,7 +289,7 @@ const (
 	MsgResumeMiss         MsgID = "C7.miss"            // precinto: session {sid} is sealed. Resume it with: claude --resume {sid}
 	MsgResumeTwice        MsgID = "C7.twice"           // Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]
 	MsgResumeOld          MsgID = "C7.old"             // precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.
-	MsgPurgeForget        MsgID = "C7.purge"           // precinto: also delete precinto's sealed copies of the sessions claude purge removes? [y/N]
+	MsgPurgeForget        MsgID = "C7.purge"           // precinto: claude purge deletes Claude's own copies of these sessions. precinto keeps its sealed copies (precinto forget deletes them). Run claude purge? [y/N]
 	MsgExpiry             MsgID = "C8.expiry"          // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
 	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
@@ -307,6 +307,7 @@ const (
 	MsgConfirmTyped       MsgID = "C12.typed"          // precinto: {action} can't be undone. Type "{command}" to confirm:
 	MsgPolicyPending      MsgID = "C13.policy"         // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
 	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
+	MsgPolicyConfirm      MsgID = "C13.confirm"        // Confirm these changes? [y/N]
 	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
 	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
 	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
@@ -374,7 +375,7 @@ var catalog = map[MsgID]string{
 	MsgResumeMiss:         "precinto: session {sid} is sealed. Resume it with: claude --resume {sid}",
 	MsgResumeTwice:        "Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]",
 	MsgResumeOld:          "precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.",
-	MsgPurgeForget:        "precinto: also delete precinto's sealed copies of the sessions claude purge removes? [y/N]",
+	MsgPurgeForget:        "precinto: claude purge deletes Claude's own copies of these sessions. precinto keeps its sealed copies (precinto forget deletes them). Run claude purge? [y/N]",
 	MsgExpiry:             "precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.",
 	MsgCodexUntrusted:     "precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust \"precinto\". Start anyway? [Y/n]",
 	MsgClaudeNoHooks:      "precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.",
@@ -392,6 +393,7 @@ var catalog = map[MsgID]string{
 	MsgConfirmTyped:       "precinto: {action} can't be undone. Type \"{command}\" to confirm:",
 	MsgPolicyPending:      "precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.",
 	MsgPolicyTampered:     "precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.",
+	MsgPolicyConfirm:      "Confirm these changes? [y/N]",
 	MsgVaultTampered:      "precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}",
 	MsgVaultRepairConfirm: "precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type \"repair\" to confirm:",
 	MsgVaultRepaired:      "precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.",

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -46,6 +47,41 @@ func TestRecoverVerifyRecordsTheTest(t *testing.T) {
 	e = setup(t, other.String())
 	if code := e.run("recover", "--verify"); code == exitOK {
 		t.Fatal("a wrong key verified")
+	}
+	if len(e.vaults.verifiedAt) != 0 {
+		t.Fatalf("a failed verify was recorded: %v", e.vaults.verifiedAt)
+	}
+}
+
+// CC-08: a key that is the install's recovery key (it opens a fresh header
+// to the recovery recipient) but does not open the newest logged capsule
+// means that capsule was sealed to another recovery recipient: exit 5 (a
+// verification failure), never the wrong-key exit 3, and nothing recorded.
+func TestRecoverVerifyNewestCapsuleSealedElsewhere(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t)
+	e.tty = nil
+	m := e.vaults.metas[vault.GlobalID]
+	m.RecoveryRecipient = id.Recipient().String()
+	e.vaults.metas[vault.GlobalID] = m
+	h, err := freshHeader(other.Recipient().String()) // the newest capsule: sealed to another recovery key
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.eng.header = h
+	e.in.WriteString(id.String() + "\n")
+	if code := e.run("recover", "--verify"); code != exitVerify {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitVerify, e.stderr())
+	}
+	if !strings.Contains(e.stderr(), textRecoveryNotNewest) {
+		t.Errorf("stderr %q lacks the newest-capsule warning", e.stderr())
 	}
 	if len(e.vaults.verifiedAt) != 0 {
 		t.Fatalf("a failed verify was recorded: %v", e.vaults.verifiedAt)

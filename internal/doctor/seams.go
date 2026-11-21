@@ -284,7 +284,7 @@ func buildSweepEnv(o Options, status func(context.Context) (ipc.StatusResp, erro
 		Procs:    o.Procs,
 		Clock:    clock,
 		Grants:   grantsFrom(status),
-		Floor:    fsx.DefaultFloor,
+		Floor:    o.Cfg.Policy.Floor(), // policy.min_free (D76); doctor never writes
 		Sealer:   "precinto doctor",
 	}, nil
 }

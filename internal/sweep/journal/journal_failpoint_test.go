@@ -3,12 +3,15 @@
 package journal_test
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/fsx/failpoint"
 	"github.com/precinto/precinto/internal/sweep/journal"
@@ -67,6 +70,13 @@ func TestBeginFailureWritesNothing(t *testing.T) {
 // say prepared, complete and decodable.
 func TestCrashBeforeSaveKeepsTheMilestone(t *testing.T) {
 	if dir := os.Getenv("JOURNAL_CRASH_DIR"); dir != "" {
+		// The child: it exits when its lifeline (stdin) closes, and after
+		// two minutes whatever happens (TESTPLAN §1.8).
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			os.Exit(70)
+		}()
+		time.AfterFunc(2*time.Minute, func() { os.Exit(71) })
 		j := journal.Open(dir)
 		r, err := j.Begin(journal.KindSeal, "claude-code", "u1")
 		if err != nil {
@@ -78,9 +88,19 @@ func TestCrashBeforeSaveKeepsTheMilestone(t *testing.T) {
 		os.Exit(0)
 	}
 	dir := filepath.Join(t.TempDir(), "journal")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCrashBeforeSaveKeepsTheMilestone$")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCrashBeforeSaveKeepsTheMilestone$", "-test.count=1")
 	cmd.Env = append(os.Environ(), "JOURNAL_CRASH_DIR="+dir)
-	err := cmd.Run()
+	cmd.WaitDelay = 10 * time.Second
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lifeline.Close() // the child's lifeline: closed when this test ends
+	cmd.Stdin = life
+	err = cmd.Run()
+	life.Close()
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {
 		t.Fatalf("child: %v", err)

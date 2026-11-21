@@ -197,7 +197,8 @@ func planPlugin(spec FactorSpec, now time.Time) (*factorPlan, error) {
 	}
 	return &factorPlan{factor: Factor{
 		Name: name, Kind: spec.Kind, Recipient: spec.Recipient, IdentityStub: spec.IdentityStub,
-		PluginPath: real, PluginSHA256: sum, PresencePolicy: policy, GUI: spec.Kind == FactorSE, AddedAt: now,
+		PluginPath: real, PluginLink: filepath.Clean(spec.PluginPath), PluginSHA256: sum, PresencePolicy: policy,
+		GUI: spec.Kind == FactorSE, AddedAt: now,
 	}}, nil
 }
 

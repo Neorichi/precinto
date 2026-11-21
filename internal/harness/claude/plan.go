@@ -22,7 +22,7 @@ const (
 	msgBareWarning  = "C9.bare"     // --bare in a protected folder
 	msgResumeTwice  = "C7.twice"    // the session is open in another terminal
 	msgSettingsKept = "C9.settings" // the user passed --settings: precinto added none (D32)
-	msgPurgeForget  = "C7.purge"    // claude purge: also forget precinto's sealed copies? (default no)
+	msgPurgeForget  = "C7.purge"    // claude purge: run it? precinto keeps its sealed copies (default no, D79)
 	// cmdPurge is Claude's subcommand that deletes sessions (SPEC §7.1.5).
 	cmdPurge = "purge"
 	// sessionEndBudget is Claude's SessionEnd hook budget (HOOKS-IO §1).
@@ -96,9 +96,10 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	if purge {
 		// claude purge [path] deletes sessions and runs none: it is gated
 		// like any launch in the folder, but nothing is restored for it
-		// and no session settings are added. precinto asks first whether
-		// its sealed copies should go too (C7.purge, default no: answering
-		// no starts nothing, CC-20).
+		// and no session settings are added. precinto asks first (C7.purge,
+		// default no, D79): yes runs claude purge and keeps every sealed
+		// copy (capsules are deleted only by forget or prune, D15); no
+		// starts nothing (exit 3, CC-20).
 		plan.Argv = append([]string{exe}, args...)
 		plan.Confirm = msgPurgeForget
 		plan.SealScope = harness.Scope{RootIDs: rootIDs(plan.Roots)}

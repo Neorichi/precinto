@@ -25,6 +25,9 @@ import (
 //     values are invalid and weaker still.
 //   - Delays after a cancelled prompt (prompt_backoff, hook_prompt_cooldown):
 //     longer is stricter; 0 is no delay; negative values are invalid.
+//   - min_free (D76): larger is stricter (more of the volume stays free);
+//     0 means the 2 GiB default and compares as 2 GiB; any other value
+//     below 512 MiB is invalid and the weakest.
 //   - Counters (restore_recent, restore_max_bytes, prompt_rate_per_minute):
 //     smaller is stricter and 0 means none (the contract gives 0 no other
 //     meaning); negative values are invalid and the weakest.
@@ -71,6 +74,30 @@ func cmpQuietWindow(a, b Duration) int {
 	switch {
 	case aok && bok:
 		return cmp.Compare(bv, av)
+	case aok:
+		return 1
+	case bok:
+		return -1
+	}
+	return 0
+}
+
+// cmpMinFree orders min_free values by the floor they mean (D76).
+func cmpMinFree(a, b Size) int {
+	mean := func(s Size) (Size, bool) {
+		switch {
+		case s == 0:
+			return DefaultMinFree, true
+		case s < MinMinFree:
+			return 0, false
+		}
+		return s, true
+	}
+	av, aok := mean(a)
+	bv, bok := mean(b)
+	switch {
+	case aok && bok:
+		return cmp.Compare(av, bv)
 	case aok:
 		return 1
 	case bok:
@@ -180,6 +207,11 @@ func durationText(d Duration) string {
 	return string(b)
 }
 
+func sizeText(s Size) string {
+	b, _ := s.MarshalText() // never fails
+	return string(b)
+}
+
 func boolText(v bool) string      { return strconv.FormatBool(v) }
 func intText(v int) string        { return strconv.Itoa(v) }
 func int64Text(v int64) string    { return strconv.FormatInt(v, 10) }
@@ -200,6 +232,7 @@ var policyRules = []policyRule{
 	fieldRule[Duration]{"hold_cap", func(p *Policy) *Duration { return &p.HoldCap }, cmpPositiveLower, durationText},
 	fieldRule[int]{"restore_recent", func(p *Policy) *int { return &p.RestoreRecent }, cmpCountLower[int], intText},
 	fieldRule[int64]{"restore_max_bytes", func(p *Policy) *int64 { return &p.RestoreMaxBytes }, cmpCountLower[int64], int64Text},
+	fieldRule[Size]{"min_free", func(p *Policy) *Size { return &p.MinFree }, cmpMinFree, sizeText},
 	fieldRule[bool]{"restore_history", func(p *Policy) *bool { return &p.RestoreHistory }, cmpFalse, boolText},
 	fieldRule[bool]{"per_root_auth", func(p *Policy) *bool { return &p.PerRootAuth }, cmpTrue, boolText},
 	fieldRule[bool]{"unlock_on_prompt", func(p *Policy) *bool { return &p.UnlockOnPrompt }, cmpFalse, boolText},

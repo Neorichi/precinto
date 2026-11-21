@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,6 +71,100 @@ func (d Duration) MarshalText() ([]byte, error) {
 	}
 }
 
+// Size is a byte count encoded in TOML as a string: an integer with a
+// binary unit ("512MiB", "2GiB", "1TiB"; "KiB" and "B" too, the unit's
+// case ignored, one optional space) or a bare number of bytes; "0" means
+// the key's default. Decimal units ("2GB") are rejected, so a size never
+// silently means something else; negative, fractional and overflowing
+// values are rejected too.
+type Size int64
+
+// Bytes returns the value in bytes.
+func (s Size) Bytes() int64 { return int64(s) }
+
+// sizeUnits are the accepted units, largest first (MarshalText picks the
+// largest that divides the value).
+var sizeUnits = []struct {
+	name  string
+	bytes int64
+}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"B", 1}}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *Size) UnmarshalText(b []byte) error {
+	text := string(b)
+	bad := func() error { return fmt.Errorf("%w: size %q (use e.g. \"512MiB\" or \"2GiB\")", ErrInvalid, text) }
+	i := 0
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		i++
+	}
+	if i == 0 || i > 19 {
+		return bad()
+	}
+	n, err := strconv.ParseInt(text[:i], 10, 64)
+	if err != nil {
+		return bad()
+	}
+	unit := strings.TrimPrefix(text[i:], " ")
+	mult := int64(1)
+	if unit != "" {
+		found := false
+		for _, u := range sizeUnits {
+			if strings.EqualFold(unit, u.name) {
+				mult, found = u.bytes, true
+				break
+			}
+		}
+		if !found {
+			return bad()
+		}
+	}
+	if n > math.MaxInt64/mult {
+		return bad()
+	}
+	*s = Size(n * mult)
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler with the largest binary
+// unit that represents the value exactly ("0", "512MiB", "2GiB", "100B").
+func (s Size) MarshalText() ([]byte, error) {
+	v := int64(s)
+	if v == 0 {
+		return []byte("0"), nil
+	}
+	if v < 0 {
+		return []byte(strconv.FormatInt(v, 10) + "B"), nil // invalid; Validate refuses it
+	}
+	for _, u := range sizeUnits {
+		if v%u.bytes == 0 {
+			return []byte(strconv.FormatInt(v/u.bytes, 10) + u.name), nil
+		}
+	}
+	return []byte(strconv.FormatInt(v, 10) + "B"), nil // unreachable: "B" divides everything
+}
+
+// Free-space floor (policy.min_free, D76): the bytes every seal, restore
+// and staging write leaves free on its volume. 0 means the default; any
+// other value below the minimum is refused by Validate.
+const (
+	DefaultMinFree Size = 2 << 30
+	MinMinFree     Size = 512 << 20
+)
+
+// MinFreeBytes returns the effective policy.min_free in bytes: the value,
+// or DefaultMinFree when it is 0 (unset, e.g. a policy.pinned written
+// before the key existed).
+func (p Policy) MinFreeBytes() int64 {
+	if p.MinFree == 0 {
+		return int64(DefaultMinFree)
+	}
+	return int64(p.MinFree)
+}
+
+// Floor returns the free-space floor of the policy for sweep.Env (D76): a
+// fixed MinFreeBytes, never a fraction of the volume.
+func (p Policy) Floor() fsx.Floor { return fsx.Floor{MinBytes: p.MinFreeBytes()} }
+
 // MD policies for a root (SPEC §8).
 const (
 	MDLedger = "ledger" // default: Markdown the ledger or transcript shows an agent wrote
@@ -92,27 +187,28 @@ const (
 
 // Policy is the [policy] table. TOML keys are the snake_case tags.
 type Policy struct {
-	IdleSoft            Duration `toml:"idle_soft"`                // 15m: lock after this much human idle (D23)
-	IdleHard            Duration `toml:"idle_hard"`                // 60m: end paused sessions; "0" never
-	MaxUnlock           Duration `toml:"max_unlock"`               // 8h: absolute grant lifetime ⇒ lock (D24), capped at 24h
-	LockOnScreenLock    bool     `toml:"lock_on_screen_lock"`      // true (D24)
-	ScreenLockHardAfter Duration `toml:"screen_lock_hard_after"`   // 15m of continuous screen lock ⇒ end idle sessions (D24)
-	BusyGrace           Duration `toml:"busy_grace"`               // 30m: busy turns may finish after a lock (D24)
-	BusyTimeout         Duration `toml:"busy_timeout"`             // 10m without hook activity and registry not busy ⇒ not busy (D23)
-	QuietWindow         Duration `toml:"quiet_window"`             // 120s stability window for unknown writers (SPEC §9.4)
-	HoldCap             Duration `toml:"hold_cap"`                 // 24h: weak-evidence liveness holds are reported after this (S14)
-	RestoreRecent       int      `toml:"restore_recent"`           // 5 (D38)
-	RestoreMaxBytes     int64    `toml:"restore_max_bytes"`        // 1 GiB (D38)
-	RestoreHistory      bool     `toml:"restore_history"`          // true: merge sealed history lines back at unlock
-	PerRootAuth         bool     `toml:"per_root_auth"`            // true: each root needs its own presence prompt (D1, D40)
-	UnlockOnPrompt      bool     `toml:"unlock_on_prompt"`         // false until the hook-dialog E2E passes (D60); human prompts only (D26, D27, D37)
-	OnEnter             string   `toml:"on_enter"`                 // "prompt" (D29)
-	MDSealOn            string   `toml:"md_seal_on"`               // "lock"
-	ClearTerminalOnEnd  bool     `toml:"clear_terminal_on_end"`    // true: scrub the TTY when sessions are ended
-	ClearScrollbackLock bool     `toml:"clear_scrollback_on_lock"` // true: wrapper clears scrollback at lock (D30)
-	PromptRatePerMinute int      `toml:"prompt_rate_per_minute"`   // 3 (D27)
-	PromptBackoff       Duration `toml:"prompt_backoff"`           // 30s after a cancel (D27)
-	HookPromptCooldown  Duration `toml:"hook_prompt_cooldown"`     // 10m: no hook-raised dialog for a root after a cancel
+	IdleSoft            Duration `toml:"idle_soft"`                  // 15m: lock after this much human idle (D23)
+	IdleHard            Duration `toml:"idle_hard"`                  // 60m: end paused sessions; "0" never
+	MaxUnlock           Duration `toml:"max_unlock"`                 // 8h: absolute grant lifetime ⇒ lock (D24), capped at 24h
+	LockOnScreenLock    bool     `toml:"lock_on_screen_lock"`        // true (D24)
+	ScreenLockHardAfter Duration `toml:"screen_lock_hard_after"`     // 15m of continuous screen lock ⇒ end idle sessions (D24)
+	BusyGrace           Duration `toml:"busy_grace"`                 // 30m: busy turns may finish after a lock (D24)
+	BusyTimeout         Duration `toml:"busy_timeout"`               // 10m without hook activity and registry not busy ⇒ not busy (D23)
+	QuietWindow         Duration `toml:"quiet_window"`               // 120s stability window for unknown writers (SPEC §9.4)
+	HoldCap             Duration `toml:"hold_cap"`                   // 24h: weak-evidence liveness holds are reported after this (S14)
+	RestoreRecent       int      `toml:"restore_recent"`             // 5 (D38)
+	RestoreMaxBytes     int64    `toml:"restore_max_bytes"`          // 1 GiB (D38)
+	MinFree             Size     `toml:"min_free" json:",omitempty"` // 2GiB free-space floor of seals and restores, at least 512MiB (D76; 0 = default, omitted from Canonical)
+	RestoreHistory      bool     `toml:"restore_history"`            // true: merge sealed history lines back at unlock
+	PerRootAuth         bool     `toml:"per_root_auth"`              // true: each root needs its own presence prompt (D1, D40)
+	UnlockOnPrompt      bool     `toml:"unlock_on_prompt"`           // false until the hook-dialog E2E passes (D60); human prompts only (D26, D27, D37)
+	OnEnter             string   `toml:"on_enter"`                   // "prompt" (D29)
+	MDSealOn            string   `toml:"md_seal_on"`                 // "lock"
+	ClearTerminalOnEnd  bool     `toml:"clear_terminal_on_end"`      // true: scrub the TTY when sessions are ended
+	ClearScrollbackLock bool     `toml:"clear_scrollback_on_lock"`   // true: wrapper clears scrollback at lock (D30)
+	PromptRatePerMinute int      `toml:"prompt_rate_per_minute"`     // 3 (D27)
+	PromptBackoff       Duration `toml:"prompt_backoff"`             // 30s after a cancel (D27)
+	HookPromptCooldown  Duration `toml:"hook_prompt_cooldown"`       // 10m: no hook-raised dialog for a root after a cancel
 }
 
 // Root is one [[roots]] entry: a protected folder (never an in-repo marker).
@@ -171,6 +267,7 @@ func Default() Config {
 			HoldCap:             Duration(24 * time.Hour),
 			RestoreRecent:       5,
 			RestoreMaxBytes:     1 << 30,
+			MinFree:             DefaultMinFree,
 			RestoreHistory:      true,
 			PerRootAuth:         true,
 			UnlockOnPrompt:      false, // D60: flips to true once the hook-dialog E2E passes on the pinned Claude version
@@ -304,6 +401,11 @@ func (c Config) Validate() error {
 	}
 	if p.RestoreRecent < 0 || p.RestoreMaxBytes < 0 || p.PromptRatePerMinute < 0 {
 		return bad("policy counters must not be negative")
+	}
+	// D76: the floor keeps precinto from filling the volume; 0 keeps the
+	// 2 GiB default.
+	if m := p.MinFree; m != 0 && m < MinMinFree {
+		return bad("policy.min_free must be at least %s (0 means the %s default)", sizeText(MinMinFree), sizeText(DefaultMinFree))
 	}
 	if !oneOf(p.OnEnter, OnEnterPrompt, OnEnterNotify, OnEnterOff) {
 		return bad("policy.on_enter %q", p.OnEnter)

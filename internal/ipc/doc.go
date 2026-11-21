@@ -29,6 +29,18 @@
 // peer must also be the session's registered wrapper, D54) (SPEC §13.2,
 // §13.3).
 //
+// On linux (D65) every hardened precinto process is non-dumpable, so its
+// /proc/<pid>/exe cannot be read and the executable check is best effort
+// in both directions. The client requires of a hardened daemon the peer
+// uid (SO_PEERCRED), that the peer pid holds the exclusive flock on
+// run/agent.lock (/proc/locks, matched by inode) and the client's own
+// kernel name (comm); the daemon requires of a hardened client the peer
+// uid and the same comm (clients hold no lock), and re-verifies the peer
+// incarnation for keys and unlock. This stops accidents and naive
+// squatters, not a same-uid process that kills the daemon and takes the
+// lock under a binary named like precinto (SPEC §19); darwin keeps the full
+// executable check both ways.
+//
 // The daemon never trusts identity facts from a client: requests carry
 // pids, which the daemon measures itself (SPEC §9.1), and prompt origins,
 // which only the daemon computes (D54).

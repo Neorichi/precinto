@@ -15,6 +15,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
+	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/vault/vaulttest"
 )
@@ -160,6 +161,57 @@ func TestUnlockForTest(t *testing.T) {
 	}
 	if !unlocked {
 		t.Fatalf("root-acme not unlocked: %+v", st.Vaults)
+	}
+}
+
+// TestUnlockForTestWhateverTheClock (D77): the daemon's state machine runs
+// on the clock the test gives it, while the deadline of a request is real
+// time on both sides (UnlockForTest sends time.Now plus a minute, the
+// daemon checks it with the system clock). So an unlock works with a daemon
+// clock frozen decades or a year away from the system clock, and the grant
+// still expires by the daemon's clock alone.
+func TestUnlockForTestWhateverTheClock(t *testing.T) {
+	const year = 365 * 24 * time.Hour
+	for name, start := range map[string]time.Time{
+		"30 years before epoch":      testkit.Epoch.Add(-30 * year),
+		"70 years after epoch":       testkit.Epoch.Add(70 * year),
+		"a year behind the system":   time.Now().Add(-year).Round(0),
+		"a year ahead of the system": time.Now().Add(year).Round(0),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := testkit.NewHome(t)
+			fx := vaulttest.New(t, h.Base, "root-acme")
+			clock := fakeplatform.NewClock(start)
+			a := agenttest.Start(t, h.Layout, clock, h.Procs)
+			a.UnlockForTest(t, []string{"root-acme"}, fx.Recovery.String())
+			c := a.Dial(t)
+			state := func() (string, string) {
+				st, err := c.Status(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, v := range st.Vaults {
+					if v.VaultID == "root-acme" {
+						return v.State, v.Reason
+					}
+				}
+				return "", ""
+			}
+			if s, _ := state(); s != "unlocked" {
+				t.Fatalf("root-acme %q after the unlock, want unlocked", s)
+			}
+			clock.Advance(16 * time.Minute) // past idle_soft on the daemon's clock only
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if s, why := state(); s == "locked" && why == "idle" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("not locked at idle_soft of the daemon's clock")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
 	}
 }
 

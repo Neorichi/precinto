@@ -45,7 +45,7 @@ type sec26Home struct {
 
 func newSEC26Home(t *testing.T) *sec26Home {
 	t.Helper()
-	h := testkit.NewHome(t)
+	h := realHome(t)
 	store, recovery := sec26Store(t, h.Layout.Base, h.Root)
 	s := &sec26Home{h: h, store: store, recovery: recovery, fixture: &vaulttest.Fixture{Store: store, RootID: "root-acme"}}
 	_, fpr, err := store.Recipients("root-acme")
@@ -57,8 +57,8 @@ func newSEC26Home(t *testing.T) *sec26Home {
 		t.Fatal(err)
 	}
 	// A capsule sealed to the folder's real recipients an hour ago, then
-	// audited (last_audit after it).
-	now := time.Now()
+	// audited (last_audit after it), on the clock the daemon reads.
+	now := h.Clock.Now()
 	logCapsule(t, h.Layout, "claude-code/"+strings.Repeat("a", 32)+"/g000001.pcap", []string{m.Meta.Recipient, m.Meta.RecoveryRecipient}, fpr, now.Add(-time.Hour))
 	if err := store.MarkAudited("root-acme", now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
@@ -172,14 +172,14 @@ func TestCrossgroupSEC26VaultRepair(t *testing.T) {
 			t.Fatal(err)
 		}
 		exposed := "claude-code/" + strings.Repeat("b", 32) + "/g000001.pcap"
-		logCapsule(t, s.h.Layout, exposed, []string{foreign.Recipient().String()}, strings.Repeat("f", 64), time.Now())
+		logCapsule(t, s.h.Layout, exposed, []string{foreign.Recipient().String()}, strings.Repeat("f", 64), s.h.Clock.Now())
 
 		a, e := s.repairApp(t)
-		// The passphrase answers the daemon's unwrap; "repair" is the typed
-		// confirmation (C14.confirm); a daemon still asking its own confirm
-		// in the dry run gets yes.
-		e.tty.secrets = []string{sec26Pass, sec26Pass}
-		e.tty.confirms = []bool{true}
+		// One passphrase answers the dry run's unwrap; the confirmed call
+		// on the same connection reuses that identity, and the dry run
+		// relays no confirmation of its own (FX-G2-10, CC-32): "repair" is
+		// the CLI's typed confirmation (C14.confirm).
+		e.tty.secrets = []string{sec26Pass}
 		e.tty.lines = []string{wordRepair}
 		if code := a.run([]string{"vault", "repair", "--root", s.h.Root}); code != exitOK {
 			t.Fatalf("repair: exit %d (%s)", code, e.stderr())
@@ -193,8 +193,12 @@ func TestCrossgroupSEC26VaultRepair(t *testing.T) {
 		if strings.Contains(e.stderr(), strings.Repeat("a", 32)) {
 			t.Fatalf("the genuine capsule was listed as exposed: %q", e.stderr())
 		}
-		if n := strings.Count(e.tty.allPrompts(), "passphrase"); n < 1 || n > 2 {
-			t.Fatalf("%d passphrase prompts", n)
+		if n := strings.Count(e.tty.allPrompts(), "passphrase"); n != 1 {
+			t.Fatalf("%d passphrase prompts, want exactly 1 (the dry run's identity is reused)", n)
+		}
+		confirm := strings.SplitN(ui.Format(ui.MsgVaultRepairConfirm, ui.Vars{Folder: "~/work/acme"}), "?", 2)[0]
+		if n := strings.Count(e.tty.allPrompts(), confirm); n != 1 {
+			t.Fatalf("C14.confirm asked %d times, want once (the CLI's typed word; the dry run relays none): %q", n, e.tty.allPrompts())
 		}
 		// Sealing resumes: the recipients match their verified copy again.
 		if _, _, err := s.store.Recipients("root-acme"); err != nil {

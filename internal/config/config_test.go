@@ -185,3 +185,102 @@ func TestQuietWindowZeroMeansDefault(t *testing.T) {
 		}
 	}
 }
+
+// D76: policy.min_free is a size string (binary units), at least 512 MiB;
+// "0" keeps the 2 GiB default, decimal units and other junk are refused.
+func TestMinFree(t *testing.T) {
+	for v, want := range map[string]int64{
+		`"512MiB"`: 512 << 20, `"2GiB"`: 2 << 30, `"3 GiB"`: 3 << 30, `"1tib"`: 1 << 40,
+		`"524288KiB"`: 512 << 20, `"536870912"`: 512 << 20, `"536870912B"`: 512 << 20,
+		`536870912`: 512 << 20, `"0"`: 2 << 30,
+	} {
+		c, err := config.Load(write(t, "version = 1\n[policy]\nmin_free = "+v+"\n"))
+		if err != nil {
+			t.Errorf("min_free = %s refused: %v", v, err)
+			continue
+		}
+		if got := c.Policy.MinFreeBytes(); got != want {
+			t.Errorf("min_free = %s: %d bytes, want %d", v, got, want)
+		}
+		if f := c.Policy.Floor(); f.MinBytes != want || f.MinFraction != 0 {
+			t.Errorf("min_free = %s: floor %+v", v, f)
+		}
+	}
+	for _, v := range []string{`"511MiB"`, `"1GB"`, `"2G"`, `"1.5GiB"`, `"-1GiB"`, `"GiB"`, `""`, `"2GiB "`, `"2  GiB"`,
+		`"99999999999TiB"`, `"12345678901234567890"`, `-1`} {
+		if _, err := config.Load(write(t, "version = 1\n[policy]\nmin_free = "+v+"\n")); !errors.Is(err, config.ErrInvalid) {
+			t.Errorf("min_free = %s: err = %v, want ErrInvalid", v, err)
+		}
+	}
+	// Absent: the default.
+	c, err := config.Load(write(t, "version = 1\n"))
+	if err != nil || c.Policy.MinFree != config.DefaultMinFree {
+		t.Fatalf("default min_free = %v (%v)", c.Policy.MinFree, err)
+	}
+	// Text round trip with the largest exact unit.
+	for v, want := range map[config.Size]string{0: "0", 512 << 20: "512MiB", 2 << 30: "2GiB", 1536 << 20: "1536MiB", 1 << 40: "1TiB", 1000: "1000B", 3 << 10: "3KiB"} {
+		b, _ := v.MarshalText()
+		var back config.Size
+		if string(b) != want || back.UnmarshalText(b) != nil || back != v {
+			t.Errorf("Size %d → %q → %d", v, b, back)
+		}
+	}
+	// Save writes it as text and Load reads it back.
+	dir := t.TempDir()
+	c = config.Default()
+	c.Policy.MinFree = 768 << 20
+	if err := config.Save(filepath.Join(dir, "config.toml"), c); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if !strings.Contains(string(b), `min_free = "768MiB"`) {
+		t.Errorf("saved config lacks min_free: %s", b)
+	}
+	if back, err := config.Load(filepath.Join(dir, "config.toml")); err != nil || back.Policy.MinFree != 768<<20 {
+		t.Errorf("min_free round trip: %v %v", back.Policy.MinFree, err)
+	}
+	// Validate refuses a value below the minimum set in code too.
+	c.Policy.MinFree = 1 << 20
+	if err := c.Validate(); !errors.Is(err, config.ErrInvalid) {
+		t.Errorf("Validate(min_free 1MiB) = %v", err)
+	}
+}
+
+// D76: a policy.pinned written before min_free existed has no MinFree in
+// its canonical JSON; decoded, the key is 0 (the 2 GiB default) and the
+// canonical encoding, which the pin's MACs cover, is unchanged.
+func TestMinFreeCanonicalCompatibility(t *testing.T) {
+	c := config.Default()
+	c.Policy.MinFree = 0
+	if strings.Contains(string(config.Canonical(c)), "MinFree") {
+		t.Fatalf("a zero min_free is part of the canonical encoding: %s", config.Canonical(c))
+	}
+	c.Policy.MinFree = 4 << 30
+	if !strings.Contains(string(config.Canonical(c)), `"MinFree":"4GiB"`) {
+		t.Fatalf("a set min_free is not covered by the canonical encoding: %s", config.Canonical(c))
+	}
+	// A pin without the key: same canonical bytes after a round trip.
+	old := config.Default()
+	old.Policy.MinFree = 0
+	dir := t.TempDir()
+	pp := filepath.Join(dir, "policy.pinned")
+	if err := config.SavePinned(pp, config.Pinned{ConfirmedAt: time.Unix(0, 0).UTC(), Config: old, MACs: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(pp)
+	if strings.Contains(string(b), "MinFree") {
+		t.Fatalf("pin written with a zero min_free names it: %s", b)
+	}
+	got, ok, err := config.LoadPinned(pp)
+	if err != nil || !ok || got.Config.Policy.MinFree != 0 || got.Config.Policy.MinFreeBytes() != 2<<30 {
+		t.Fatalf("pin without min_free: %v %v %+v", ok, err, got.Config.Policy.MinFree)
+	}
+	if string(config.Canonical(got.Config)) != string(config.Canonical(old)) {
+		t.Error("canonical encoding changed across the pin round trip")
+	}
+	// Strictest of config.toml (2 GiB written out) and such a pin is the
+	// same 2 GiB floor.
+	if s := config.Strictest(config.Default(), got.Config); s.Policy.MinFreeBytes() != 2<<30 {
+		t.Errorf("Strictest floor %d", s.Policy.MinFreeBytes())
+	}
+}

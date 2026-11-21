@@ -190,7 +190,7 @@ type Unit struct {
 	LeaseKeys    []string
 	Title        string // custom-title > ai-title > first prompt; stored only inside ciphertext
 	LastActivity time.Time
-	Adopted      bool   // found by scanning, not by the ledger (S6)
+	Adopted      bool   // found by transcript cwd or the project index, not by the ledger, and never restored by precinto (S6; a ledger-less unit with a receipt is precinto's own and re-sealed)
 	Note         string // content-free scan note
 	// ProjectDir is, for claude-session units, the session's start cwd,
 	// realpath'd (the ledger start event, else the transcript's first cwd);

@@ -41,8 +41,15 @@ func TestCrossgroupApplyPatchPaths(t *testing.T) {
 }
 
 // crossHome is a fake HOME short enough for the hook-mode socket path, with
-// precinto's default base under it (hook mode never honours PRECINTO_HOME).
+// precinto's default base under it (hook mode never honours PRECINTO_HOME);
+// root-acme manages both built-in harnesses.
 func crossHome(t *testing.T) (home string, l paths.Layout, root string) {
+	t.Helper()
+	return crossHomeWith(t, []string{"claude-code", "codex"})
+}
+
+// crossHomeWith is crossHome with root-acme managing harnesses.
+func crossHomeWith(t *testing.T, harnesses []string) (home string, l paths.Layout, root string) {
 	t.Helper()
 	home = testkit.ShortTempDir(t)
 	l, err := paths.HookLayout(paths.FromMap(map[string]string{"HOME": home}))
@@ -57,7 +64,7 @@ func crossHome(t *testing.T) (home string, l paths.Layout, root string) {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
-	cfg.Roots = []config.Root{{ID: "root-acme", Path: root, MD: config.MDLedger, Harnesses: []string{"claude-code", "codex"}, ProtectedAt: testkit.Epoch}}
+	cfg.Roots = []config.Root{{ID: "root-acme", Path: root, MD: config.MDLedger, Harnesses: harnesses, ProtectedAt: testkit.Epoch}}
 	if err := config.Save(l.ConfigFile, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -174,5 +181,31 @@ func TestCrossgroupCodexWrongHome(t *testing.T) {
 	// folder is locked when the daemon starts).
 	if d := gate(hook.UserPromptSubmit, l.CodexHome("root-acme")); d.Verdict != ipc.VerdictBlock || d.UserMessage == wrong || d.UserMessage == "" {
 		t.Errorf("prompt from the per-root home in a locked folder: %+v, want the locked-folder block", d)
+	}
+}
+
+// TestCrossgroupCodexWrongHomeNoCodex is the negative twin (D72): in a
+// folder whose harness list lacks codex, the real daemon never answers
+// C3.codexhome; a Codex session there, in any home, gets the locked-folder
+// answer.
+func TestCrossgroupCodexWrongHomeNoCodex(t *testing.T) {
+	home, l, root := crossHomeWith(t, []string{"claude-code"})
+	a := agenttest.Start(t, l, fakeplatform.NewClock(testkit.Epoch), fakeplatform.NewProcs())
+	defer a.Stop()
+	deps, _, _ := testDeps(t, nil)
+	deps.Layout = l
+	deps.Cfg.Roots = []config.Root{{ID: "root-acme", Path: root, MD: config.MDLedger, Harnesses: []string{"claude-code"}}}
+	deps.Dial = agentDial(a)
+	wrong := ui.Format(ui.MsgCodexWrongHome, ui.Vars{Folder: root})
+	for _, ch := range []string{filepath.Join(home, ".codex"), "", l.CodexHome("root-acme")} {
+		for ev, verdict := range map[hook.Event]ipc.Verdict{hook.UserPromptSubmit: ipc.VerdictBlock, hook.PreToolUse: ipc.VerdictDeny} {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			d := hook.Handle(ctx, deps, hook.Payload{Host: hook.HostCodex, Label: "codex", Event: ev, SID: sidX,
+				TurnID: "00000000-0000-7000-8000-0000000000b2", Cwd: root, CodexHome: ch})
+			cancel()
+			if d.Verdict != verdict || d.UserMessage == wrong || d.ModelMessage == wrong {
+				t.Errorf("%s with CODEX_HOME %q in a folder without codex: %+v, want the locked-folder %s, never C3.codexhome", ev, ch, d, verdict)
+			}
+		}
 	}
 }

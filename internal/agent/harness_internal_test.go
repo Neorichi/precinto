@@ -307,7 +307,11 @@ func (f *fakeCapsules) add(rel, vaultID string, roots ...string) {
 	f.manifests[rel] = capsule.Manifest{Kind: capsule.KindMarkdown, UnitKey: "unit-" + rel, VaultID: vaultID, RootIDs: roots}
 }
 
-var epochT = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+// epochT is where the daemon's fake clock starts (x.h.Clock, testkit.Epoch):
+// fixture times (process starts, registry startedAt, capsule sealed_at)
+// are derived from it, never from a copy of the date, so they stay
+// consistent with the clock whatever its value (TESTPLAN §1.4, D77).
+var epochT = testkit.Epoch
 
 func (f *fakeCapsules) readHeader(rel string) ([]byte, string, error) {
 	f.mu.Lock()

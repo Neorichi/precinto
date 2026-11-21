@@ -100,16 +100,22 @@ type Options struct {
 	Backend Backend
 }
 
-// Run is `precinto run`: Plan; passthrough modes exec directly; otherwise
-// confirm (plan.Confirm), EnsureUnlocked, plan.Prepare, AcquireLease,
-// RestoreSync, start the child (PTY when stdin and stdout are terminals and
-// the mode is interactive, else direct: started with Setsid so it is the
-// leader of its own session, with SIGINT, SIGQUIT, SIGTERM and SIGHUP
-// forwarded to it, D57), RecordLaunch, register, subscribe, forward
-// activity, handle lock/unlock/end events, RestoreBackground, wait, reset
-// the terminal, plan.Finish, release the lease, SealAfterExit, print one
-// summary line. Returns the child's exit code, or ExitNotStarted when the
-// child never started (err says why).
+// Run is `precinto run` (SPEC §15.1): Plan; a passthrough mode runs the
+// child in the wrapper's own process group (not exec: no gate, no restore,
+// SIGTERM forwarded, its exit code returned); an unmanaged launch (no
+// folder) runs without unlock, daemon or registration. Otherwise: confirm
+// (plan.Confirm), EnsureUnlocked, subscribe at once and wait for the
+// folders' initial state (D71) — any lock, end or subscription loss from
+// then until exec refuses the launch with ExitNotStarted and an exit-3
+// C1.notify error — then plan.Prepare, AcquireLease, RestoreSync, start the
+// child (PTY when stdin and stdout are terminals and the mode is
+// interactive, else direct: started with Setsid so it is the leader of its
+// own session, with SIGINT, SIGQUIT, SIGTERM and SIGHUP forwarded to it,
+// D57), RecordLaunch, register as the wrapper, forward activity, handle
+// lock/unlock/end events, RestoreBackground, wait, reset the terminal,
+// plan.Finish, release the lease, SealAfterExit, print one summary line.
+// Returns the child's exit code, or ExitNotStarted when the child never
+// started (err says why).
 func Run(ctx context.Context, o Options) (int, error) { return run(ctx, o) }
 
 // ExitNotStarted is Run's code when the child never started; err says why
@@ -154,8 +160,9 @@ type Overlay struct {
 // recording child output in the scrollback ring (which holds output since
 // the child started, not only since the lock) while tracking terminal
 // modes, clears the screen (and scrollback when configured), and draws the
-// overlay on the alternate screen unless the child already uses it (D30,
-// IM16).
+// overlay on a fresh alternate screen: when the child uses the alternate
+// screen, Lock leaves it and clears the main screen first, and Unlock
+// restores the child's (D30, IM16, SPEC §15.2).
 func (p *Proxy) Lock(o Overlay) error {
 	if p == nil || p.s == nil {
 		return errFinished

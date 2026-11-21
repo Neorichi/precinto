@@ -99,6 +99,9 @@ func TestDiffPolicy(t *testing.T) {
 		{"restore_recent", func(p *config.Policy) { p.RestoreRecent = 10 }, "5", "10", true},
 		{"restore_recent", func(p *config.Policy) { p.RestoreRecent = 0 }, "5", "0", false},
 		{"restore_max_bytes", func(p *config.Policy) { p.RestoreMaxBytes = 2 << 30 }, "1073741824", "2147483648", true},
+		// D76: a lower floor lets precinto fill more of the volume.
+		{"min_free", func(p *config.Policy) { p.MinFree = 512 << 20 }, "2GiB", "512MiB", true},
+		{"min_free", func(p *config.Policy) { p.MinFree = 8 << 30 }, "2GiB", "8GiB", false},
 		{"restore_history", func(p *config.Policy) { p.RestoreHistory = false }, "true", "false", false},
 		{"per_root_auth", func(p *config.Policy) { p.PerRootAuth = false }, "true", "false", true},
 		{"unlock_on_prompt", func(p *config.Policy) { p.UnlockOnPrompt = true }, "false", "true", true},
@@ -320,6 +323,12 @@ func TestStrictestPolicy(t *testing.T) {
 			func(p config.Policy) bool { return p.RestoreRecent == 0 }},
 		{"negative counter loses", func(p *config.Policy) { p.RestoreMaxBytes = -1 }, func(p *config.Policy) {},
 			func(p config.Policy) bool { return p.RestoreMaxBytes == 1<<30 }},
+		{"min_free higher", func(p *config.Policy) { p.MinFree = 512 << 20 }, func(p *config.Policy) { p.MinFree = 4 << 30 },
+			func(p config.Policy) bool { return p.MinFree == 4<<30 }},
+		{"min_free 0 is the 2 GiB default", func(p *config.Policy) { p.MinFree = 0 }, func(p *config.Policy) { p.MinFree = 1 << 30 },
+			func(p config.Policy) bool { return p.MinFreeBytes() == 2<<30 }},
+		{"min_free below the minimum loses", func(p *config.Policy) { p.MinFree = 1 << 20 }, func(p *config.Policy) { p.MinFree = 512 << 20 },
+			func(p config.Policy) bool { return p.MinFree == 512<<20 }},
 		{"prompt rate lower", func(p *config.Policy) { p.PromptRatePerMinute = 10 }, func(p *config.Policy) { p.PromptRatePerMinute = 1 },
 			func(p config.Policy) bool { return p.PromptRatePerMinute == 1 }},
 		{"backoff longer", func(p *config.Policy) { p.PromptBackoff = 0 }, func(p *config.Policy) { p.PromptBackoff = dur(time.Minute) },
@@ -561,6 +570,7 @@ func randomConfig(rng *rand.Rand) config.Config {
 	p.HoldCap = pickD(0, 24*time.Hour, 48*time.Hour)
 	p.RestoreRecent = rng.IntN(4) - 1
 	p.RestoreMaxBytes = int64(rng.IntN(4)-1) << 30
+	p.MinFree = []config.Size{0, 1 << 20, 512 << 20, 2 << 30, 8 << 30}[rng.IntN(5)]
 	p.RestoreHistory = pickB()
 	p.PerRootAuth = pickB()
 	p.UnlockOnPrompt = pickB()

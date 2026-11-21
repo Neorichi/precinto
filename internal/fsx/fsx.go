@@ -16,7 +16,8 @@ import (
 
 // Errors. Callers test them with errors.Is.
 var (
-	// ErrUnsafe: a symlink, foreign owner, group/other-writable directory,
+	// ErrUnsafe: a symlink, foreign owner, group/other-writable directory
+	// (a linux user-private group's group-writable directory excepted, D67),
 	// non-regular file, path escaping its base, or non-clean relative path.
 	ErrUnsafe = errors.New("fsx: unsafe path")
 	// ErrChanged: the file's identity (dev, ino, size, mtime, ctime) differs
@@ -145,8 +146,9 @@ const (
 
 // Dir is an open directory handle. Every operation is relative to it, walks
 // path components with O_NOFOLLOW, and refuses symlinks, foreign-owned or
-// group/other-writable directories below it (D12). A Dir is safe for use by
-// one goroutine at a time.
+// group/other-writable directories below it (D12; on linux a group-writable,
+// not other-writable directory of the user's private group is accepted,
+// D67). A Dir is safe for use by one goroutine at a time.
 type Dir struct {
 	fd   int
 	path string
@@ -545,14 +547,18 @@ func ProbeHeld(path string) (held bool, err error) { return probeHeld(path) }
 // Space reports available and total bytes of the file system holding path.
 func Space(path string) (avail, total uint64, err error) { return spaceOf(path) }
 
-// Floor is the free-space reserve kept after an operation (D12, D38).
+// Floor is the free-space reserve kept after an operation (D12, D38,
+// D76): max(MinBytes, MinFraction × the volume's size).
 type Floor struct {
-	MinBytes    int64   // default 2 GiB
-	MinFraction float64 // default 0.05 of the volume
+	MinBytes    int64   // default 2 GiB (policy.min_free, D76)
+	MinFraction float64 // default 0: the floor is a fixed size (D76)
 }
 
-// DefaultFloor is max(2 GiB, 5% of the volume).
-var DefaultFloor = Floor{MinBytes: 2 << 30, MinFraction: 0.05}
+// DefaultFloor is a fixed 2 GiB (D76). Callers pass the effective
+// policy.min_free instead (config.Policy.Floor); a fraction of the volume
+// is no longer part of the default, because 5 % of a large, nearly full
+// disk refused every seal while gigabytes were free.
+var DefaultFloor = Floor{MinBytes: 2 << 30}
 
 // CheckSpace returns ErrNoSpace unless need bytes fit on path's volume while
 // keeping the floor free.

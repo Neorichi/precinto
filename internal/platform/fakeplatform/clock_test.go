@@ -2,6 +2,7 @@ package fakeplatform_test
 
 import (
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -190,4 +191,72 @@ func TestClockConcurrentUse(t *testing.T) {
 	}
 	n := time.Duration(writers * steps)
 	wantReadings(t, c, epoch.Add(n*(time.Millisecond+time.Microsecond)), n*time.Millisecond)
+}
+
+// NewRealClock follows the real clock: never behind it unless StepWall
+// moves it back, Advance and Sleep move it ahead, Mono never decreases
+// (TESTPLAN §1.4, D77).
+func TestNewRealClock(t *testing.T) {
+	var _ platform.Clock = fakeplatform.NewRealClock()
+	before := time.Now().Round(0)
+	c := fakeplatform.NewRealClock()
+	got := c.Now()
+	after := time.Now().Round(0)
+	if got.Before(before) || got.After(after) || got.Location() != time.UTC || hasMono(got) {
+		t.Fatalf("Now = %v, want within [%v, %v], UTC, no monotonic reading", got, before, after)
+	}
+	m0 := c.Mono()
+	time.Sleep(20 * time.Millisecond)
+	if m1 := c.Mono(); m1-m0 < 20*time.Millisecond {
+		t.Errorf("Mono moved %v in 20 ms of real time", m1-m0)
+	}
+
+	// Advance: both readings move ahead of the real clock by d.
+	c.Advance(2 * time.Minute)
+	if d := c.Now().Sub(time.Now()); d < 2*time.Minute-time.Second || d > 2*time.Minute+time.Second {
+		t.Errorf("after Advance(2m) Now is %v ahead of the real clock", d)
+	}
+	if m := c.Mono(); m < 2*time.Minute {
+		t.Errorf("after Advance(2m) Mono = %v", m)
+	}
+	// Sleep: the wall moves, the monotonic reading does not.
+	m := c.Mono()
+	c.Sleep(time.Hour)
+	if d := c.Now().Sub(time.Now()); d < time.Hour+2*time.Minute-time.Second {
+		t.Errorf("after Sleep(1h) Now is only %v ahead", d)
+	}
+	if m2 := c.Mono(); m2-m > time.Second {
+		t.Errorf("Sleep moved Mono by %v", m2-m)
+	}
+	c.Advance(-time.Hour)
+	c.Sleep(-time.Hour)
+	if d := c.Now().Sub(time.Now()); d < time.Hour {
+		t.Errorf("negative Advance/Sleep moved the clock back: %v ahead", d)
+	}
+	// StepWall may move it behind the real clock (an NTP step back).
+	c.StepWall(-3 * time.Hour)
+	if d := time.Now().Sub(c.Now()); d < 58*time.Minute-time.Second {
+		t.Errorf("after StepWall(-3h) Now is %v behind, want about 58m", d)
+	}
+}
+
+// A file the kernel stamps after NewRealClock is never in the future for
+// it, which is what the liveness engine checks (R16); a frozen clock
+// falls behind as soon as real time passes.
+func TestNewRealClockIsNeverBehindKernelTimes(t *testing.T) {
+	c := fakeplatform.NewRealClock()
+	time.Sleep(10 * time.Millisecond)
+	p := t.TempDir() + "/f"
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Kernel file times may lag the real clock (coarse clocks), never lead
+	// it; 10 ms of slack covers clock-source rounding.
+	if now := c.Now(); fi.ModTime().After(now.Add(10 * time.Millisecond)) {
+		t.Fatalf("mtime %v is after the real clock's Now %v", fi.ModTime(), now)
+	}
 }

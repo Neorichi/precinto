@@ -298,9 +298,10 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 				Fix:    "precinto run codex"})
 		}
 		for _, u := range fo.Ungated {
-			local = append(local, ipc.Attention{Code: ipc.AttnUngatedSession, Folder: a.display(r.Path), PID: u.PID, Harness: u.Harness,
-				Detail: ui.Format(ui.MsgUngatedSession, ui.Vars{Harness: u.Harness, PID: u.PID, Folder: a.display(r.Path)}),
-				Fix:    "precinto run " + strings.TrimSuffix(u.Harness, "-code")})
+			cmd := harnessCommand(u.Harness) // C9.ungated names what the user types: claude, not claude-code
+			local = append(local, ipc.Attention{Code: ipc.AttnUngatedSession, Folder: a.display(r.Path), PID: u.PID, Harness: cmd,
+				Detail: ui.Format(ui.MsgUngatedSession, ui.Vars{Harness: cmd, PID: u.PID, Folder: a.display(r.Path)}),
+				Fix:    "precinto run " + cmd})
 		}
 		s.Folders = append(s.Folders, fo)
 	}
@@ -604,3 +605,8 @@ func orNone(s []string) []string {
 	}
 	return s
 }
+
+// harnessCommand is the command a harness id runs as, the {harness} of
+// C9.ungated and of `precinto run {harness}` (claude-code runs as claude;
+// the agent and doctor map it the same way).
+func harnessCommand(id string) string { return strings.TrimSuffix(id, "-code") }

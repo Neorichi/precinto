@@ -13,7 +13,8 @@
 // internal/ipc, internal/vault, internal/capsule, internal/sweep/capslog,
 // internal/sweep/queue, internal/sweep/journal, internal/config,
 // internal/paths, internal/platform, internal/fsx, internal/ledger,
-// internal/harness, internal/harness/claude, internal/ui.
+// internal/harness, internal/harness/claude, internal/ui, inventories
+// (harness process matching, CC-12).
 //
 // Machine is pure (no I/O, no goroutines, injected clock) so it can be
 // tested exhaustively with internal/platform/fakeplatform. Run's side

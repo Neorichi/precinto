@@ -249,7 +249,17 @@ func shortTempDir(t testing.TB) string {
 	}
 	t.Cleanup(func() {
 		makeRemovable(d)
-		if err := os.RemoveAll(d); err != nil {
+		err := os.RemoveAll(d)
+		if err != nil {
+			// A daemon's worker the test started may still be writing
+			// there: wait for it (TESTPLAN §1.8), then remove what it left.
+			if left := awaitWriters(shortDirSettle, []string{d}); len(left) > 0 {
+				t.Errorf("testkit.ShortTempDir: pid %d (%s) still writes below %s", left[0].Proc.ID.PID, filepath.Base(left[0].Proc.Exe), d)
+			}
+			makeRemovable(d)
+			err = os.RemoveAll(d)
+		}
+		if err != nil {
 			t.Errorf("testkit.ShortTempDir: cleanup: %v", err)
 		}
 	})
@@ -262,6 +272,10 @@ func shortTempDir(t testing.TB) string {
 	}
 	return real
 }
+
+// shortDirSettle bounds the wait for writers when a ShortTempDir cannot be
+// removed at once.
+const shortDirSettle = 30 * time.Second
 
 // realTempDir returns t.TempDir() without symlinked components.
 func realTempDir(t testing.TB) string {

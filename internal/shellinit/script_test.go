@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/shellinit"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
@@ -81,7 +82,9 @@ func TestScriptSyntax(t *testing.T) {
 		if err := os.WriteFile(f, []byte(s), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command(bin, append(args, f)...)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, append(args, f)...)
 		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("%s -n: %v\n%s", bin, err, out)
@@ -95,9 +98,23 @@ func TestScriptSyntax(t *testing.T) {
 	for _, b := range bashes() {
 		check(shellinit.Bash, b, "-n")
 	}
-	if fish := lookShell("fish"); fish != "" {
+	switch fish := lookShell("fish"); {
+	case fish != "":
 		check(shellinit.Fish, fish, "--no-execute")
+	case inCI():
+		// CI installs fish (.github/scripts/install-shells.sh): a missing
+		// one there is a failure, never a skip (TESTPLAN §10).
+		t.Error("fish is required in CI (TESTPLAN §10) and is not installed")
+	default:
+		t.Log("fish not installed: fish --no-execute not run (required in CI)")
 	}
+}
+
+// inCI reports whether the tests run in CI (GitHub Actions sets CI=true),
+// where every shell a test needs is installed.
+func inCI() bool {
+	v := paths.FromOS().Get("CI")
+	return v != "" && v != "0" && v != "false"
 }
 
 // shKeyword matches sh-only reserved words used as words.
@@ -278,6 +295,7 @@ func runInteractive(t *testing.T, argv []string, home, fakeBinDir, commands stri
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // never the test's terminal
+	cmd.WaitDelay = 5 * time.Second                      // a background job holding the pipes cannot stall Wait
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("%v: %v\nstderr:\n%s", argv, err, errb.String())
 	}

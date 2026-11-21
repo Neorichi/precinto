@@ -33,8 +33,7 @@ func TestAnswererRepliesToCatalogPrompts(t *testing.T) {
 		ui.Format(ui.MsgServiceOffer, ui.Vars{}),
 		ui.Format(ui.MsgCodexConsent, ui.Vars{Folder: folder}),
 		ui.Format(ui.MsgUnlockPassphrase, ui.Vars{Folder: folder}),
-		"precinto: " + folder + ": precinto passphrase", // the daemon's relay of the factor's own prompt
-		ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1}) + "\n  policy.unlock_on_prompt: false -> true\nConfirm these changes? [y/N]",
+		ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1}) + "\n  policy.unlock_on_prompt: false -> true\n" + ui.Format(ui.MsgPolicyConfirm, ui.Vars{}),
 	}
 	for _, accept := range []bool{false, true} {
 		out := filepath.Join(dir, "answers.txt")
@@ -49,7 +48,7 @@ func TestAnswererRepliesToCatalogPrompts(t *testing.T) {
 		if accept {
 			policy = "y"
 		}
-		want := strings.Join([]string{e2ePassphrase, e2ePassphrase, "n", "y", e2ePassphrase, e2ePassphrase, policy}, "\n") + "\n"
+		want := strings.Join([]string{e2ePassphrase, e2ePassphrase, "n", "y", e2ePassphrase, policy}, "\n") + "\n"
 		if string(b) != want {
 			t.Errorf("acceptPolicy=%v: the fake CLI read\n%q\nwant\n%q", accept, b, want)
 		}

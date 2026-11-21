@@ -312,7 +312,26 @@ func cmdRestore(a *app, args []string) int {
 		}
 		return a.failRestore("restore", err)
 	}
+	// A lock (or the loss of the daemon) during the restore destroyed the
+	// keys and stopped it (REST-8): what is left stays sealed, so the
+	// restore did not do what was asked.
+	if closed(abort) {
+		if !*background {
+			a.say(textRestoreStopped)
+		}
+		return exitLocked
+	}
 	return exitOK
+}
+
+// closed reports whether ch is closed (a watchLocks abort fired).
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // genericUnitKeys lists the unit keys of sealed generic units (D33), of

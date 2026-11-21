@@ -59,8 +59,8 @@ func TestRegisterByInventory(t *testing.T) {
 	if err := register("codex", codex); err != nil {
 		t.Fatalf("codex = %v", err)
 	}
-	// npm's codex launcher (node running the bin script): a local adapter
-	// until the codex inventory matches it; never for another program.
+	// npm's codex launcher (node running the bin script) is matched by the
+	// codex inventory's argv_regex (CC-12); never another node program.
 	npmCodex := x.addProc(5345, 1, 5345, "/usr/local/bin/node", "node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js")
 	if err := register("codex", npmCodex); err != nil {
 		t.Fatalf("npm codex = %v", err)

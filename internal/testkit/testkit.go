@@ -48,13 +48,33 @@ func (h *Home) Protect(t testing.TB, rel string) config.Root {
 }
 
 // ShortTempDir returns a fresh directory with a short absolute path (macOS
-// t.TempDir paths exceed the 104-byte socket limit).
+// t.TempDir paths exceed the 104-byte socket limit), removed when the test
+// ends; a process the test started that still writes there is waited for
+// first (Settle), and reported when it outlives the wait.
 func ShortTempDir(t testing.TB) string {
 	t.Helper()
 	return shortTempDir(t)
 }
 
-// Epoch is the fixed wall time fake clocks start at.
+// Settle waits, at most timeout, until no process other than the test
+// holds a file open below dirs: the daemons and binaries a test started,
+// and the workers a daemon spawned (their log descriptor stays open while
+// they live), write into the fake home until they exit, so a fake home is
+// removed only after them (TESTPLAN §1.8). A process still writing then
+// is a leak: Settle reports it with t.Errorf and kills it when it runs one
+// of exes (binaries the test built, the only processes Settle ever
+// signals). Call it after stopping a daemon the test started.
+func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string) {
+	t.Helper()
+	settle(t, timeout, exes, dirs)
+}
+
+// Epoch is the fixed wall time frozen fake clocks start at. Fixture times
+// derive from the clock of the code under test (Epoch for h.Clock), never
+// from a copy of the date; code that compares its clock with times the
+// kernel stamps or another process checks runs on
+// fakeplatform.NewRealClock instead (TESTPLAN §1.4, D77), so no test
+// depends on today's date.
 var Epoch = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
 
 // Golden compares got with testdata/<name> (rewritten with -update).
@@ -71,11 +91,21 @@ func Hygiene(t testing.TB, dir string) {
 }
 
 // BuildBinary builds cmd/precinto with -tags testing(,failpoints) once per
-// test binary and returns its path (integration and crash tests).
+// test binary and returns its path (integration and crash tests). The
+// binaries live in a directory of this test process below TMPDIR; the
+// package's TestMain removes it with RemoveBinaries.
 func BuildBinary(t testing.TB, tags ...string) string {
 	t.Helper()
 	return buildBinary(t, "./cmd/precinto", tags)
 }
+
+// RemoveBinaries deletes the directory of the binaries BuildBinary built
+// in this process, so a test run leaves nothing in TMPDIR (TESTPLAN §1.8).
+// A package that builds binaries calls it from TestMain after m.Run, when
+// no test and no process the tests started still runs them; a later
+// BuildBinary in the same process fails. Without it the next test process
+// that builds removes the directory, as an abandoned one.
+func RemoveBinaries() { removeBinaries() }
 
 // Marker returns a unique marker string for leak greps.
 func Marker(t testing.TB) string {

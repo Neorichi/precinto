@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/awnumar/memguard"
-
 	"github.com/precinto/precinto/internal/agent/agenttest"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
@@ -99,36 +97,6 @@ func (b *agentBackend) RecordLaunch(ctx context.Context, plan harness.LaunchPlan
 	return b.fakeBackend.RecordLaunch(ctx, plan, child)
 }
 
-// unlockForTest is agenttest.UnlockForTest (CC-53) with the request
-// deadline on the real clock, the one the daemon measures it against
-// (internal/agent/unlock.go): UnlockForTest takes it from the fake clock,
-// which starts at testkit.Epoch, so its unlock fails (EOF) once the wall
-// clock is a minute past that epoch. Back to UnlockForTest once it uses the
-// real clock.
-func unlockForTest(t *testing.T, a *agenttest.Agent, rootIDs []string, recoveryKey string) {
-	t.Helper()
-	c, err := a.Client(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	req := ipc.UnlockReq{RootIDs: rootIDs, Factor: "recovery", TTY: true, Deadline: time.Now().Add(time.Minute)}
-	if _, err := c.Unlock(ctx, req, recoveryUI{key: recoveryKey}); err != nil {
-		t.Fatalf("unlock %v: %v", rootIDs, err)
-	}
-}
-
-// recoveryUI answers the relayed prompts of a recovery unlock.
-type recoveryUI struct{ key string }
-
-func (recoveryUI) Display(string) error { return nil }
-func (u recoveryUI) Secret(string) (*memguard.LockedBuffer, error) {
-	return memguard.NewBufferFromBytes([]byte(u.key)), nil
-}
-func (recoveryUI) Confirm(string, string, string) (bool, error) { return true, nil }
-
 // TestCrossgroupRunAgainstTheDaemon drives Run through the real protocol
 // (SEC-30 ended by `lock --end`): the folder's vault is unlocked before the
 // launch, so the subscription starts unlocked (D71); the wrapper registers
@@ -148,7 +116,7 @@ func runAgainstTheDaemon(t *testing.T, direct bool) {
 	fx := vaulttest.New(t, h.Layout.Base, rootID)
 	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
 	h.Procs.Add(platform.ProcInfo{ID: platform.Self(), Exe: "/usr/local/bin/precinto"})
-	unlockForTest(t, a, []string{rootID}, fx.Recovery.String())
+	a.UnlockForTest(t, []string{rootID}, fx.Recovery.String())
 
 	childLife, sibLife := newProbe(t), newProbe(t)
 	testSibling(t, bins, sibLife)

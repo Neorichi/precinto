@@ -33,7 +33,12 @@ default = "{base}/homes/codex/{root_id}"
 env = "CODEX_HOME"
 
 [process]
+# The native binary, and an npm install: node running the `codex` bin script
+# (…/@openai/codex/bin/codex.js, or the …/bin/codex shim) as argv[1], the
+# process `precinto run codex` starts and registers (argv_regex is checked
+# against argv[1] only when argv[0] is an interpreter such as node).
 exe_basenames = ["codex"]
+argv_regex = ["(^|/)codex(\\.js)?$"]
 
 [[locks]]
 glob = "codex_home:thread-writer-locks/*.lock"

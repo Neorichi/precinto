@@ -364,19 +364,45 @@ func cloneInfo(info platform.ProcInfo) platform.ProcInfo {
 }
 
 // Clock is a settable clock with independent wall and monotonic readings.
+// A clock from NewClock is frozen: it moves only when the test moves it. A
+// clock from NewRealClock follows the real clock and adds what the test
+// moved it by.
 type Clock struct {
 	mu   sync.Mutex
-	wall time.Time     // never carries a monotonic reading
-	mono time.Duration // never decreases
+	wall time.Time     // frozen mode: the reading (never a monotonic one)
+	mono time.Duration // frozen mode: the reading; real mode: what Advance added; never decreases
+	// real is set by NewRealClock: origin is the real time (with its
+	// monotonic reading) at creation and ahead the wall offset.
+	real   bool
+	origin time.Time
+	ahead  time.Duration
 }
 
 // NewClock starts at wall with monotonic reading 0.
 func NewClock(wall time.Time) *Clock { return &Clock{wall: wall.Round(0)} }
 
+// NewRealClock returns a Clock that follows the real clock: Now is the
+// system wall time plus everything Advance, Sleep and StepWall added, and
+// Mono the real time elapsed since NewRealClock plus everything Advance
+// added; Now is in UTC. Without StepWall it is never behind the real clock,
+// so the code under test never sees a time the kernel stamped during the
+// test (a file mtime the test did not set, a real process's start time) as
+// "in the future", and Advance makes the waits a test skips (a quiet
+// window) pass at once.
+//
+// Use it where the code under test compares the clock with such kernel
+// times; state-machine tests whose every time input is fake keep a frozen
+// NewClock(testkit.Epoch). A deadline sent to another process (an ipc
+// deadline) is real time whatever the clock (TESTPLAN §1.4, D77).
+func NewRealClock() *Clock { return &Clock{real: true, origin: time.Now()} }
+
 // Now implements platform.Clock.
 func (c *Clock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.real {
+		return time.Now().Add(c.ahead).Round(0).UTC()
+	}
 	return c.wall.Round(0)
 }
 
@@ -384,6 +410,9 @@ func (c *Clock) Now() time.Time {
 func (c *Clock) Mono() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.real {
+		return addSaturating(time.Since(c.origin), c.mono)
+	}
 	return c.mono
 }
 
@@ -394,7 +423,7 @@ func (c *Clock) Advance(d time.Duration) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.wall = c.wall.Add(d)
+	c.stepLocked(d)
 	c.mono = addSaturating(c.mono, d)
 }
 
@@ -402,7 +431,7 @@ func (c *Clock) Advance(d time.Duration) {
 func (c *Clock) StepWall(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.wall = c.wall.Add(d)
+	c.stepLocked(d)
 }
 
 // Sleep simulates system sleep: wall advances by d, monotonic does not.
@@ -415,6 +444,15 @@ func (c *Clock) Sleep(d time.Duration) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.stepLocked(d)
+}
+
+// stepLocked moves the wall reading by d.
+func (c *Clock) stepLocked(d time.Duration) {
+	if c.real {
+		c.ahead += d
+		return
+	}
 	c.wall = c.wall.Add(d)
 }
 

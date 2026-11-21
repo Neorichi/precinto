@@ -122,7 +122,7 @@ func TestStatusHuman(t *testing.T) {
 	}
 	out := e.stdout()
 	for _, want := range []string{
-		"vault    unlock with passphrase · recovery key: tested 2026-11-21",
+		"vault    unlock with passphrase · recovery key: tested " + testkit.Epoch.Format("2006-01-02"), // the fixture's RecoveryVerifiedAt
 		"agent    running (pid 321)",
 		"FOLDERS\n  ~/work/acme  unlocked until 17:00 (locks after 15 min idle)",
 		"sessions: 1 running, 0 working, 0 paused, 1 restored, 1 sealed, 1 without hooks",
@@ -225,5 +225,38 @@ func TestMergeAttentionDedupes(t *testing.T) {
 	)
 	if len(got) != 2 {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// C9.ungated names the command the user types: an ungated Claude Code
+// session says "precinto run claude", never the harness id claude-code
+// (the agent and doctor map it the same way, CC-48).
+func TestStatusUngatedClaudeNamesTheCommand(t *testing.T) {
+	e := statusEnv(t)
+	e.daemon.status.Sessions = append(e.daemon.status.Sessions,
+		ipc.SessionStatus{Harness: "claude-code", SID: "s4", Proc: platform.ProcID{PID: 88}, RootIDs: []string{"root-acme"}, State: "running"})
+	if code := e.run("status", "--json"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	var s statusV1
+	if err := json.Unmarshal(e.out.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	want := ipc.Attention{Code: ipc.AttnUngatedSession, Folder: "~/work/acme", PID: 88, Harness: "claude",
+		Detail: ui.Format(ui.MsgUngatedSession, ui.Vars{Harness: "claude", PID: 88, Folder: "~/work/acme"}), Fix: "precinto run claude"}
+	found := false
+	for _, at := range s.Attention {
+		if at.Code == ipc.AttnUngatedSession && at.PID == 88 {
+			found = true
+			if at != want {
+				t.Errorf("ungated Claude item %+v, want %+v", at, want)
+			}
+			if strings.Contains(at.Detail, "claude-code") {
+				t.Errorf("C9.ungated names the harness id: %q", at.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no ungated item for the Claude session: %+v", s.Attention)
 	}
 }

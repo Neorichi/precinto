@@ -737,6 +737,13 @@ func cmdUnprotect(a *app, args []string) int {
 			a.say(textUnprotectKept, disp, oneLineText(err.Error()))
 			return exitForRestore(err)
 		}
+		if closed(abort) {
+			// Locked while restoring: units rolled back stay sealed, so the
+			// folder keeps its protection (fail closed).
+			a.printRestore(rep)
+			a.say(textUnprotectKept, disp, "it locked during the restore")
+			return exitLocked
+		}
 		a.printRestore(rep)
 	}
 	next := cfg
@@ -837,7 +844,7 @@ func (a *app) ensureUnlocked(ctx context.Context, roots []config.Root, relay ipc
 	if relay == nil {
 		relay = headlessUI{w: a.err}
 	}
-	_, err = c.Unlock(ctx, ipc.UnlockReq{RootIDs: locked, TTY: tty, Confirmed: confirmed, Deadline: a.now().Add(3 * time.Minute)}, relay)
+	_, err = c.Unlock(ctx, ipc.UnlockReq{RootIDs: locked, TTY: tty, Confirmed: confirmed, Deadline: wireDeadline(3 * time.Minute)}, relay)
 	return err
 }
 
@@ -857,7 +864,7 @@ func (a *app) confirmPolicy(ctx context.Context, t terminal) {
 		return
 	}
 	a.showPending(p.Pending)
-	ok, err := t.YesNo(textPolicyConfirm, false)
+	ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false)
 	if err != nil || !ok {
 		return
 	}

@@ -109,7 +109,7 @@ func TestFreeSpaceFloor(t *testing.T) {
 	if err := fsx.CheckSpace(dir, 1, fsx.Floor{MinFraction: 0.000001}); err != nil && avail > total/100 {
 		t.Errorf("tiny floor = %v", err)
 	}
-	if fsx.DefaultFloor.MinBytes != 2<<30 || fsx.DefaultFloor.MinFraction != 0.05 {
+	if fsx.DefaultFloor.MinBytes != 2<<30 || fsx.DefaultFloor.MinFraction != 0 { // D76: a fixed 2 GiB
 		t.Errorf("DefaultFloor %+v", fsx.DefaultFloor)
 	}
 	if fsx.Classify(fsx.CheckSpace(dir, int64(avail)+1<<30, fsx.Floor{})) != fsx.ClassNoSpace {

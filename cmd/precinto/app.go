@@ -253,6 +253,11 @@ func (a *app) procs() platform.ProcTable { return a.sys.procs() }
 // now is the wall clock.
 func (a *app) now() time.Time { return a.sys.clock().Now() }
 
+// wireDeadline is the deadline of an ipc request d from now. It is real
+// time, never the injected clock: the daemon checks it with its own clock
+// (ipc.UnlockReq.Deadline), so a test clock must not reach it (D77).
+func wireDeadline(d time.Duration) time.Time { return time.Now().Add(d) }
+
 // home returns $HOME ("" when unset).
 func (a *app) home() string {
 	h, err := paths.UserHome(a.env)

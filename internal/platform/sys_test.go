@@ -60,9 +60,12 @@ func TestHardenInChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "-test.run=^TestHardenInChild$", "-test.count=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestHardenInChild$", "-test.count=1")
 	cmd.Env = []string{"PRECINTO_PLATFORM_HARDEN_CHILD=1", "HOME=/nonexistent"}
-	out, err := cmd.CombinedOutput()
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput() // the child never waits; the context bounds a hang
 	if err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
 	}

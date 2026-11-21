@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +27,7 @@ import (
 	"github.com/precinto/precinto/internal/harness/codex"
 	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
+	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/testkit"
@@ -37,43 +37,12 @@ import (
 
 const realSID = "00000000-0000-4000-8000-0000000000d1"
 
-// liveClock is the wall clock plus the waits a run skipped: Sleep advances
-// it instead of sleeping (D63's quiet window passes at once), and it never
-// falls behind real time, so files a test or a restore creates now are
-// never "in the future" for the liveness engine (R16), whatever the date
-// (a fake clock fixed at testkit.Epoch falls behind once that hour has
-// passed).
-type liveClock struct {
-	mu     sync.Mutex
-	origin time.Time
-	ahead  time.Duration
-}
-
-func newLiveClock() *liveClock { return &liveClock{origin: time.Now()} }
-
-func (c *liveClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Now().Add(c.ahead).Round(0).UTC()
-}
-
-func (c *liveClock) Mono() time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Since(c.origin) + c.ahead
-}
-
-// Advance moves the clock d ahead of real time.
-func (c *liveClock) Advance(d time.Duration) {
-	if d > 0 {
-		c.mu.Lock()
-		c.ahead += d
-		c.mu.Unlock()
-	}
-}
-
-// sleepOn is an Env.Sleep that advances c instead of sleeping.
-func sleepOn(c *liveClock) func(ctx context.Context, d time.Duration) error {
+// sleepOn is an Env.Sleep that advances c instead of sleeping: the
+// stacks run on fakeplatform.NewRealClock, the wall clock plus the waits a
+// run skipped, so D63's quiet window passes at once and files a test or a
+// restore creates now are never "in the future" for the liveness engine
+// (R16), whatever the date (TESTPLAN §1.4, D77).
+func sleepOn(c *fakeplatform.Clock) func(ctx context.Context, d time.Duration) error {
 	return func(ctx context.Context, d time.Duration) error {
 		c.Advance(d)
 		return ctx.Err()
@@ -90,7 +59,7 @@ func realEnv(t *testing.T, h *testkit.Home) Env {
 	}
 	// D63: the engine needs two looks a quiet window apart; the run's single
 	// wait advances the clock (Env.Sleep) instead of sleeping.
-	clk := newLiveClock()
+	clk := fakeplatform.NewRealClock()
 	eng := &live.Engine{Procs: h.Procs, Clock: clk, LeasesDir: h.Layout.LeasesDir, Observer: live.NewObserver(clk),
 		Quiet: 10 * time.Second}
 	cfg := h.Cfg

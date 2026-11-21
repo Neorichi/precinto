@@ -238,7 +238,10 @@ func (r *Recording) snapshot(path string) (*node, bool) {
 // is a directory tree under t.TempDir() with dir's layout, returned by
 // path; journals inside hold absolute paths, so callers copy an image over
 // dir before running recovery on it. dir must be the absolute path the
-// code under test used (or its realpath).
+// code under test used (or its realpath). Hard links are not preserved:
+// every path of an image is a file of its own (a hold link and its
+// original are two equal files), so recovery checks run on an image must
+// not rely on link counts.
 func (r *Recording) Images(t testing.TB, dir string, n int) []string {
 	t.Helper()
 	r.mu.Lock()

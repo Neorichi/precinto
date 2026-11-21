@@ -32,6 +32,7 @@ import (
 	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
 	"github.com/precinto/precinto/internal/platform"
+	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
@@ -51,46 +52,15 @@ type stack struct {
 	e     sweep.Env
 	fx    *vaulttest.Fixture
 	keys  *vaultKeys
-	clock *liveClock
+	clock *fakeplatform.Clock
 }
 
-// liveClock is the wall clock plus the waits a run skipped: Sleep advances
-// it instead of sleeping (D63's quiet window passes at once), and it never
-// falls behind real time, so files a test or a restore creates now are
-// never "in the future" for the liveness engine (R16), whatever the date
-// (a fake clock fixed at testkit.Epoch falls behind once that hour has
-// passed).
-type liveClock struct {
-	mu     sync.Mutex
-	origin time.Time
-	ahead  time.Duration
-}
-
-func newLiveClock() *liveClock { return &liveClock{origin: time.Now()} }
-
-func (c *liveClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Now().Add(c.ahead).Round(0).UTC()
-}
-
-func (c *liveClock) Mono() time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Since(c.origin) + c.ahead
-}
-
-// Advance moves the clock d ahead of real time.
-func (c *liveClock) Advance(d time.Duration) {
-	if d > 0 {
-		c.mu.Lock()
-		c.ahead += d
-		c.mu.Unlock()
-	}
-}
-
-// sleepOn is an Env.Sleep that advances c instead of sleeping.
-func sleepOn(c *liveClock) func(ctx context.Context, d time.Duration) error {
+// sleepOn is an Env.Sleep that advances c instead of sleeping: the
+// stacks run on fakeplatform.NewRealClock, the wall clock plus the waits a
+// run skipped, so D63's quiet window passes at once and files a test or a
+// restore creates now are never "in the future" for the liveness engine
+// (R16), whatever the date (TESTPLAN §1.4, D77).
+func sleepOn(c *fakeplatform.Clock) func(ctx context.Context, d time.Duration) error {
 	return func(ctx context.Context, d time.Duration) error {
 		c.Advance(d)
 		return ctx.Err()
@@ -108,7 +78,7 @@ func newStack(t *testing.T) *stack {
 	led := ledger.Open(h.Layout.SessionsDir)
 	// D63: the engine needs two looks a quiet window apart; the run's single
 	// wait advances the clock (Env.Sleep) instead of sleeping.
-	clk := newLiveClock()
+	clk := fakeplatform.NewRealClock()
 	eng := &live.Engine{Procs: h.Procs, Clock: clk, LeasesDir: h.Layout.LeasesDir, Observer: live.NewObserver(clk),
 		Quiet: 10 * time.Second, HoldCap: 24 * time.Hour}
 	cfg := h.Cfg
@@ -686,5 +656,68 @@ func TestCrossgroupLivenessSpoofIsHoldCapped(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatalf("PlaintextSummary %+v, want files under hold-capped", sum)
+	}
+}
+
+// TestCrossgroupSealFollowsFileTimesNotTheDate (D77, R16): the real stack
+// judges plaintext by its times relative to its own clock, never by the
+// date. A session whose every file and directory dates from ten years
+// before the stack's clock is sealed after the quiet wait; one whose times
+// lie a year in the clock's future stays live on weak evidence only
+// (future-mtime) and is reported hold-capped in the locked folder, its
+// plaintext kept.
+func TestCrossgroupSealFollowsFileTimesNotTheDate(t *testing.T) {
+	t.Parallel()
+	const year = 365 * 24 * time.Hour
+	for _, c := range []struct {
+		name   string
+		offset time.Duration
+		sealed bool
+	}{
+		{"ten years before the clock", -10 * year, true},
+		{"a year ahead of the clock", year, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStack(t)
+			ctx := testCtx(t)
+			paths := filterSID(s.session(t, xSID, ""), xSID)
+			at := s.clock.Now().Add(c.offset)
+			for _, root := range []string{s.h.ClaudeConfig, s.h.ClaudeTmp} {
+				err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+					if err != nil {
+						return err
+					}
+					return os.Chtimes(p, at, at)
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			rep, err := sweep.Sweep(ctx, s.e, sweep.Options{Reason: "lock", Lock: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.sealed {
+				if resultOfKind(rep, capsule.KindClaudeSession, sweep.OutSealed) == nil {
+					t.Fatalf("a session %s was not sealed: %+v", c.name, rep.Units)
+				}
+				for _, p := range paths {
+					if _, err := os.Lstat(p); err == nil {
+						t.Fatalf("plaintext left: %s", filepath.Base(p))
+					}
+				}
+				return
+			}
+			res := resultOfKind(rep, capsule.KindClaudeSession, sweep.OutLive)
+			if res == nil || res.Detail != "hold-capped" {
+				t.Fatalf("a session %s: %+v, want live and hold-capped (future-mtime is weak evidence)", c.name, rep.Units)
+			}
+			for _, p := range paths {
+				if _, err := os.Lstat(p); err != nil {
+					t.Fatalf("a session held live lost %s: %v", filepath.Base(p), err)
+				}
+			}
+		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/ui"
 )
 
@@ -149,6 +150,7 @@ func (h *shimHome) runShim(t *testing.T, sh shell, dir string, env map[string]st
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // never the test's terminal
+	cmd.WaitDelay = 5 * time.Second                      // a straggler holding the pipes cannot stall Wait
 	err = cmd.Run()
 	r := shimRun{stdout: out.String(), stderr: errb.String()}
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -221,7 +223,9 @@ func goPanicBinary(t *testing.T) string {
 			env = append(env, kv)
 		}
 	}
-	cmd := exec.Command(filepath.Join(goroot, "bin", "go"), "build", "-buildvcs=false", "-o", out, "./testdata/gopanic")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, filepath.Join(goroot, "bin", "go"), "build", "-buildvcs=false", "-o", out, "./testdata/gopanic")
 	cmd.Env = append(env, "CGO_ENABLED=0")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build ./testdata/gopanic: %v\n%s", err, b)
@@ -499,21 +503,44 @@ func TestShimStaticOutputsMatchSchemas(t *testing.T) {
 // TestShimSyntax: every shell parses the shim (sh -n), and shellcheck -s sh
 // passes when shellcheck is installed (CI installs it).
 func TestShimSyntax(t *testing.T) {
-	shim := filepath.Join(repo, "plugin", "scripts", "precinto-hook")
-	for _, sh := range shimShells(t) {
-		cmd := exec.Command(sh.argv[0], append(append(sh.argv[1:], "-n"), shim)...)
-		cmd.Env = []string{"PATH=/usr/bin:/bin"}
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("%s -n: %v\n%s", sh.name, err, out)
+	shims := []string{
+		filepath.Join(repo, "plugin", "scripts", "precinto-hook"),
+		filepath.Join(repo, "plugins", "codex", "scripts", "precinto-hook"),
+	}
+	for _, shim := range shims {
+		for _, sh := range shimShells(t) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			cmd := exec.CommandContext(ctx, sh.argv[0], append(append(sh.argv[1:], "-n"), shim)...)
+			cmd.Env = []string{"PATH=/usr/bin:/bin"}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("%s -n %s: %v\n%s", sh.name, shim, err, out)
+			}
+			cancel()
 		}
 	}
 	sc, err := exec.LookPath("shellcheck")
 	if err != nil {
-		t.Skip("shellcheck not installed")
+		// CI installs shellcheck (.github/scripts/install-shells.sh): there
+		// a missing one is a failure, never a skip (TESTPLAN §10).
+		if inCI() {
+			t.Fatal("shellcheck is required in CI (TESTPLAN §10) and is not installed")
+		}
+		t.Skip("shellcheck not installed (required in CI)")
 	}
-	cmd := exec.Command(sc, "-s", "sh", shim)
-	cmd.Env = []string{"PATH=/usr/bin:/bin"}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("shellcheck -s sh: %v\n%s", err, out)
+	for _, shim := range shims {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		cmd := exec.CommandContext(ctx, sc, "-s", "sh", shim)
+		cmd.Env = []string{"PATH=/usr/bin:/bin"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("shellcheck -s sh %s: %v\n%s", shim, err, out)
+		}
+		cancel()
 	}
+}
+
+// inCI reports whether the tests run in CI (GitHub Actions sets CI=true),
+// where every tool a test needs is installed.
+func inCI() bool {
+	v := paths.FromOS().Get("CI")
+	return v != "" && v != "0" && v != "false"
 }

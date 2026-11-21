@@ -232,7 +232,10 @@ const (
 >     O_NOFOLLOW_ANY; linux may use openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS).
 >     os.Root alone is not sufficient (it follows in-root symlinks).
 >   - Every existing directory below a base must be owned by the current uid
->     and must not be group- or other-writable, else ErrUnsafe.
+>     and must not be group- or other-writable, else ErrUnsafe — except, on
+>     linux, a group-writable, not other-writable directory of the user's
+>     private group (the user's primary group, named like the user, with no
+>     other member in /etc/group; anything undeterminable is unsafe, D67).
 >   - Files are created O_CREAT|O_EXCL|O_NOFOLLOW with mode 0600; directories
 >     0700. Restored modes are masked with 0700 (I8).
 >   - Durability: File.Sync uses F_FULLFSYNC on darwin; every rename or
@@ -251,7 +254,8 @@ const MaxLine = 64 << 10
 
 // Errors. Callers test them with errors.Is.
 var (
-	// ErrUnsafe: a symlink, foreign owner, group/other-writable directory,
+	// ErrUnsafe: a symlink, foreign owner, group/other-writable directory
+	// (a linux user-private group's group-writable directory excepted, D67),
 	// non-regular file, path escaping its base, or non-clean relative path.
 	ErrUnsafe = errors.New("fsx: unsafe path")
 	// ErrChanged: the file's identity (dev, ino, size, mtime, ctime) differs
@@ -267,8 +271,11 @@ var (
 	ErrHardlink = errors.New("fsx: file has several hard links")
 )
 
-// DefaultFloor is max(2 GiB, 5% of the volume).
-var DefaultFloor = Floor{MinBytes: 2 << 30, MinFraction: 0.05}
+// DefaultFloor is a fixed 2 GiB (D76). Callers pass the effective
+// policy.min_free instead (config.Policy.Floor); a fraction of the volume
+// is no longer part of the default, because 5 % of a large, nearly full
+// disk refused every seal while gigabytes were free.
+var DefaultFloor = Floor{MinBytes: 2 << 30}
 
 // AppendLine appends line plus '\n' with one write(2) on an
 // O_APPEND (created O_EXCL 0600 if missing, then the parent directory is
@@ -356,8 +363,9 @@ func Classify(err error) Class
 
 // Dir is an open directory handle. Every operation is relative to it, walks
 // path components with O_NOFOLLOW, and refuses symlinks, foreign-owned or
-// group/other-writable directories below it (D12). A Dir is safe for use by
-// one goroutine at a time.
+// group/other-writable directories below it (D12; on linux a group-writable,
+// not other-writable directory of the user's private group is accepted,
+// D67). A Dir is safe for use by one goroutine at a time.
 type Dir struct {
 	// contains filtered or unexported fields
 }
@@ -466,10 +474,11 @@ const (
 	TypeOther // FIFO, socket, device: never opened, never followed
 )
 
-// Floor is the free-space reserve kept after an operation (D12, D38).
+// Floor is the free-space reserve kept after an operation (D12, D38,
+// D76): max(MinBytes, MinFraction × the volume's size).
 type Floor struct {
-	MinBytes    int64   // default 2 GiB
-	MinFraction float64 // default 0.05 of the volume
+	MinBytes    int64   // default 2 GiB (policy.min_free, D76)
+	MinFraction float64 // default 0: the floor is a fixed size (D76)
 }
 
 // Hazard is a reason an entry is reported instead of being sealed or deleted
@@ -624,7 +633,10 @@ func Record(t testing.TB) *Recording
 // is a directory tree under t.TempDir() with dir's layout, returned by
 // path; journals inside hold absolute paths, so callers copy an image over
 // dir before running recovery on it. dir must be the absolute path the
-// code under test used (or its realpath).
+// code under test used (or its realpath). Hard links are not preserved:
+// every path of an image is a file of its own (a hold link and its
+// original are two equal files), so recovery checks run on an image must
+// not rely on link counts.
 func (r *Recording) Images(t testing.TB, dir string, n int) []string
 ```
 
@@ -1009,6 +1021,10 @@ func FormatRecoveryKey(b *memguard.LockedBuffer) (*memguard.LockedBuffer, error)
 // grouped with spaces or dashes) from a locked buffer.
 func ParseRecoveryKey(b *memguard.LockedBuffer) (age.Identity, error)
 
+// PluginTarget returns what RepinPlugin would pin for f now: the path its
+// enrolled path resolves to (D80), checked like RepinPlugin checks it.
+func PluginTarget(f Factor) (string, error)
+
 // VerifyRecovery checks that the recovery identity unwraps header (a fresh
 // capsule header), for `precinto recover --verify` (D7).
 func VerifyRecovery(recovery *memguard.LockedBuffer, header []byte) error
@@ -1020,7 +1036,8 @@ type Factor struct {
 	Kind           FactorKind `toml:"kind"`
 	Recipient      string     `toml:"recipient"`       // what the identity file is encrypted to ("" for passphrase)
 	IdentityStub   string     `toml:"identity_stub"`   // AGE-PLUGIN-…-1 handle (not secret; needed to unwrap)
-	PluginPath     string     `toml:"plugin_path"`     // pinned absolute path of age-plugin-<name> (every plugin-backed factor, se included)
+	PluginPath     string     `toml:"plugin_path"`     // pinned absolute path of age-plugin-<name>, symlinks resolved (every plugin-backed factor, se included); the only path ever run
+	PluginLink     string     `toml:"plugin_link"`     // the absolute path the factor was enrolled with, before resolving (e.g. /opt/homebrew/bin/age-plugin-se); RepinPlugin resolves it again (D80)
 	PluginSHA256   string     `toml:"plugin_sha256"`   // pinned hash, checked before every use (ErrPluginPin)
 	ScryptLogN     int        `toml:"scrypt_log_n"`    // passphrase only
 	PresencePolicy string     `toml:"presence_policy"` // e.g. "any-biometry-or-passcode", "touch-always"
@@ -1051,8 +1068,9 @@ type FactorSpec struct {
 	// "pin-always" | "pin-once" | "tpm-pin"; "" requires NoPresenceAck
 	// (S10); se keeps SEAccessControl. Recorded as Factor.PresencePolicy.
 	PresencePolicy string
-	// Passphrase is consumed (destroyed) by AddFactor, Init and Create:
-	// pass a fresh copy per vault.
+	// Passphrase is consumed (destroyed) by AddFactor and Init: pass a
+	// fresh copy per call (Create takes no FactorSpec: it asks through
+	// the UI).
 	Passphrase    *memguard.LockedBuffer
 	ScryptLogN    int  // 0 = calibrate
 	NoPresenceAck bool // accept a plugin factor without a known presence policy (S10)
@@ -1208,11 +1226,19 @@ func (s *Store) Remove(id string) error
 // since LastAudit and reports foreign fingerprints as exposed.
 func (s *Store) Repair(v *Vault, o RepairOptions) (RepairResult, error)
 
-// RepinPlugin re-pins factor name in every vault to the binary now at its
-// pinned path, which must be a regular file (not a symlink) owned by root
-// or the user and not group- or other-writable. It returns the previous
-// and the new SHA-256. The caller showed both hashes and obtained the
-// typed word on a TTY (D75); ErrNotFound when no vault has the factor.
+// RepinPlugin re-pins factor name in every vault to the binary its
+// enrolled path resolves to now (Factor.PluginLink; the pinned PluginPath
+// for a factor enrolled before it existed), D75, D80: after a Homebrew
+// upgrade the link points into a new Cellar version and the old one is
+// gone. The resolved binary must be named like the pinned one
+// (age-plugin-<name>) and be a regular file owned by root or the user and
+// not group- or other-writable (else ErrUnsafe). Every vault gets the new
+// PluginPath and SHA-256; a vault that failed is reported in the joined
+// error and a later RepinPlugin completes the others (vaults that already
+// pin the new binary are left as they are). It returns the previous and the
+// new SHA-256; the caller showed both hashes and both paths (PluginTarget)
+// and obtained the typed word on a TTY. ErrNotFound when no vault has the
+// factor.
 func (s *Store) RepinPlugin(name string) (oldSHA, newSHA string, err error)
 
 // Verify checks that identity matches the vault recipient and that the
@@ -1629,12 +1655,30 @@ const (
 )
 
 // Clock is a settable clock with independent wall and monotonic readings.
+// A clock from NewClock is frozen: it moves only when the test moves it. A
+// clock from NewRealClock follows the real clock and adds what the test
+// moved it by.
 type Clock struct {
 	// contains filtered or unexported fields
 }
 
 // NewClock starts at wall with monotonic reading 0.
 func NewClock(wall time.Time) *Clock
+
+// NewRealClock returns a Clock that follows the real clock: Now is the
+// system wall time plus everything Advance, Sleep and StepWall added, and
+// Mono the real time elapsed since NewRealClock plus everything Advance
+// added; Now is in UTC. Without StepWall it is never behind the real clock,
+// so the code under test never sees a time the kernel stamped during the
+// test (a file mtime the test did not set, a real process's start time) as
+// "in the future", and Advance makes the waits a test skips (a quiet
+// window) pass at once.
+//
+// Use it where the code under test compares the clock with such kernel
+// times; state-machine tests whose every time input is fake keep a frozen
+// NewClock(testkit.Epoch). A deadline sent to another process (an ipc
+// deadline) is real time whatever the clock (TESTPLAN §1.4, D77).
+func NewRealClock() *Clock
 
 // Advance moves both readings forward by d.
 func (c *Clock) Advance(d time.Duration)
@@ -1732,6 +1776,18 @@ func (p *Procs) SetOpenFiles(pid int, paths ...string)
 > peer must also be the session's registered wrapper, D54) (SPEC §13.2,
 > §13.3).
 >
+> On linux (D65) every hardened precinto process is non-dumpable, so its
+> /proc/<pid>/exe cannot be read and the executable check is best effort
+> in both directions. The client requires of a hardened daemon the peer
+> uid (SO_PEERCRED), that the peer pid holds the exclusive flock on
+> run/agent.lock (/proc/locks, matched by inode) and the client's own
+> kernel name (comm); the daemon requires of a hardened client the peer
+> uid and the same comm (clients hold no lock), and re-verifies the peer
+> incarnation for keys and unlock. This stops accidents and naive
+> squatters, not a same-uid process that kills the daemon and takes the
+> lock under a binary named like precinto (SPEC §19); darwin keeps the full
+> executable check both ways.
+>
 > The daemon never trusts identity facts from a client: requests carry
 > pids, which the daemon measures itself (SPEC §9.1), and prompt origins,
 > which only the daemon computes (D54).
@@ -1825,7 +1881,7 @@ type ActivityReq struct {
 	Kind     ActivityKind `json:"kind"`
 	PromptID string       `json:"prompt_id,omitempty"`
 	TurnID   string       `json:"turn_id,omitempty"`
-	At       time.Time    `json:"at"`
+	At       time.Time    `json:"at"` // the client's time of the activity, informational: the daemon times activity with its own clock (D54, D77)
 }
 
 // Attention is one "needs attention" item (UX22).
@@ -2344,8 +2400,8 @@ type UnlockReq struct {
 	TTY         bool          `json:"tty"`       // the client can prompt on a terminal
 	Confirmed   bool          `json:"confirmed"` // the client obtained typed confirmation for multi-root
 	FromHook    bool          `json:"from_hook,omitempty"`
-	SID         string        `json:"sid,omitempty"` // hook: the session requesting it
-	Deadline    time.Time     `json:"deadline"`
+	SID         string        `json:"sid,omitempty"`          // hook: the session requesting it
+	Deadline    time.Time     `json:"deadline"`               // real time (the client's time.Now): the daemon bounds the unlock with it on its own clock; never from a test clock (D77)
 	ConfirmDiff bool          `json:"confirm_diff,omitempty"` // also confirm pending policy changes (D48)
 	// AgentMarkers are the client's own paths.AgentMarkers: a
 	// self-restricting claim. The daemon unions it with the ancestry and
@@ -2754,7 +2810,11 @@ type Agent struct {
 // (see Spawned), Screen returns the state set with SetScreen (unlocked,
 // HID idle unknown by default), and Pinentry is a stub that always fails,
 // so no pinentry program can run from a test whatever process table is
-// used (the daemon reports vault.ErrNoUI, ipc.CodeNoUI).
+// used (the daemon reports vault.ErrNoUI, ipc.CodeNoUI). A nil clock is
+// fakeplatform.NewRealClock (a daemon whose caller chose no clock never
+// disagrees with real time, D77); a nil procs is an empty table. The
+// daemon's state machine runs on clock; the deadlines of requests it
+// serves are real time, like a real daemon's (UnlockForTest).
 func Start(t testing.TB, l paths.Layout, clock *fakeplatform.Clock, procs *fakeplatform.Procs) *Agent
 
 // Client is a non-fatal dial for fake backends and other goroutines: it
@@ -3534,7 +3594,7 @@ type Unit struct {
 	LeaseKeys    []string
 	Title        string // custom-title > ai-title > first prompt; stored only inside ciphertext
 	LastActivity time.Time
-	Adopted      bool   // found by scanning, not by the ledger (S6)
+	Adopted      bool   // found by transcript cwd or the project index, not by the ledger, and never restored by precinto (S6; a ledger-less unit with a receipt is precinto's own and re-sealed)
 	Note         string // content-free scan note
 	// ProjectDir is, for claude-session units, the session's start cwd,
 	// realpath'd (the ledger start event, else the transcript's first cwd);
@@ -4524,7 +4584,7 @@ type UnitInfo struct {
 	RootIDs      []string
 	Gens         []Generation
 	Plaintext    bool   // files currently on disk
-	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict
+	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict|hold-capped (live only by weak evidence in a locked folder, SPEC §9.5)
 	Bytes        int64
 	LastActivity time.Time
 	Title        string // only when keys were supplied and the caller is authorized
@@ -4913,16 +4973,22 @@ func HumanInput(b []byte) (human, enter bool)
 // clear screen + scrollback and iTerm2 ClearScrollback).
 func ResetSequence(clear, iterm bool) []byte
 
-// Run is `precinto run`: Plan; passthrough modes exec directly; otherwise
-// confirm (plan.Confirm), EnsureUnlocked, plan.Prepare, AcquireLease,
-// RestoreSync, start the child (PTY when stdin and stdout are terminals and
-// the mode is interactive, else direct: started with Setsid so it is the
-// leader of its own session, with SIGINT, SIGQUIT, SIGTERM and SIGHUP
-// forwarded to it, D57), RecordLaunch, register, subscribe, forward
-// activity, handle lock/unlock/end events, RestoreBackground, wait, reset
-// the terminal, plan.Finish, release the lease, SealAfterExit, print one
-// summary line. Returns the child's exit code, or ExitNotStarted when the
-// child never started (err says why).
+// Run is `precinto run` (SPEC §15.1): Plan; a passthrough mode runs the
+// child in the wrapper's own process group (not exec: no gate, no restore,
+// SIGTERM forwarded, its exit code returned); an unmanaged launch (no
+// folder) runs without unlock, daemon or registration. Otherwise: confirm
+// (plan.Confirm), EnsureUnlocked, subscribe at once and wait for the
+// folders' initial state (D71) — any lock, end or subscription loss from
+// then until exec refuses the launch with ExitNotStarted and an exit-3
+// C1.notify error — then plan.Prepare, AcquireLease, RestoreSync, start the
+// child (PTY when stdin and stdout are terminals and the mode is
+// interactive, else direct: started with Setsid so it is the leader of its
+// own session, with SIGINT, SIGQUIT, SIGTERM and SIGHUP forwarded to it,
+// D57), RecordLaunch, register as the wrapper, forward activity, handle
+// lock/unlock/end events, RestoreBackground, wait, reset the terminal,
+// plan.Finish, release the lease, SealAfterExit, print one summary line.
+// Returns the child's exit code, or ExitNotStarted when the child never
+// started (err says why).
 func Run(ctx context.Context, o Options) (int, error)
 
 // Backend is everything the wrapper needs from the rest of precinto.
@@ -5037,8 +5103,9 @@ func (p *Proxy) Child() platform.ProcID
 // recording child output in the scrollback ring (which holds output since
 // the child started, not only since the lock) while tracking terminal
 // modes, clears the screen (and scrollback when configured), and draws the
-// overlay on the alternate screen unless the child already uses it (D30,
-// IM16).
+// overlay on a fresh alternate screen: when the child uses the alternate
+// screen, Lock leaves it and clears the main screen first, and Unlock
+// restores the child's (D30, IM16, SPEC §15.2).
 func (p *Proxy) Lock(o Overlay) error
 
 // Locked reports whether the overlay is shown.
@@ -5581,28 +5648,38 @@ func LoadPinned(path string) (p Pinned, ok bool, err error)
 
 // Policy is the [policy] table. TOML keys are the snake_case tags.
 type Policy struct {
-	IdleSoft            Duration `toml:"idle_soft"`                // 15m: lock after this much human idle (D23)
-	IdleHard            Duration `toml:"idle_hard"`                // 60m: end paused sessions; "0" never
-	MaxUnlock           Duration `toml:"max_unlock"`               // 8h: absolute grant lifetime ⇒ lock (D24), capped at 24h
-	LockOnScreenLock    bool     `toml:"lock_on_screen_lock"`      // true (D24)
-	ScreenLockHardAfter Duration `toml:"screen_lock_hard_after"`   // 15m of continuous screen lock ⇒ end idle sessions (D24)
-	BusyGrace           Duration `toml:"busy_grace"`               // 30m: busy turns may finish after a lock (D24)
-	BusyTimeout         Duration `toml:"busy_timeout"`             // 10m without hook activity and registry not busy ⇒ not busy (D23)
-	QuietWindow         Duration `toml:"quiet_window"`             // 120s stability window for unknown writers (SPEC §9.4)
-	HoldCap             Duration `toml:"hold_cap"`                 // 24h: weak-evidence liveness holds are reported after this (S14)
-	RestoreRecent       int      `toml:"restore_recent"`           // 5 (D38)
-	RestoreMaxBytes     int64    `toml:"restore_max_bytes"`        // 1 GiB (D38)
-	RestoreHistory      bool     `toml:"restore_history"`          // true: merge sealed history lines back at unlock
-	PerRootAuth         bool     `toml:"per_root_auth"`            // true: each root needs its own presence prompt (D1, D40)
-	UnlockOnPrompt      bool     `toml:"unlock_on_prompt"`         // false until the hook-dialog E2E passes (D60); human prompts only (D26, D27, D37)
-	OnEnter             string   `toml:"on_enter"`                 // "prompt" (D29)
-	MDSealOn            string   `toml:"md_seal_on"`               // "lock"
-	ClearTerminalOnEnd  bool     `toml:"clear_terminal_on_end"`    // true: scrub the TTY when sessions are ended
-	ClearScrollbackLock bool     `toml:"clear_scrollback_on_lock"` // true: wrapper clears scrollback at lock (D30)
-	PromptRatePerMinute int      `toml:"prompt_rate_per_minute"`   // 3 (D27)
-	PromptBackoff       Duration `toml:"prompt_backoff"`           // 30s after a cancel (D27)
-	HookPromptCooldown  Duration `toml:"hook_prompt_cooldown"`     // 10m: no hook-raised dialog for a root after a cancel
+	IdleSoft            Duration `toml:"idle_soft"`                  // 15m: lock after this much human idle (D23)
+	IdleHard            Duration `toml:"idle_hard"`                  // 60m: end paused sessions; "0" never
+	MaxUnlock           Duration `toml:"max_unlock"`                 // 8h: absolute grant lifetime ⇒ lock (D24), capped at 24h
+	LockOnScreenLock    bool     `toml:"lock_on_screen_lock"`        // true (D24)
+	ScreenLockHardAfter Duration `toml:"screen_lock_hard_after"`     // 15m of continuous screen lock ⇒ end idle sessions (D24)
+	BusyGrace           Duration `toml:"busy_grace"`                 // 30m: busy turns may finish after a lock (D24)
+	BusyTimeout         Duration `toml:"busy_timeout"`               // 10m without hook activity and registry not busy ⇒ not busy (D23)
+	QuietWindow         Duration `toml:"quiet_window"`               // 120s stability window for unknown writers (SPEC §9.4)
+	HoldCap             Duration `toml:"hold_cap"`                   // 24h: weak-evidence liveness holds are reported after this (S14)
+	RestoreRecent       int      `toml:"restore_recent"`             // 5 (D38)
+	RestoreMaxBytes     int64    `toml:"restore_max_bytes"`          // 1 GiB (D38)
+	MinFree             Size     `toml:"min_free" json:",omitempty"` // 2GiB free-space floor of seals and restores, at least 512MiB (D76; 0 = default, omitted from Canonical)
+	RestoreHistory      bool     `toml:"restore_history"`            // true: merge sealed history lines back at unlock
+	PerRootAuth         bool     `toml:"per_root_auth"`              // true: each root needs its own presence prompt (D1, D40)
+	UnlockOnPrompt      bool     `toml:"unlock_on_prompt"`           // false until the hook-dialog E2E passes (D60); human prompts only (D26, D27, D37)
+	OnEnter             string   `toml:"on_enter"`                   // "prompt" (D29)
+	MDSealOn            string   `toml:"md_seal_on"`                 // "lock"
+	ClearTerminalOnEnd  bool     `toml:"clear_terminal_on_end"`      // true: scrub the TTY when sessions are ended
+	ClearScrollbackLock bool     `toml:"clear_scrollback_on_lock"`   // true: wrapper clears scrollback at lock (D30)
+	PromptRatePerMinute int      `toml:"prompt_rate_per_minute"`     // 3 (D27)
+	PromptBackoff       Duration `toml:"prompt_backoff"`             // 30s after a cancel (D27)
+	HookPromptCooldown  Duration `toml:"hook_prompt_cooldown"`       // 10m: no hook-raised dialog for a root after a cancel
 }
+
+// Floor returns the free-space floor of the policy for sweep.Env (D76): a
+// fixed MinFreeBytes, never a fraction of the volume.
+func (p Policy) Floor() fsx.Floor
+
+// MinFreeBytes returns the effective policy.min_free in bytes: the value,
+// or DefaultMinFree when it is 0 (unset, e.g. a policy.pinned written
+// before the key existed).
+func (p Policy) MinFreeBytes() int64
 
 // Root is one [[roots]] entry: a protected folder (never an in-repo marker).
 type Root struct {
@@ -5616,6 +5693,32 @@ type Root struct {
 	ClaudeSettings bool      `toml:"claude_settings"` // protect --claude-settings was used (D32)
 	ProtectedAt    time.Time `toml:"protected_at"`
 }
+
+// Size is a byte count encoded in TOML as a string: an integer with a
+// binary unit ("512MiB", "2GiB", "1TiB"; "KiB" and "B" too, the unit's
+// case ignored, one optional space) or a bare number of bytes; "0" means
+// the key's default. Decimal units ("2GB") are rejected, so a size never
+// silently means something else; negative, fractional and overflowing
+// values are rejected too.
+type Size int64
+
+// Free-space floor (policy.min_free, D76): the bytes every seal, restore
+// and staging write leaves free on its volume. 0 means the default; any
+// other value below the minimum is refused by Validate.
+const (
+	DefaultMinFree Size = 2 << 30
+	MinMinFree     Size = 512 << 20
+)
+
+// Bytes returns the value in bytes.
+func (s Size) Bytes() int64
+
+// MarshalText implements encoding.TextMarshaler with the largest binary
+// unit that represents the value exactly ("0", "512MiB", "2GiB", "100B").
+func (s Size) MarshalText() ([]byte, error)
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *Size) UnmarshalText(b []byte) error
 ```
 
 ### `internal/ui`
@@ -5736,7 +5839,7 @@ const (
 	MsgResumeMiss         MsgID = "C7.miss"            // precinto: session {sid} is sealed. Resume it with: claude --resume {sid}
 	MsgResumeTwice        MsgID = "C7.twice"           // Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]
 	MsgResumeOld          MsgID = "C7.old"             // precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.
-	MsgPurgeForget        MsgID = "C7.purge"           // precinto: also delete precinto's sealed copies of the sessions claude purge removes? [y/N]
+	MsgPurgeForget        MsgID = "C7.purge"           // precinto: claude purge deletes Claude's own copies of these sessions. precinto keeps its sealed copies (precinto forget deletes them). Run claude purge? [y/N]
 	MsgExpiry             MsgID = "C8.expiry"          // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
 	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
@@ -5754,6 +5857,7 @@ const (
 	MsgConfirmTyped       MsgID = "C12.typed"          // precinto: {action} can't be undone. Type "{command}" to confirm:
 	MsgPolicyPending      MsgID = "C13.policy"         // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
 	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
+	MsgPolicyConfirm      MsgID = "C13.confirm"        // Confirm these changes? [y/N]
 	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
 	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
 	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
@@ -6001,11 +6105,18 @@ func Worst(fs []Finding) Severity
 > the testdata hygiene check.
 
 ```go
-// Epoch is the fixed wall time fake clocks start at.
+// Epoch is the fixed wall time frozen fake clocks start at. Fixture times
+// derive from the clock of the code under test (Epoch for h.Clock), never
+// from a copy of the date; code that compares its clock with times the
+// kernel stamps or another process checks runs on
+// fakeplatform.NewRealClock instead (TESTPLAN §1.4, D77), so no test
+// depends on today's date.
 var Epoch = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
 
 // BuildBinary builds cmd/precinto with -tags testing(,failpoints) once per
-// test binary and returns its path (integration and crash tests).
+// test binary and returns its path (integration and crash tests). The
+// binaries live in a directory of this test process below TMPDIR; the
+// package's TestMain removes it with RemoveBinaries.
 func BuildBinary(t testing.TB, tags ...string) string
 
 // Golden compares got with testdata/<name> (rewritten with -update).
@@ -6021,8 +6132,28 @@ func Hygiene(t testing.TB, dir string)
 // Marker returns a unique marker string for leak greps.
 func Marker(t testing.TB) string
 
+// RemoveBinaries deletes the directory of the binaries BuildBinary built
+// in this process, so a test run leaves nothing in TMPDIR (TESTPLAN §1.8).
+// A package that builds binaries calls it from TestMain after m.Run, when
+// no test and no process the tests started still runs them; a later
+// BuildBinary in the same process fails. Without it the next test process
+// that builds removes the directory, as an abandoned one.
+func RemoveBinaries()
+
+// Settle waits, at most timeout, until no process other than the test
+// holds a file open below dirs: the daemons and binaries a test started,
+// and the workers a daemon spawned (their log descriptor stays open while
+// they live), write into the fake home until they exit, so a fake home is
+// removed only after them (TESTPLAN §1.8). A process still writing then
+// is a leak: Settle reports it with t.Errorf and kills it when it runs one
+// of exes (binaries the test built, the only processes Settle ever
+// signals). Call it after stopping a daemon the test started.
+func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string)
+
 // ShortTempDir returns a fresh directory with a short absolute path (macOS
-// t.TempDir paths exceed the 104-byte socket limit).
+// t.TempDir paths exceed the 104-byte socket limit), removed when the test
+// ends; a process the test started that still writes there is waited for
+// first (Settle), and reported when it outlives the wait.
 func ShortTempDir(t testing.TB) string
 
 // Home is a throwaway environment.

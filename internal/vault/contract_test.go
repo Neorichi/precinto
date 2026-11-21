@@ -367,3 +367,183 @@ func TestWordlistShape(t *testing.T) {
 		}
 	}
 }
+
+// D80: a factor enrolled through a link (Homebrew's /opt/homebrew/bin) pins
+// the binary it resolves to and records the link; after an upgrade moved
+// the link to a new Cellar version and removed the old one, RepinPlugin
+// resolves the link again and pins the new binary in every vault. A link
+// swapped to a binary of another name is refused.
+func TestRepinFollowsTheEnrolledLink(t *testing.T) {
+	src := vault.InstallPluginForTest(t, "test")
+	prefix := mustRealTemp(t)
+	install := func(version, extra string) string {
+		t.Helper()
+		p := filepath.Join(prefix, "Cellar", "age-plugin-test", version, "bin", "age-plugin-test")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, append(b, extra...), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	link := filepath.Join(prefix, "bin", "age-plugin-test")
+	relink := func(to string) {
+		t.Helper()
+		_ = os.Remove(link)
+		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v1 := install("1.0", "")
+	relink(v1)
+	s, g := initWith(t, testPluginSpec(t, link, "ok"), uiWith().AsUI())
+	root, err := s.Create(context.Background(), "root-acme", "", uiWith(pass).AsUI())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Destroy()
+	f := g.Meta.Factors[0]
+	if f.PluginPath != v1 || f.PluginLink != link {
+		t.Fatalf("enrolled through the link: plugin_path %s, plugin_link %s; want %s and %s", f.PluginPath, f.PluginLink, v1, link)
+	}
+
+	// brew upgrade: a new version, the link moved, the old version gone.
+	v2 := install("2.0", "\n# 2.0\n")
+	relink(v2)
+	if err := os.RemoveAll(filepath.Join(prefix, "Cellar", "age-plugin-test", "1.0")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Unwrap(context.Background(), "test", uiWith().AsUI()); err == nil {
+		t.Fatal("unwrap ran a binary that is not the pinned one")
+	}
+	if got, err := vault.PluginTarget(f); err != nil || got != v2 {
+		t.Fatalf("PluginTarget = %s %v, want %s", got, err, v2)
+	}
+	oldSHA, newSHA, err := s.RepinPlugin("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldSHA != f.PluginSHA256 || newSHA == oldSHA || len(newSHA) != 64 {
+		t.Fatalf("RepinPlugin = %s → %s (pinned %s)", oldSHA, newSHA, f.PluginSHA256)
+	}
+	for _, id := range []string{vault.GlobalID, "root-acme"} {
+		v, err := s.Open(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, x := range v.Meta.Factors {
+			if x.Name == "test" && (x.PluginPath != v2 || x.PluginLink != link || x.PluginSHA256 != newSHA) {
+				t.Errorf("%s: factor %+v, want %s pinned at %s through %s", id, x, newSHA, v2, link)
+			}
+		}
+	}
+	g2, _ := s.Open(vault.GlobalID)
+	unwrapOK(t, g2, "test", uiWith().AsUI()).Destroy()
+
+	// The link swapped to a binary named otherwise: refused, nothing pinned.
+	other := filepath.Join(prefix, "evil", "age-plugin-other")
+	if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(v2)
+	if err := os.WriteFile(other, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relink(other)
+	if _, _, err := s.RepinPlugin("test"); !errors.Is(err, fsx.ErrUnsafe) {
+		t.Errorf("link to age-plugin-other: %v, want ErrUnsafe", err)
+	}
+	if v, _ := s.Open(vault.GlobalID); v.Meta.Factors[0].PluginPath != v2 {
+		t.Errorf("a refused repin moved the pin to %s", v.Meta.Factors[0].PluginPath)
+	}
+}
+
+// D80: a repin that fails in one vault (here root-acme's directory is not
+// writable) re-pins the others and reports that vault; a later repin then
+// brings it to the same binary, although the vaults pin different binaries
+// in between (the enrolled path is the same).
+func TestRepinCompletesAfterAPartialFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into read-only directories")
+	}
+	src := vault.InstallPluginForTest(t, "test")
+	prefix := mustRealTemp(t)
+	install := func(version, extra string) string {
+		t.Helper()
+		p := filepath.Join(prefix, "Cellar", "age-plugin-test", version, "bin", "age-plugin-test")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, append(b, extra...), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	link := filepath.Join(prefix, "bin", "age-plugin-test")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	v1 := install("1.0", "")
+	if err := os.Symlink(v1, link); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := initWith(t, testPluginSpec(t, link, "ok"), uiWith().AsUI())
+	root, err := s.Create(context.Background(), "root-acme", "", uiWith(pass).AsUI())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Destroy()
+	v2 := install("2.0", "\n# 2.0\n")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(v2, link); err != nil {
+		t.Fatal(err)
+	}
+	pinnedAt := func(id string) string {
+		t.Helper()
+		v, err := s.Open(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range v.Meta.Factors {
+			if f.Name == "test" {
+				return f.PluginPath
+			}
+		}
+		t.Fatalf("%s has no factor test", id)
+		return ""
+	}
+	dir := filepath.Join(s.VaultsDir, "root-acme")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, _, err := s.RepinPlugin("test"); err == nil || !strings.Contains(err.Error(), "root-acme") {
+		t.Fatalf("repin with root-acme unwritable = %v, want its failure reported", err)
+	}
+	if g, r := pinnedAt(vault.GlobalID), pinnedAt("root-acme"); g != v2 || r != v1 {
+		t.Fatalf("after the failed repin: global pins %s, root-acme %s; want %s and %s", g, r, v2, v1)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.RepinPlugin("test"); err != nil {
+		t.Fatalf("repin after the failure: %v", err)
+	}
+	if g, r := pinnedAt(vault.GlobalID), pinnedAt("root-acme"); g != v2 || r != v2 {
+		t.Fatalf("after the second repin: global pins %s, root-acme %s; want %s in both", g, r, v2)
+	}
+}

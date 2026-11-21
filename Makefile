@@ -62,9 +62,10 @@ test-integration:
 test-crash:
 	$(GO) test -tags testing,failpoints -count=1 ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/...
 
-## test-e2e: opt-in E2E against real harnesses in throwaway homes (PRECINTO_E2E=1)
+## test-e2e: opt-in E2E against real harnesses in throwaway homes (PRECINTO_E2E=1);
+## 30 min: SEC-14 alone needs about 7 and skips itself when less than 9 remain
 test-e2e:
-	PRECINTO_E2E=1 $(GO) test -tags testing -count=1 -run 'E2E' ./...
+	PRECINTO_E2E=1 $(GO) test -tags testing -count=1 -timeout 30m -run 'E2E' ./...
 
 ## vet: go vet for {default, testing+failpoints} × {darwin, linux} (TESTPLAN §10)
 vet:
@@ -113,7 +114,7 @@ hygiene:
 	$(GO) test -tags testing -count=1 -run 'TestTestdataHygiene' ./test/integration/
 
 ## codex-plugin-check: plugins/codex/ is byte-identical to its recorded
-## SHA-256 list (D41; skipped until the list is recorded, D61)
+## SHA-256 list (D41, D78: a change updates the list in the same change)
 codex-plugin-check:
 	$(GO) test -tags testing -count=1 -run 'TestCodexPluginByteStable' ./test/integration/
 

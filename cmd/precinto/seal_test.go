@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/harness"
@@ -473,5 +474,41 @@ func TestRestoreRecentZero(t *testing.T) {
 		if s.Kind == capsule.KindClaudeSession {
 			t.Fatalf("a session selector for --recent 0: %+v", s)
 		}
+	}
+}
+
+// REST-8 at the CLI: a lock while the restore runs (after the folder's
+// initial unlocked state, D71) stops it, and restore exits 3 with the
+// stopped-restore text instead of reporting success; a folder already
+// locked when the restore starts is not a lock during it.
+func TestRestoreStoppedByALock(t *testing.T) {
+	e := newEnv(t)
+	e.eng.homes = []harness.Home{{ID: "aaaaaaaaaaaaaaaa"}}
+	e.daemon.events = make(chan ipc.Event, 4)
+	e.eng.restoreFn = func(_ sweep.KeySource, r sweep.RestoreRequest) {
+		e.daemon.events <- ipc.Event{Kind: ipc.EventUnlocked, RootIDs: []string{"root-acme"}}
+		e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}}
+		<-r.Abort // the engine stops at the abort (rolling back what is not staged)
+	}
+	if code := e.run("restore", "--session", "sid1"); code != exitLocked {
+		t.Fatalf("restore interrupted by a lock: exit %d, want %d (%s)", code, exitLocked, e.stderr())
+	}
+	if !strings.Contains(e.stderr(), textRestoreStopped) {
+		t.Errorf("no stopped-restore text: %q", e.stderr())
+	}
+
+	e = newEnv(t)
+	e.eng.homes = []harness.Home{{ID: "aaaaaaaaaaaaaaaa"}}
+	e.daemon.events = make(chan ipc.Event, 4)
+	e.eng.restoreFn = func(_ sweep.KeySource, r sweep.RestoreRequest) {
+		e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}} // the initial state
+		select {
+		case <-r.Abort:
+			t.Error("the folder's initial locked state aborted the restore (D71)")
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if code := e.run("restore", "--session", "sid1"); code != exitOK {
+		t.Fatalf("restore with nothing interrupted: exit %d (%s)", code, e.stderr())
 	}
 }

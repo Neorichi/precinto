@@ -316,3 +316,25 @@ func sweepBinDirs(base string, now time.Time) {
 
 // errLocked is returned by tryLock when another descriptor holds the lock.
 var errLocked = errors.New("locked")
+
+// errRemoved is BuildBinary's error after RemoveBinaries.
+var errRemoved = errors.New("the test binaries of this process were removed (RemoveBinaries)")
+
+// removeBinaries implements RemoveBinaries: it removes this process's
+// binary directory while still holding its lock (so no concurrent sweeper
+// judges it), then releases the lock. Later builds in this process fail.
+func removeBinaries() {
+	binDirOnce.Do(func() { binDirErr = errRemoved }) // nothing built yet: never create one
+	buildsMu.Lock()
+	defer buildsMu.Unlock()
+	builds = map[string]*buildResult{} // no cached path into the removed directory
+	if binDir != "" {
+		_ = os.RemoveAll(binDir)
+		binDir = ""
+	}
+	if binDirLock != nil {
+		_ = binDirLock.Close()
+		binDirLock = nil
+	}
+	binDirErr = errRemoved
+}

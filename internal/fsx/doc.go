@@ -14,7 +14,10 @@
 //     O_NOFOLLOW_ANY; linux may use openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS).
 //     os.Root alone is not sufficient (it follows in-root symlinks).
 //   - Every existing directory below a base must be owned by the current uid
-//     and must not be group- or other-writable, else ErrUnsafe.
+//     and must not be group- or other-writable, else ErrUnsafe — except, on
+//     linux, a group-writable, not other-writable directory of the user's
+//     private group (the user's primary group, named like the user, with no
+//     other member in /etc/group; anything undeterminable is unsafe, D67).
 //   - Files are created O_CREAT|O_EXCL|O_NOFOLLOW with mode 0600; directories
 //     0700. Restored modes are masked with 0700 (I8).
 //   - Durability: File.Sync uses F_FULLFSYNC on darwin; every rename or

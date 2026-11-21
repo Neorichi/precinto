@@ -3,6 +3,8 @@ package wrapper
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -234,6 +236,7 @@ func (r *runner) register(ctx context.Context) {
 		TTY:        r.tty,
 		ConfigDir:  r.configDir,
 		TermITerm:  r.iterm,
+		Version:    harnessVersion(r.plan.Argv),
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		c, cancel := context.WithTimeout(ctx, requestTimeout)
@@ -251,4 +254,42 @@ func (r *runner) unregister(ctx context.Context) {
 	c, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	_ = r.ctl.do(c, func(d Daemon) error { return d.Unregister(c, req) })
+}
+
+// harnessVersion is the version of the harness executable argv[0] as its
+// install path records it, for SessionStatus.Version (CC-49): the native
+// installer's versions/<X.Y.Z> file and Homebrew's Cellar/<name>/<X.Y.Z>
+// or Caskroom/<name>/<X.Y.Z> directories, found by resolving symlinks and
+// looking at most four levels up. "" when the path names no version (an
+// npm install: the hook's register reports it then). The harness is never
+// run to ask.
+func harnessVersion(argv []string) string {
+	if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
+		return ""
+	}
+	p, err := filepath.EvalSymlinks(argv[0])
+	if err != nil {
+		return ""
+	}
+	for i := 0; i < 4 && p != "/" && p != "."; i++ {
+		if v := filepath.Base(p); dottedVersion(v) {
+			return v
+		}
+		p = filepath.Dir(p)
+	}
+	return ""
+}
+
+// dottedVersion reports a version component like 2.1.329: digits and dots,
+// at least one dot, at most 64 bytes (the daemon keeps at most 64).
+func dottedVersion(v string) bool {
+	if len(v) == 0 || len(v) > 64 || !strings.ContainsRune(v, '.') || v[0] == '.' || v[len(v)-1] == '.' {
+		return false
+	}
+	for _, c := range v {
+		if (c < '0' || c > '9') && c != '.' {
+			return false
+		}
+	}
+	return !strings.Contains(v, "..")
 }

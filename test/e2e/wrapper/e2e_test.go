@@ -62,6 +62,7 @@ func TestMain(m *testing.M) {
 			code = 1
 		}
 	}
+	testkit.RemoveBinaries() // nothing left in TMPDIR (TESTPLAN §1.8)
 	os.Exit(code)
 }
 
@@ -273,47 +274,40 @@ func (s *session) wait() int {
 }
 
 // rule answers a prompt: when the prompt shows up in new output, reply is
-// typed. Catalog prompts are matched by their exact text, ui.Format of the
-// message id (CC-38: B.*, C2.passphrase, C9.*, C10.consent); only the
-// CLI's own questions, which have no catalog id, fall back to a pattern.
+// typed. Every prompt is matched by its exact catalog text, ui.Format of
+// the message id (CC-38, D70: B.*, C2.passphrase, C9.*, C10.consent,
+// C13.confirm), never by a literal or a pattern of its wording.
 type rule struct {
 	text  string
-	re    *regexp.Regexp
 	reply string
 }
 
-func (r rule) matches(s string) bool {
-	if r.text != "" {
-		return strings.Contains(s, r.text)
-	}
-	return r.re.MatchString(s)
-}
+func (r rule) matches(s string) bool { return strings.Contains(s, r.text) }
 
 func say(id ui.MsgID, v ui.Vars, reply string) rule {
 	return rule{text: ui.Format(id, v), reply: reply}
 }
 
-// defaultAnswer takes the default of any other yes/no question (Enter).
-var defaultAnswer = rule{re: regexp.MustCompile(`\[(Y/n|y/N)\]\s*$`), reply: "\r"}
-
-// initRules answer precinto init: the new passphrase twice and no
-// background service (B.service would install a LaunchAgent).
+// initRules answer precinto init: the new passphrase twice, no background
+// service (B.service would install a LaunchAgent) and no second factor in
+// a remote terminal (B.remote: the factor is a passphrase already).
 func (w *world) initRules() []rule {
 	return []rule{
 		say(ui.MsgPassphraseNew, ui.Vars{}, passphrase+"\r"),
 		say(ui.MsgPassphraseAgain, ui.Vars{}, passphrase+"\r"),
 		say(ui.MsgServiceOffer, ui.Vars{}, "n\r"),
-		defaultAnswer,
+		say(ui.MsgInitRemote, ui.Vars{}, "n\r"),
 	}
 }
 
-// cliRules answer the unlock prompt of the fixture folder (C2.passphrase)
-// and protect's Codex question (C10.consent).
+// cliRules answer the unlock prompt of the fixture folder (C2.passphrase),
+// protect's Codex question (C10.consent) and keep pending policy edits
+// pending (C13.confirm, its default).
 func (w *world) cliRules() []rule {
 	return []rule{
 		say(ui.MsgUnlockPassphrase, ui.Vars{Folder: w.folder()}, passphrase+"\r"),
 		say(ui.MsgCodexConsent, ui.Vars{Folder: w.folder()}, "y\r"),
-		defaultAnswer,
+		say(ui.MsgPolicyConfirm, ui.Vars{}, "n\r"),
 	}
 }
 

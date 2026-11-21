@@ -83,6 +83,7 @@ func TestSEC12ProductionBuildIgnoresOverrides(t *testing.T) {
 	writeConfig(t, filepath.Join(base, "config.toml"), "root-real", real)
 	writeConfig(t, filepath.Join(other, "config.toml"), "root-decoy", decoy)
 	runDir := testkit.ShortTempDir(t)
+	settleOwn(t) // nothing the production binary started may outlive the homes
 
 	run := func(extra map[string]string) []string {
 		t.Helper()
@@ -97,6 +98,7 @@ func TestSEC12ProductionBuildIgnoresOverrides(t *testing.T) {
 		cmd.Env = env
 		cmd.Dir = home
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.WaitDelay = 10 * time.Second
 		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("status %v: %v\n%s", extra, err, out)

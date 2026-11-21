@@ -260,6 +260,11 @@ func unlockedVaults(st ipc.StatusResp) map[string]bool {
 // closes (the caller destroys its file keys there, REST-8). If the
 // subscription cannot be started the channel is closed at once: without it
 // a lock could not be noticed, so the operation must not hold keys.
+//
+// A subscription starts with one locked or unlocked event per folder, its
+// state at that moment (D71): that first event is not a lock during the
+// operation. A folder locked at the start is refused by the key request
+// itself (exit 3, C3); only a later locked event aborts.
 func (a *app) watchLocks(ctx context.Context, rootIDs []string, onLock func()) (<-chan struct{}, func()) {
 	abort := make(chan struct{})
 	var once sync.Once
@@ -292,6 +297,7 @@ func (a *app) watchLocks(ctx context.Context, rootIDs []string, onLock func()) (
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		seen := map[string]bool{} // folders whose initial state arrived (D71)
 		for {
 			select {
 			case <-ctx.Done():
@@ -303,7 +309,7 @@ func (a *app) watchLocks(ctx context.Context, rootIDs []string, onLock func()) (
 					}
 					return
 				}
-				if ev.Kind == ipc.EventLocked && (len(watched) == 0 || len(ev.RootIDs) == 0 || anyWatched(watched, ev.RootIDs)) {
+				if lockedDuring(ev, watched, seen) {
 					fire()
 					return
 				}
@@ -321,11 +327,27 @@ func (a *app) watchLocks(ctx context.Context, rootIDs []string, onLock func()) (
 	return abort, stop
 }
 
-func anyWatched(watched map[string]bool, ids []string) bool {
-	for _, id := range ids {
-		if watched[id] {
-			return true
+// lockedDuring reports whether ev locks a watched folder after its initial
+// state event, recording the folders whose state ev reports in seen. An
+// event naming no folder applies to every folder and is never an initial
+// state.
+func lockedDuring(ev ipc.Event, watched, seen map[string]bool) bool {
+	if ev.Kind != ipc.EventLocked && ev.Kind != ipc.EventUnlocked {
+		return false
+	}
+	if len(ev.RootIDs) == 0 {
+		return ev.Kind == ipc.EventLocked
+	}
+	locked := false
+	for _, id := range ev.RootIDs {
+		if len(watched) > 0 && !watched[id] {
+			continue
+		}
+		first := !seen[id]
+		seen[id] = true
+		if ev.Kind == ipc.EventLocked && !first {
+			locked = true
 		}
 	}
-	return false
+	return locked
 }

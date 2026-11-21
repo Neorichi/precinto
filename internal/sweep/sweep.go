@@ -215,7 +215,7 @@ type UnitInfo struct {
 	RootIDs      []string
 	Gens         []Generation
 	Plaintext    bool   // files currently on disk
-	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict
+	Reason       string // why plaintext remains: running|restored|deferred|history_pending|inaccessible|remove-failed|conflict|hold-capped (live only by weak evidence in a locked folder, SPEC §9.5)
 	Bytes        int64
 	LastActivity time.Time
 	Title        string // only when keys were supplied and the caller is authorized

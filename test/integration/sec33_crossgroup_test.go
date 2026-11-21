@@ -48,6 +48,7 @@ var (
 func sec33Production(t *testing.T, prod, claude string) {
 	home := testkit.ShortTempDir(t)
 	runDir := testkit.ShortTempDir(t)
+	settleOwn(t) // the production daemon and its workers exit before home goes
 	env := []string{
 		"HOME=" + home, "PATH=" + systemPathForTests, "TERM=xterm-256color",
 		"XDG_DATA_HOME=" + filepath.Join(home, "xdg-data"), "XDG_RUNTIME_DIR=" + runDir,
@@ -132,7 +133,7 @@ func sec33Production(t *testing.T, prod, claude string) {
 // names; env markers and the no-controlling-terminal rule still apply, and
 // the daemon's peer check follows the stop of its own environment.
 func sec33Testing(t *testing.T, exe, claude string) {
-	h := testkit.NewHome(t)
+	h := newHome(t)
 	fastPolicy(t, h)
 	base := childEnv(h, map[string]string{"FAKE_HARNESS_RUN": exe}).With("TERM", "xterm-256color")
 	// The stop names the fake claude: it and everything above are ignored.

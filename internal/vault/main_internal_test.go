@@ -133,7 +133,9 @@ func installPlugin(t testing.TB, name string) string {
 // keygen asks a fake plugin for its recipient.
 func keygen(t testing.TB, path string) string {
 	t.Helper()
-	cmd := exec.Command(path, "--keygen")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--keygen")
 	cmd.Env = []string{"PATH=" + filepath.Dir(path)}
 	out, err := cmd.Output()
 	if err != nil {

@@ -90,7 +90,38 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(d)
 	}
 	ownMu.Unlock()
+	testkit.RemoveBinaries() // the testing build (TESTPLAN §1.8: nothing left in TMPDIR)
 	os.Exit(code)
+}
+
+// settleOwn makes the test wait, before the fake home it has just created
+// is removed (t.Cleanup runs last-in first-out), until no process runs a
+// binary of this package: the daemons, CLIs and helpers the test started
+// and the workers they spawned (detached, with no file of the home open
+// between two steps). The package's tests run one at a time, so every such
+// process is this test's. One still running after settleWait is reported
+// and killed (TESTPLAN §1.8).
+func settleOwn(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		if left := waitOwnProcesses(settleWait); len(left) > 0 {
+			t.Errorf("%d process(es) this test started outlived it and were killed: %s", len(left), strings.Join(left, "; "))
+		}
+	})
+}
+
+// settleWait bounds how long the processes a test started (a stopped
+// daemon's workers above all) may keep running or writing into its fake
+// home after it (a sweep's quiet window is 10 s with fastPolicy).
+const settleWait = 90 * time.Second
+
+// newHome is testkit.NewHome with settleOwn: the home is removed only after
+// every process the test started there has exited.
+func newHome(t *testing.T) *testkit.Home {
+	t.Helper()
+	h := testkit.NewHome(t)
+	settleOwn(t)
+	return h
 }
 
 // leakWait bounds how long detached workers (a daemon's start-up sweep,
@@ -183,6 +214,9 @@ func runEnv(t *testing.T, exe string, env []string, dir string, stdin string, ar
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
+	// A worker the binary spawned must not inherit these pipes; if one did,
+	// Wait gives up after WaitDelay (and the test fails) instead of hanging.
+	cmd.WaitDelay = 10 * time.Second
 	err := cmd.Run()
 	code := 0
 	if err != nil {

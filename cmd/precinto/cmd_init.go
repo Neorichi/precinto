@@ -665,11 +665,15 @@ func cmdFactor(a *app, args []string) int {
 	return a.usageFail(f, "unknown subcommand "+pos[0])
 }
 
-// factorRepin re-pins a plugin factor to the binary now at its pinned path
-// (D75): on a terminal only (agent contexts were refused by cmdFactor), it
-// shows the path, the pinned and the current SHA-256, the owner and the
-// modification time, asks for the typed word repin (C12.typed) and then
-// rewrites the pin in every vault (vault.Store.RepinPlugin).
+// factorRepin re-pins a plugin factor to the binary its enrolled path
+// resolves to now (D75, D80: after `brew upgrade` the enrolled
+// /opt/homebrew/bin link points into a new Cellar version): on a terminal
+// only (agent contexts were refused by cmdFactor), it shows the enrolled
+// path, the pinned binary and SHA-256, the current binary and SHA-256, its
+// owner and modification time, asks for the typed word repin (C12.typed)
+// and then rewrites the pin in every vault (vault.Store.RepinPlugin). A
+// link swapped to another binary looks the same as an upgrade: the human
+// who reads the paths and hashes decides.
 func (a *app) factorRepin(vs vaultStore, name string) int {
 	t, err := a.needTerminal("factor repin")
 	if err != nil {
@@ -679,25 +683,34 @@ func (a *app) factorRepin(vs vaultStore, name string) int {
 	if err := a.sys.harden(); err != nil {
 		return a.fail("factor", err)
 	}
-	f, ok, err := pinnedFactor(vs, name)
+	fs, err := pinnedFactors(vs, name)
 	if err != nil {
 		return a.fail("factor", err)
 	}
-	if !ok {
+	if len(fs) == 0 {
 		a.say(textRepinNotPlugin, name)
 		return exitUsage
 	}
-	cur, err := a.binaryFacts(f.PluginPath)
+	f := fs[0]
+	target, err := vault.PluginTarget(f)
 	if err != nil {
 		return a.fail("factor", err)
 	}
-	if cur.sha == f.PluginSHA256 {
+	cur, err := a.binaryFacts(target)
+	if err != nil {
+		return a.fail("factor", err)
+	}
+	if allPinnedTo(fs, target, cur.sha) {
 		a.sayOut(textRepinSame, name)
 		return exitOK
 	}
 	a.say(textRepinWhat, name)
-	a.say(textRepinLine, "binary", a.display(f.PluginPath))
+	if f.PluginLink != "" {
+		a.say(textRepinLine, "enrolled path", a.display(f.PluginLink))
+	}
+	a.say(textRepinLine, "pinned binary", a.display(f.PluginPath))
 	a.say(textRepinLine, "pinned SHA-256", orUnknown(f.PluginSHA256))
+	a.say(textRepinLine, "current binary", a.display(target))
 	a.say(textRepinLine, "current SHA-256", cur.sha)
 	a.say(textRepinLine, "owner", cur.owner)
 	a.say(textRepinLine, "modified", cur.mtime.In(a.sys.loc).Format("2006-01-02 15:04"))
@@ -718,25 +731,39 @@ func (a *app) factorRepin(vs vaultStore, name string) int {
 	return exitOK
 }
 
-// pinnedFactor finds the plugin-backed factor name (se or plugin) in the
-// vaults, with its pinned path and hash.
-func pinnedFactor(vs vaultStore, name string) (vault.Factor, bool, error) {
+// pinnedFactors returns the plugin-backed factor name (se or plugin) of
+// every vault that has it, with its pinned path and hash, in vault order.
+func pinnedFactors(vs vaultStore, name string) ([]vault.Factor, error) {
 	ids, err := vs.List()
 	if err != nil {
-		return vault.Factor{}, false, err
+		return nil, err
 	}
+	var out []vault.Factor
 	for _, id := range ids {
 		m, err := vs.Meta(id)
 		if err != nil {
-			return vault.Factor{}, false, err
+			return nil, err
 		}
 		for _, fc := range m.Factors {
 			if fc.Name == name && (fc.Kind == vault.FactorSE || fc.Kind == vault.FactorPlugin) && fc.PluginPath != "" {
-				return fc, true, nil
+				out = append(out, fc)
+				break
 			}
 		}
 	}
-	return vault.Factor{}, false, nil
+	return out, nil
+}
+
+// allPinnedTo reports whether every vault's copy of the factor already pins
+// path with hash sha. A repin that failed half way leaves some vaults
+// behind: repin then runs again for them.
+func allPinnedTo(fs []vault.Factor, path, sha string) bool {
+	for _, f := range fs {
+		if f.PluginPath != path || f.PluginSHA256 != sha {
+			return false
+		}
+	}
+	return true
 }
 
 // binaryInfo is what factor repin shows about a plugin binary.
@@ -920,7 +947,7 @@ func (a *app) factorTest(name string) int {
 	if st, err := c.Status(ctx); err == nil {
 		wasOpen = unlockedVaults(st)[vault.GlobalID]
 	}
-	resp, err := c.Unlock(ctx, ipc.UnlockReq{Global: true, Factor: name, Test: true, TTL: time.Minute, TTY: true, Deadline: a.now().Add(3 * time.Minute)}, t)
+	resp, err := c.Unlock(ctx, ipc.UnlockReq{Global: true, Factor: name, Test: true, TTL: time.Minute, TTY: true, Deadline: wireDeadline(3 * time.Minute)}, t)
 	if err != nil {
 		if isBadSecret(err) {
 			a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: "the global vault"})
@@ -1047,6 +1074,14 @@ func (a *app) recoverVerify(ctx context.Context, key *memguard.LockedBuffer) int
 	if eng, err := a.engine(ctx, false); err == nil {
 		if h, ok, err := eng.LatestCapsuleHeader(); err == nil && ok {
 			if err := vault.VerifyRecovery(key, h); err != nil {
+				if errors.Is(err, vault.ErrBadSecret) {
+					// The key is the install's (it opened a fresh header to
+					// the recovery recipient), yet the newest sealed capsule
+					// was sealed to another recovery key: a verification
+					// failure, not a wrong key (CC-08, exit 5).
+					a.say(textRecoveryNotNewest)
+					return exitVerify
+				}
 				return a.fail("recover", err)
 			}
 		}
@@ -1100,7 +1135,7 @@ func (a *app) recoverUse(ctx context.Context, key *memguard.LockedBuffer, t term
 		Factor:    string(vault.FactorRecovery),
 		TTY:       t != nil,
 		Confirmed: true,
-		Deadline:  a.now().Add(5 * time.Minute),
+		Deadline:  wireDeadline(5 * time.Minute),
 	}, secretAnswer{secret: key, next: next})
 	if err != nil {
 		return a.fail("recover", err)

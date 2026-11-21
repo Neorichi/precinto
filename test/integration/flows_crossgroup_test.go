@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +50,10 @@ func startAgent(t *testing.T, exe string, h *testkit.Home) {
 // startDaemon starts `exe agent --foreground` with exactly env (a new
 // session, cwd /), waits until it listens on socket, and returns a stop
 // function (SIGTERM to the process this test started, SIGKILL after 10 s),
-// which the cleanup calls too.
+// which the cleanup calls too. stop also waits for the workers the daemon
+// spawned (detached, they outlive it) to stop writing into the fake home
+// (testkit.Settle, TESTPLAN §1.8), so a cleanup never removes a tree a
+// worker still writes to and the next daemon starts on a settled home.
 func startDaemon(t *testing.T, exe string, env []string, socket string) (stop func()) {
 	t.Helper()
 	cmd := exec.Command(exe, "agent", "--foreground")
@@ -76,6 +78,7 @@ func startDaemon(t *testing.T, exe string, env []string, socket string) (stop fu
 			// A stopped daemon leaves its socket file: the next daemon
 			// replaces it, and waits below must not see the old one.
 			_ = os.Remove(socket)
+			testkit.Settle(t, settleWait, []string{exe}, fakeHomeDirs(env, socket)...)
 		})
 	}
 	t.Cleanup(stop)
@@ -95,11 +98,36 @@ func startDaemon(t *testing.T, exe string, env []string, socket string) (stop fu
 	return stop
 }
 
+// fakeHomeDirs are the directories of a fake home a daemon and its workers
+// write to: HOME, PRECINTO_HOME and the run directories of env, and the
+// socket's directory.
+func fakeHomeDirs(env []string, socket string) []string {
+	e := paths.FromEnviron(env)
+	var dirs []string
+	for _, k := range []string{"HOME", paths.EnvHome, paths.EnvRuntimeDir, paths.EnvXDGRuntimeDir} {
+		if v := e.Get(k); filepath.IsAbs(v) && filepath.Clean(v) != "/" {
+			dirs = append(dirs, v)
+		}
+	}
+	return append(dirs, filepath.Dir(socket))
+}
+
 // fastPolicy shortens the stability window to the smallest value
 // config.Validate accepts (10 s, D63), so seals decide quickly.
 func fastPolicy(t *testing.T, h *testkit.Home) {
 	t.Helper()
 	h.Cfg.Policy.QuietWindow = config.Duration(10 * time.Second)
+	saveConfig(t, h)
+}
+
+// flowFloor is the policy.min_free of the main flow's fake home: the
+// smallest floor config.Validate accepts (D76), so the flow seals and
+// restores on a nearly full disk too.
+const flowFloor = config.MinMinFree
+
+// saveConfig writes h.Cfg to the fake home's config.toml.
+func saveConfig(t *testing.T, h *testkit.Home) {
+	t.Helper()
 	if err := config.Save(h.Layout.ConfigFile, h.Cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +175,11 @@ func unlockFolder(t *testing.T, exe string, h *testkit.Home, dir string) {
 }
 
 type statusJSON struct {
-	V     int `json:"v"`
+	V         int `json:"v"`
+	Attention []struct {
+		Code  string `json:"code"`
+		Count int    `json:"count"`
+	} `json:"attention"`
 	Vault struct {
 		Initialized        bool       `json:"initialized"`
 		RecoveryTested     bool       `json:"recovery_tested"`
@@ -164,6 +196,16 @@ type statusJSON struct {
 	Agent struct {
 		Running bool `json:"running"`
 	} `json:"agent"`
+}
+
+// pendingPolicy is the count of the pending-policy attention item (D48).
+func (s statusJSON) pendingPolicy() int {
+	for _, a := range s.Attention {
+		if a.Code == "pending-policy" {
+			return a.Count
+		}
+	}
+	return 0
 }
 
 func status(t *testing.T, exe string, h *testkit.Home) statusJSON {
@@ -189,7 +231,8 @@ var wroteRE = regexp.MustCompile(`wrote session \S+ sha256=([0-9a-f]{64})`)
 // and no marker left in plaintext anywhere outside the capsules (I7).
 func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 	exe := needBinary(t)
-	h := testkit.NewHome(t)
+	h := newHome(t)
+	h.Cfg.Policy.MinFree = flowFloor // D76: written before init, like a user's edit
 	fastPolicy(t, h)
 	rec := initVaults(t, exe, h)
 
@@ -236,6 +279,23 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 	if !s.Agent.Running || len(s.Folders) != 1 || s.Folders[0].State != "unlocked" {
 		t.Fatalf("status after protect %+v", s)
 	}
+	// D76, D48, D68: lowering min_free below the 2 GiB default weakens
+	// protection, so the first pin (written by protect) kept the default
+	// and the edit waits for a confirmation in a terminal, which an unlock
+	// there asks for (the folder is unlocked already: no prompt).
+	if n := s.pendingPolicy(); n != 1 {
+		t.Fatalf("min_free lowered in config.toml: %d pending policy changes, want 1: %+v", n, s.Attention)
+	}
+	p = startPTY(t, exe, h, h.Root, nil, "unlock", "--root", h.Root)
+	p.expect(ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1}))
+	p.expect("policy.min_free")
+	p.send("y\r")
+	if code := p.wait(); code != 0 {
+		t.Fatalf("unlock confirming the policy: exit %d: %q", code, p.output())
+	}
+	if n := status(t, exe, h).pendingPolicy(); n != 0 {
+		t.Fatalf("confirmed policy still pending (%d)", n)
+	}
 
 	fake := buildHelper(t, "testdata/fakeharness", "claude")
 	marker := testkit.Marker(t)
@@ -256,18 +316,9 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 	transcript := transcriptPath(h, flowSID)
 
 	// Sealed after exit (the writer is known to have exited, R20), or by
-	// the queue worker shortly after.
-	if err := fsx.CheckSpace(h.Layout.CapsulesDir, 64<<20, fsx.DefaultFloor); errors.Is(err, fsx.ErrNoSpace) {
-		// D38, SPEC §17: precinto never seals into the volume's free-space
-		// floor; it keeps the plaintext and says so (C6.failed). The steps
-		// that need a sealed session cannot run on this disk.
-		if !strings.Contains(r.stderr, "disk full") {
-			t.Fatalf("below the free-space floor the run must report C6.failed (disk full): %q", r.stderr)
-		}
-		if _, err := os.Lstat(transcript); err != nil {
-			t.Fatalf("the transcript is gone although nothing could be sealed: %v", err)
-		}
-		t.Skipf("the fake home's volume is below precinto's free-space floor, so the seal is refused by design (%v); lock, unlock and restore of the sealed session were not exercised", err)
+	// the queue worker shortly after, keeping the 512 MiB floor free.
+	if err := fsx.CheckSpace(h.Layout.CapsulesDir, 64<<20, fsx.Floor{MinBytes: int64(flowFloor)}); err != nil {
+		t.Fatalf("this volume cannot hold the session while keeping policy.min_free (%d bytes) free: %v", int64(flowFloor), err)
 	}
 	if !waitGone(transcript) {
 		t.Fatalf("%s still in plaintext after the run (run's messages: %q)", transcript, r.stderr)
@@ -310,6 +361,24 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 	}
 	if fi, _ := os.Stat(transcript); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("restored mode %v (I8)", fi.Mode().Perm())
+	}
+
+	// SPEC §17, D76: precinto never seals into the floor; it keeps the
+	// plaintext and says so (C6.failed, "disk full"). A floor larger than
+	// any volume shows it on every disk; raising min_free is a
+	// strengthening edit, so it applies at once (D48).
+	h.Cfg.Policy.MinFree = 1 << 50
+	saveConfig(t, h)
+	full := "00000000-0000-4000-8000-0000000000f2"
+	r = precinto(t, exe, h, h.Root, env, "", "run", "--no-pty", "--", "claude", "--resume", full, "-p", "hello")
+	if r.code != 3 || !strings.Contains(r.stderr, "disk full") {
+		t.Fatalf("run with the floor above the free space: exit %d, want the child's 3 and C6.failed (disk full): %q", r.code, r.stderr)
+	}
+	if !wroteRE.MatchString(r.stdout) {
+		t.Fatalf("fake harness output missing: %q", r.stdout)
+	}
+	if _, err := os.Lstat(transcriptPath(h, full)); err != nil {
+		t.Fatalf("the transcript is gone although nothing could be sealed: %v", err)
 	}
 }
 
@@ -359,7 +428,7 @@ func waitGone(p string) bool {
 // init, vault repair and the destructive commands with exit 3.
 func TestFlowAgentContextRefusals(t *testing.T) {
 	exe := needBinary(t)
-	h := testkit.NewHome(t)
+	h := newHome(t)
 	agent := map[string]string{"CLAUDECODE": "1"}
 	for _, args := range [][]string{
 		{"init"},

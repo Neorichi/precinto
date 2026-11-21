@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,9 +78,16 @@ func TestCrashedLeaseHolderReleasesItsLeases(t *testing.T) {
 	args = append(args, keys...)
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = []string{} // the helper needs no environment
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lifeline.Close() // the helper's lifeline: closed when this test ends
+	cmd.Stdin = life
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	life.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
@@ -132,6 +140,13 @@ func TestHelperLeaseHolder(t *testing.T) {
 	if len(args) < 3 || args[0] != "hold" {
 		t.Skip("helper process only")
 	}
+	// Exits when its lifeline (stdin) closes and after two minutes in any
+	// case (TESTPLAN §1.8).
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(70)
+	}()
+	time.AfterFunc(2*time.Minute, func() { os.Exit(71) })
 	failpoint.Reset()
 	failpoint.Set("fsx.write:2") // SIGKILL while describing the second lease
 	_, err := live.Acquire(args[1], args[2:], live.Lease{Proc: platform.ProcID{PID: os.Getpid(), StartUS: 1}})

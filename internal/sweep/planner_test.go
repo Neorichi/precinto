@@ -159,14 +159,15 @@ func TestChainFollowsNonSuccessorLinks(t *testing.T) {
 func TestConflictNames(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 21, 9, 5, 0, 0, time.UTC)
+	stamp := at.UTC().Format("20060102-1504") // conflictName stamps the UTC minute of at
 	for _, tc := range []struct{ got, want string }{
 		{conflictName("projects/p/s.jsonl", conflictRestored, at, 0), "projects/p/s.jsonl.precinto-restored"},
 		{conflictName("projects/p/s.jsonl", conflictRestored, at, 2), "projects/p/s.jsonl.precinto-restored.2"},
-		{conflictName("docs/notes.md", conflictNote, at, 0), "docs/notes.conflict-20261121-0905.md"},
-		{conflictName("notes.md", conflictNote, at, 1), "notes.conflict-20261121-0905.1.md"},
+		{conflictName("docs/notes.md", conflictNote, at, 0), "docs/notes.conflict-" + stamp + ".md"},
+		{conflictName("notes.md", conflictNote, at, 1), "notes.conflict-" + stamp + ".1.md"},
 		{genConflictName("projects/p/s.jsonl", 3), "projects/p/s.precinto-g3.jsonl"},
 		{genConflictName("a/.hidden", 2), "a/.hidden.precinto-g2"},
-		{originalOf("docs/notes.conflict-20261121-0905.md"), "docs/notes.md"},
+		{originalOf("docs/notes.conflict-" + stamp + ".md"), "docs/notes.md"},
 		{originalOf("projects/p/s.jsonl.precinto-restored.1"), "projects/p/s.jsonl"},
 		{originalOf("projects/p/s.precinto-g3.jsonl"), "projects/p/s.jsonl"},
 	} {

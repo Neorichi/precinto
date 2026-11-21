@@ -13,8 +13,9 @@ package sweep
 // differs: recovery keeps plaintext whose identity it cannot prove, and
 // the next run seals it. The recorder sees every fsx operation of the
 // process, so the rows never run in parallel (sequential tests finish
-// before any parallel one starts). It is fsxtest's (CC-27) until G1 reads
-// the synced files of O_WRONLY descriptors (see powerRecording).
+// before any parallel one starts). The recorder is fsxtest's (CC-27): it
+// reads the synced files of O_WRONLY descriptors (the journal, receipts,
+// counters and capsule log) through a read-only reopen of the same inode.
 
 import (
 	"bytes"
@@ -26,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/precinto/precinto/internal/fsx/fsxtest"
 	"github.com/precinto/precinto/internal/harness"
 )
 
@@ -41,7 +43,7 @@ const imagesPerRow = 4
 // goroutine exits) when the test ends, before the home is removed.
 func powerLoss(t *testing.T, te *testEnv, point string, n int, act func(te *testEnv)) []string {
 	t.Helper()
-	rec := recordPowerLoss(t)
+	rec := fsxtest.Record(t)
 	reached, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	hits := 0
@@ -71,7 +73,7 @@ func powerLoss(t *testing.T, te *testEnv, point string, n int, act func(te *test
 	case <-time.After(time.Minute):
 		t.Fatalf("the run did not reach %s:%d within a minute", point, n)
 	}
-	images := rec.images(t, te.h.Dir, imagesPerRow)
+	images := rec.Images(t, te.h.Dir, imagesPerRow)
 	if len(images) == 0 {
 		t.Fatal("no power-loss image")
 	}

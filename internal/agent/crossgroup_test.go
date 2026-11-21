@@ -4,6 +4,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/vault/vaulttest"
 )
 
@@ -289,5 +291,36 @@ func TestVaultRepairDryRunReal(t *testing.T) {
 	}
 	if _, _, err := fx.Store.Recipients("root-acme"); err != nil {
 		t.Fatalf("sealing recipients after the repair: %v", err)
+	}
+}
+
+// promptUI records the relayed secret prompts and cancels each one.
+type promptUI struct{ prompts []string }
+
+func (u *promptUI) Display(string) error { return nil }
+func (u *promptUI) Secret(p string) (*memguard.LockedBuffer, error) {
+	u.prompts = append(u.prompts, p)
+	return nil, errors.New("promptUI: cancelled")
+}
+func (u *promptUI) Confirm(string, string, string) (bool, error) { return false, nil }
+
+// TestRelayedPassphrasePromptIsTheCatalogText: the passphrase factor of
+// G1's vault asks "precinto passphrase"; the daemon relays C2.passphrase
+// for the folder in its place (D27: prompt texts come from verified data),
+// never the factor's own wording.
+func TestRelayedPassphrasePromptIsTheCatalogText(t *testing.T) {
+	h := testkit.NewHome(t)
+	vaulttest.New(t, h.Layout.Base, "root-acme")
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	c := a.Dial(t)
+	u := &promptUI{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := c.Unlock(ctx, ipc.UnlockReq{RootIDs: []string{"root-acme"}, Factor: "passphrase", TTY: true, Deadline: time.Now().Add(time.Minute)}, u); err == nil {
+		t.Fatal("an unlock whose prompt was cancelled succeeded")
+	}
+	want := ui.Format(ui.MsgUnlockPassphrase, ui.Vars{Folder: h.Root}) // the agenttest daemon has no HOME: the full path
+	if len(u.prompts) != 1 || u.prompts[0] != want {
+		t.Fatalf("relayed prompts %q, want exactly C2.passphrase %q", u.prompts, want)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/awnumar/memguard"
 
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/ledger"
@@ -212,8 +213,8 @@ func (d *daemon) gate(ctx context.Context, cs *connState, q ipc.GateReq) ipc.Gat
 	if host == "" {
 		host = q.Harness
 	}
-	if host == string(harness.Codex) && ev != GateStart && len(roots) > 0 {
-		if resp, wrong := d.codexHome(q, roots); wrong {
+	if host == string(harness.Codex) && ev != GateStart {
+		if resp, wrong := d.codexHome(q, codexRoots(eff, roots)); wrong {
 			d.afterGate(q, roots)
 			return resp
 		}
@@ -246,9 +247,28 @@ func promptID(prompt, turn string) string {
 	return turn
 }
 
-// codexHome blocks a Codex session in a folder whose CODEX_HOME is not
-// that folder's sealed home (D31, C3.codexhome).
+// codexRoots are the roots of the gate that manage Codex (D72): their
+// harness list names codex, an empty list being the default of both
+// built-ins (config's effective harnesses, doctor's rootProtects).
+func codexRoots(eff config.Config, roots []string) []string {
+	var out []string
+	for _, id := range roots {
+		r, ok := eff.RootByID(id)
+		if ok && (len(r.Harnesses) == 0 || slices.Contains(r.Harnesses, string(harness.Codex))) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// codexHome blocks a Codex session in a folder that manages Codex whose
+// CODEX_HOME is not that folder's sealed home (D31, D72, C3.codexhome);
+// roots are the gate's roots that manage Codex. With none, the session is
+// answered by the lock state alone.
 func (d *daemon) codexHome(q ipc.GateReq, roots []string) (ipc.GateResp, bool) {
+	if len(roots) == 0 {
+		return ipc.GateResp{}, false
+	}
 	home := filepath.Clean(q.CodexHome)
 	for _, id := range roots {
 		if q.CodexHome != "" && filepath.IsAbs(q.CodexHome) && home == filepath.Clean(d.l.CodexHome(id)) {

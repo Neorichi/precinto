@@ -1,0 +1,6 @@
+# SHA-256 of every file of plugins/codex/ (D41, D78): Codex's hook trust hash covers
+# the whole plugin root. A change to plugins/codex/ updates this list in the same
+# reviewed change until E2E-9 freezes the root (D61); after the freeze it never changes.
+adeeb67cb834d790f4e524ed7ec3a4ad6a2966a2ab904e9e853cfb8834a78edd  .codex-plugin/plugin.json
+ee1d830ca9d5498943352110cc91d6a326749ae6712695fe6f86a1f8a4ff5c80  hooks/codex.json
+835571cf31820bb8663403e3e3a8ca9e9b9776fca0f17a5911bf3fe9b04a1d9b  scripts/precinto-hook

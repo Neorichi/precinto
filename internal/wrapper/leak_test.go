@@ -40,7 +40,10 @@ func TestHelpersDieWithTheirTest(t *testing.T) {
 			// The probe carries this binary's token too (as a test
 			// argument), and a lifeline of this test like any helper.
 			cmd := exec.Command(self, "-test.run=^TestLeakProbe$", "-test.count=1", "probe-of="+testToken)
-			cmd.Env = append(childEnv(t).Environ(), probeEnv+"="+mode, tokenEnv+"="+token,
+			// The probe's own temporary directories (t.TempDir) go below
+			// this test's: a probe that exits without its cleanup leaves
+			// nothing in the system's TMPDIR (TESTPLAN §1.8).
+			cmd.Env = append(childEnv(t).With("TMPDIR", t.TempDir()).Environ(), probeEnv+"="+mode, tokenEnv+"="+token,
 				lifelineEnv+"=3", helpersEnv+"="+helpersDir)
 			cmd.ExtraFiles = []*os.File{newLifeline(t).r}
 			goR, goW, err := os.Pipe()

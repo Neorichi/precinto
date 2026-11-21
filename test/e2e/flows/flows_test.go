@@ -126,6 +126,7 @@ func (x *e2e) runCmd(dir, exe string, args ...string) (int, string, string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
+	cmd.WaitDelay = 10 * time.Second // a worker holding the pipes cannot stall Wait
 	err := cmd.Run()
 	code := 0
 	if err != nil {

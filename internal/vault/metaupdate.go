@@ -147,6 +147,40 @@ func checkRepinStat(path string, st fsx.Stat, euid uint32) error {
 	return nil
 }
 
+// enrolledPath is the path a plugin factor was enrolled with (D80): its
+// PluginLink, or the pinned PluginPath for a factor enrolled before D80.
+// A repin never changes it, so it names the factor's binary in every vault
+// even while some vaults still pin the binary before a repin and others
+// the one after (a repin that failed half way).
+func enrolledPath(f Factor) string {
+	if f.PluginLink != "" {
+		return f.PluginLink
+	}
+	return f.PluginPath
+}
+
+// pluginTarget implements PluginTarget: the enrolled path resolved through
+// symlinks, which must keep the pinned binary's name and pass
+// checkRepinBinary (D75, D80).
+func pluginTarget(f Factor) (string, error) {
+	link := enrolledPath(f)
+	if !filepath.IsAbs(link) || filepath.Clean(link) != link || f.PluginPath == "" {
+		return "", fmt.Errorf("%w: factor %q has no absolute enrolled plugin path", fsx.ErrUnsafe, f.Name)
+	}
+	real, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		return "", err
+	}
+	real = filepath.Clean(real)
+	if want := filepath.Base(f.PluginPath); filepath.Base(real) != want {
+		return "", fmt.Errorf("%w: %s resolves to %s, not to a binary named %s", fsx.ErrUnsafe, link, real, want)
+	}
+	if err := checkRepinBinary(real); err != nil {
+		return "", err
+	}
+	return real, nil
+}
+
 func (s *Store) repinPlugin(name string) (string, string, error) {
 	if !validFactorName(name) {
 		return "", "", fmt.Errorf("vault: bad factor name %q", name)
@@ -155,7 +189,7 @@ func (s *Store) repinPlugin(name string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	var path, oldSHA string
+	var pinned Factor
 	var holders []string
 	for _, id := range ids {
 		v, err := s.open(id)
@@ -169,21 +203,25 @@ func (s *Store) repinPlugin(name string) (string, string, error) {
 		if f.Kind != FactorSE && f.Kind != FactorPlugin {
 			return "", "", fmt.Errorf("vault: factor %q is not plugin-backed", name)
 		}
+		// Vaults may pin different binaries of one enrolled path after a
+		// repin that failed half way; this repin brings them all to the
+		// binary the path leads to now.
 		switch {
-		case path == "":
-			path, oldSHA = f.PluginPath, f.PluginSHA256
-		case f.PluginPath != path:
-			return "", "", fmt.Errorf("vault: factor %q pins different binaries in different vaults", name)
+		case len(holders) == 0:
+			pinned = f
+		case enrolledPath(f) != enrolledPath(pinned) || filepath.Base(f.PluginPath) != filepath.Base(pinned.PluginPath):
+			return "", "", fmt.Errorf("vault: factor %q was enrolled with different binaries in different vaults", name)
 		}
 		holders = append(holders, id)
 	}
 	if len(holders) == 0 {
 		return "", "", fmt.Errorf("%w: factor %q", ErrNotFound, name)
 	}
-	if err := checkRepinBinary(path); err != nil {
+	target, err := pluginTarget(pinned)
+	if err != nil {
 		return "", "", err
 	}
-	newSHA, err := pinHash(path)
+	newSHA, err := pinHash(target)
 	if err != nil {
 		return "", "", err
 	}
@@ -194,13 +232,16 @@ func (s *Store) repinPlugin(name string) (string, string, error) {
 				if m.Factors[i].Name != name {
 					continue
 				}
-				if m.Factors[i].PluginPath != path {
+				if enrolledPath(m.Factors[i]) != enrolledPath(pinned) || filepath.Base(m.Factors[i].PluginPath) != filepath.Base(pinned.PluginPath) {
 					return false, fmt.Errorf("vault: factor %q changed while re-pinning", name)
 				}
-				if m.Factors[i].PluginSHA256 == newSHA {
+				if m.Factors[i].PluginSHA256 == newSHA && m.Factors[i].PluginPath == target {
 					return false, nil
 				}
-				m.Factors[i].PluginSHA256 = newSHA
+				if m.Factors[i].PluginLink == "" {
+					m.Factors[i].PluginLink = enrolledPath(m.Factors[i]) // enrolled before D80: that path is the link from now on
+				}
+				m.Factors[i].PluginPath, m.Factors[i].PluginSHA256 = target, newSHA
 				return true, nil
 			}
 			return false, fmt.Errorf("%w: factor %q", ErrNotFound, name)
@@ -209,5 +250,5 @@ func (s *Store) repinPlugin(name string) (string, string, error) {
 			errs = append(errs, fmt.Errorf("vault %s: %w", id, err))
 		}
 	}
-	return oldSHA, newSHA, errors.Join(errs...)
+	return pinned.PluginSHA256, newSHA, errors.Join(errs...)
 }

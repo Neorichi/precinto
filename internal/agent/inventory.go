@@ -59,26 +59,10 @@ func matchHarness(invs []harness.Inventory, c config.Config, id string, p platfo
 	}
 	for _, inv := range invs {
 		if inv.ID == id {
-			return inv.MatchProcess(p) || npmCodexLauncher(id, p)
+			return inv.MatchProcess(p)
 		}
 	}
 	return false
-}
-
-// npmCodexLauncher is a local adapter while inventories/codex.toml matches
-// only the native binary (reported to G3): an npm install runs node with
-// the codex bin script (…/bin/codex.js, or the /usr/local/bin/codex shim)
-// as argv[1], which is the process `precinto run codex` starts and
-// registers. Only for the built-in codex harness, never a zombie.
-func npmCodexLauncher(id string, p platform.ProcInfo) bool {
-	if id != string(harness.Codex) || p.ID.PID <= 0 || p.State == platform.StateZombie || len(p.Argv) < 2 {
-		return false
-	}
-	if !isInterpreter(p.Exe) && !isInterpreter(p.Argv[0]) {
-		return false
-	}
-	script := p.Argv[1]
-	return programName(script) == "codex" || strings.Contains(script, "/node_modules/@openai/codex/")
 }
 
 // harnessOfProc returns the enabled harness whose inventory matches p: the

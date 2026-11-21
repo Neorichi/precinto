@@ -663,8 +663,12 @@ func TestPeerSameExecutable(t *testing.T) {
 	}
 }
 
+// helperLifetime bounds every helper process whatever its lifeline does.
+const helperLifetime = 2 * time.Minute
+
 // TestIPCHelper is the body of helper processes (a no-op test otherwise).
-// Every mode exits when its lifeline (stdin) closes.
+// Every mode exits when its lifeline (stdin) closes, and after
+// helperLifetime in any case; nothing it does blocks without a deadline.
 func TestIPCHelper(t *testing.T) {
 	args := helperArgs()
 	if args == nil {
@@ -674,6 +678,7 @@ func TestIPCHelper(t *testing.T) {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		os.Exit(70) // the test went away
 	}()
+	time.AfterFunc(helperLifetime, func() { os.Exit(71) })
 	if extra, ok := helperModes[args[0]]; ok {
 		extra(args[1:])
 		os.Exit(0)
@@ -685,13 +690,22 @@ func TestIPCHelper(t *testing.T) {
 			os.Exit(2)
 		}
 		fmt.Println("ready")
+		// A client that gives up before connecting must not leave the
+		// helper in Accept: the test then fails on its bounded wait.
+		_ = ln.(*net.UnixListener).SetDeadline(time.Now().Add(time.Minute))
 		c, err := ln.Accept()
 		if err != nil {
 			os.Exit(3)
 		}
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, _ := io.Copy(io.Discard, c)
-		_ = os.WriteFile(args[2], []byte(strconv.FormatInt(n, 10)), 0o600)
+		// Count what the client sends before it hangs up, stopping at the
+		// first bytes: closing then makes a client waiting for an answer
+		// (an Insecure dial that sent hello) fail at once, however loaded
+		// the machine is.
+		_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
+		buf := make([]byte, 4096)
+		n, _ := c.Read(buf)
+		_ = c.Close()
+		_ = os.WriteFile(args[2], []byte(strconv.Itoa(n)), 0o600)
 		os.Exit(0)
 	case "dial": // dial <socket>: speak hello with raw frames
 		c, err := net.Dial("unix", args[1])

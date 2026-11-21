@@ -65,7 +65,8 @@ type Factor struct {
 	Kind           FactorKind `toml:"kind"`
 	Recipient      string     `toml:"recipient"`       // what the identity file is encrypted to ("" for passphrase)
 	IdentityStub   string     `toml:"identity_stub"`   // AGE-PLUGIN-…-1 handle (not secret; needed to unwrap)
-	PluginPath     string     `toml:"plugin_path"`     // pinned absolute path of age-plugin-<name> (every plugin-backed factor, se included)
+	PluginPath     string     `toml:"plugin_path"`     // pinned absolute path of age-plugin-<name>, symlinks resolved (every plugin-backed factor, se included); the only path ever run
+	PluginLink     string     `toml:"plugin_link"`     // the absolute path the factor was enrolled with, before resolving (e.g. /opt/homebrew/bin/age-plugin-se); RepinPlugin resolves it again (D80)
 	PluginSHA256   string     `toml:"plugin_sha256"`   // pinned hash, checked before every use (ErrPluginPin)
 	ScryptLogN     int        `toml:"scrypt_log_n"`    // passphrase only
 	PresencePolicy string     `toml:"presence_policy"` // e.g. "any-biometry-or-passcode", "touch-always"
@@ -122,8 +123,9 @@ type FactorSpec struct {
 	// "pin-always" | "pin-once" | "tpm-pin"; "" requires NoPresenceAck
 	// (S10); se keeps SEAccessControl. Recorded as Factor.PresencePolicy.
 	PresencePolicy string
-	// Passphrase is consumed (destroyed) by AddFactor, Init and Create:
-	// pass a fresh copy per vault.
+	// Passphrase is consumed (destroyed) by AddFactor and Init: pass a
+	// fresh copy per call (Create takes no FactorSpec: it asks through
+	// the UI).
 	Passphrase    *memguard.LockedBuffer
 	ScryptLogN    int  // 0 = calibrate
 	NoPresenceAck bool // accept a plugin factor without a known presence policy (S10)
@@ -204,14 +206,26 @@ func (s *Store) MarkAudited(id string, at time.Time) error { return s.markAudite
 // MarkAudited it never moves the time backwards and refuses the future.
 func (s *Store) MarkRecoveryVerified(at time.Time) error { return s.markRecoveryVerified(at) }
 
-// RepinPlugin re-pins factor name in every vault to the binary now at its
-// pinned path, which must be a regular file (not a symlink) owned by root
-// or the user and not group- or other-writable. It returns the previous
-// and the new SHA-256. The caller showed both hashes and obtained the
-// typed word on a TTY (D75); ErrNotFound when no vault has the factor.
+// RepinPlugin re-pins factor name in every vault to the binary its
+// enrolled path resolves to now (Factor.PluginLink; the pinned PluginPath
+// for a factor enrolled before it existed), D75, D80: after a Homebrew
+// upgrade the link points into a new Cellar version and the old one is
+// gone. The resolved binary must be named like the pinned one
+// (age-plugin-<name>) and be a regular file owned by root or the user and
+// not group- or other-writable (else ErrUnsafe). Every vault gets the new
+// PluginPath and SHA-256; a vault that failed is reported in the joined
+// error and a later RepinPlugin completes the others (vaults that already
+// pin the new binary are left as they are). It returns the previous and the
+// new SHA-256; the caller showed both hashes and both paths (PluginTarget)
+// and obtained the typed word on a TTY. ErrNotFound when no vault has the
+// factor.
 func (s *Store) RepinPlugin(name string) (oldSHA, newSHA string, err error) {
 	return s.repinPlugin(name)
 }
+
+// PluginTarget returns what RepinPlugin would pin for f now: the path its
+// enrolled path resolves to (D80), checked like RepinPlugin checks it.
+func PluginTarget(f Factor) (string, error) { return pluginTarget(f) }
 
 // RepairOptions configures Store.Repair (D53).
 type RepairOptions struct {

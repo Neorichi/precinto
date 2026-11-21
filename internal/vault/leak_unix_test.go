@@ -4,12 +4,14 @@ package vault
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // reapLeakedHelpers kills and reaps every child of this test process still
@@ -47,7 +49,9 @@ func childProcesses() ([]int, error) {
 	if ps == "" {
 		return nil, fmt.Errorf("no ps")
 	}
-	cmd := exec.Command(ps, "-A", "-o", "pid=", "-o", "ppid=")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ps, "-A", "-o", "pid=", "-o", "ppid=")
 	cmd.Env = []string{"PATH=/bin:/usr/bin", "LC_ALL=C"}
 	var out bytes.Buffer
 	cmd.Stdout = &out

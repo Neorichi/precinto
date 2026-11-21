@@ -19,7 +19,7 @@ import (
 // These paths touch no other package, so they run in every worktree.
 func TestBinaryUsageAndExitCodes(t *testing.T) {
 	exe := needBinary(t)
-	h := testkit.NewHome(t)
+	h := newHome(t)
 	r := precinto(t, exe, h, h.Root, nil, "")
 	if r.code != 2 || !strings.Contains(r.stderr, "usage: precinto <command>") {
 		t.Fatalf("no args: %+v", r)
@@ -69,7 +69,7 @@ func TestBinaryUsageAndExitCodes(t *testing.T) {
 // --insecure-key-file (SEC-21).
 func TestBinaryRefusalsBeforeAnyWork(t *testing.T) {
 	exe := needBinary(t)
-	h := testkit.NewHome(t)
+	h := newHome(t)
 	if r := precinto(t, exe, h, h.Root, nil, "", "cat", "x.md.precinto"); r.code != 2 || !strings.Contains(r.stderr, "only to a terminal") {
 		t.Errorf("cat to a pipe: %+v", r)
 	}
@@ -86,7 +86,7 @@ func TestBinaryRefusalsBeforeAnyWork(t *testing.T) {
 // deferred, exit 2 (D49).
 func TestBinaryServiceInFakeHome(t *testing.T) {
 	exe := needBinary(t)
-	h := testkit.NewHome(t)
+	h := newHome(t)
 	// The pinned link the plist names (integrate writes it in real use).
 	if err := os.MkdirAll(filepath.Dir(h.Layout.BinLink), 0o700); err != nil {
 		t.Fatal(err)
@@ -155,19 +155,18 @@ func TestTestdataHygiene(t *testing.T) {
 	}
 }
 
-// D41: plugins/codex/ is byte-identical across releases (Codex's trust hash
-// covers every file of the plugin root). Once the root is frozen (after
-// E2E-9, D61) its SHA-256 list is recorded in testdata/codex-plugin.sha256
-// ("<hex>  <path relative to plugins/codex>" per line) and any drift fails.
+// D41, D78: plugins/codex/ is byte-identical across releases (Codex's
+// trust hash covers every file of the plugin root). Its SHA-256 list is
+// recorded in testdata/codex-plugin.sha256 ("<hex>  <path relative to
+// plugins/codex>" per line, "#" comments): any drift fails, so a change to
+// the root is a deliberate edit of the list in the same change until E2E-9
+// freezes the root (D61), and impossible after that.
 func TestCodexPluginByteStable(t *testing.T) {
 	root := moduleRoot(t)
 	list := filepath.Join("testdata", "codex-plugin.sha256")
 	f, err := os.Open(list)
-	if os.IsNotExist(err) {
-		t.Skip("plugins/codex/ is not frozen yet (D61): no recorded SHA-256 list")
-	}
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the recorded SHA-256 list of plugins/codex/ (D78): %v", err)
 	}
 	defer f.Close()
 	want := map[string]string{}

@@ -172,6 +172,7 @@ func (s *sandbox) run(dir string, timeout time.Duration, extra []string, argv ..
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.WaitDelay = 10 * time.Second // a straggler holding the output pipe cannot stall Wait
 	err := cmd.Run()
 	code := 0
 	var ee *exec.ExitError
@@ -376,12 +377,9 @@ func questions() []question {
 	return []question{
 		{re: catalog(ui.MsgPassphraseNew, ui.Vars{}), reply: e2ePassphrase},
 		{re: catalog(ui.MsgPassphraseAgain, ui.Vars{}), reply: e2ePassphrase},
+		// The daemon relays the passphrase factor's prompt as C2.passphrase
+		// for the folder (agent unlock.go isPassphrasePrompt).
 		{re: catalog(ui.MsgUnlockPassphrase, ui.Vars{Folder: folder}), reply: e2ePassphrase},
-		// The daemon names the folder before a factor's own prompt when it
-		// relays one it does not replace with C2.passphrase (agent
-		// unlock.go); the passphrase factor's prompt is "precinto
-		// passphrase".
-		{re: regexp.MustCompile(regexp.QuoteMeta("precinto: "+folder+": ") + `[^\r\n]*passphrase[^\r\n]*`), reply: e2ePassphrase},
 		{re: catalog(ui.MsgCodexConsent, ui.Vars{Folder: folder}), reply: "y"},
 		// A test never installs a LaunchAgent: it would load into the
 		// user's own launchd session.
@@ -396,9 +394,10 @@ func questions() []question {
 		{re: catalog(ui.MsgInitRefuseAgent, ui.Vars{}), fail: "init refused an agent context (is PRECINTO_TEST_ANCESTRY_STOP honoured?)"},
 		{re: catalog(ui.MsgRefuseAgent, ui.Vars{Action: "\x00a", Folder: "\x00f", Command: "\x00c"}, "\x00a", "\x00f", "\x00c"), fail: "refused as an agent context"},
 		{re: catalog(ui.MsgNeedTerminal, ui.Vars{Command: "\x00c"}, "\x00c"), fail: "the command saw no terminal"},
-		// unlock lists pending weakening edits (C13.policy) and then asks
-		// whether to confirm them (a [y/N] question of the CLI's own text).
-		{re: regexp.MustCompile(catalog(ui.MsgPolicyPending, ui.Vars{N: n}, "987654").String() + `[\s\S]*?\[y/N\]`), policy: true},
+		// unlock lists pending weakening edits (C13.policy, with {n} the
+		// test cannot know) and then asks whether to confirm them
+		// (C13.confirm).
+		{re: regexp.MustCompile(catalog(ui.MsgPolicyPending, ui.Vars{N: n}, "987654").String() + `[\s\S]*?` + catalog(ui.MsgPolicyConfirm, ui.Vars{}).String()), policy: true},
 	}
 }
 

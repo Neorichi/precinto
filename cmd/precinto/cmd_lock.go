@@ -45,7 +45,7 @@ func cmdUnlock(a *app, args []string) int {
 	if err != nil {
 		return a.fail("unlock", err)
 	}
-	req := ipc.UnlockReq{Factor: *factor, TTL: *dur, Extend: *extend, Deadline: a.now().Add(unlockDeadline)}
+	req := ipc.UnlockReq{Factor: *factor, TTL: *dur, Extend: *extend, Deadline: wireDeadline(unlockDeadline)}
 	var targets []config.Root
 	pick := false // outside every folder, on a terminal: choose (DC-35)
 	switch {
@@ -162,7 +162,7 @@ func cmdUnlock(a *app, args []string) int {
 	// D48: weakening config edits wait for an interactive confirmation.
 	if len(resp.Pending) > 0 && t != nil {
 		a.showPending(resp.Pending)
-		if ok, err := t.YesNo(textPolicyConfirm, false); err == nil && ok {
+		if ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false); err == nil && ok {
 			if _, err := c.Policy(ctx, ipc.PolicyReq{Confirm: true}); err != nil {
 				return a.fail("unlock", err)
 			}

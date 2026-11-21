@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/precinto/precinto/internal/hook"
 	"github.com/precinto/precinto/internal/ipc"
@@ -239,8 +240,25 @@ func (d *fakeDaemon) Register(ctx context.Context, r ipc.RegisterReq) error {
 	return nil
 }
 
+// wireDeadline is how a golden records UnlockReq.Deadline: real time (D77),
+// so never a date. The hook must send exactly the deadline of the context
+// it calls Unlock with; any other value is recorded as such and fails the
+// golden.
+const wireDeadline = "real time: the deadline of the unlock context (D77)"
+
+// unlockCall is an UnlockReq as goldens record it: Deadline shadows the
+// embedded field (encoding/json takes the shallower one).
+type unlockCall struct {
+	ipc.UnlockReq
+	Deadline string `json:"deadline"`
+}
+
 func (d *fakeDaemon) Unlock(ctx context.Context, r ipc.UnlockReq, ui ipc.UIHandler) (ipc.UnlockResp, error) {
-	d.rec.record("unlock", r)
+	c := unlockCall{UnlockReq: r, Deadline: r.Deadline.Format(time.RFC3339Nano)}
+	if dl, ok := ctx.Deadline(); ok && r.Deadline.Equal(dl) {
+		c.Deadline = wireDeadline
+	}
+	d.rec.record("unlock", c)
 	if d.spec.UnlockError != "" {
 		return ipc.UnlockResp{}, &ipc.Error{Code: ipc.Code(d.spec.UnlockError), Msg: "fake"}
 	}

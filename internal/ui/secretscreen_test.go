@@ -43,6 +43,10 @@ func TestShowSecretScreen(t *testing.T) {
 	if _, err := await(t, ch); err != nil {
 		t.Fatalf("ShowSecretScreen: %v", err)
 	}
+	// The terminal reader polls the master: wait until the cleanup the
+	// screen wrote before returning has been read, never just the bytes
+	// read so far (a loaded machine delays the reader).
+	p.waitOutput(clearScreen + clearScroll + iTermClear + leaveAlt)
 	out := p.output()
 
 	if !strings.HasPrefix(out, enterAlt) {
@@ -132,6 +136,7 @@ func TestShowSecretScreenCancel(t *testing.T) {
 			if _, err := await(t, ch); !errors.Is(err, ui.ErrCancelled) {
 				t.Fatalf("ShowSecretScreen + %s = %v, want ErrCancelled", name, err)
 			}
+			p.waitOutput(clearScreen + clearScroll + iTermClear + leaveAlt) // read by the terminal reader
 			if out := p.output(); !strings.HasSuffix(out, clearScreen+clearScroll+iTermClear+leaveAlt) {
 				t.Errorf("screen not cleared after cancel: %q", out)
 			}

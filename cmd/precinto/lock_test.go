@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/vault"
@@ -320,5 +321,37 @@ func TestUnlockAlreadyUnlocked(t *testing.T) {
 	}
 	if !strings.Contains(e.stderr(), "~/work/acme is already unlocked.") {
 		t.Fatalf("stderr %q", e.stderr())
+	}
+}
+
+// TestUnlockDeadlineIsRealTime (D77): the deadline an unlock sends is real
+// time (wireDeadline), because the daemon checks it with its own clock;
+// the CLI's injected clock — here frozen decades or a year away from the
+// system clock — never reaches the wire.
+func TestUnlockDeadlineIsRealTime(t *testing.T) {
+	const year = 365 * 24 * time.Hour
+	for name, start := range map[string]time.Time{
+		"epoch":                      testkit.Epoch,
+		"30 years before epoch":      testkit.Epoch.Add(-30 * year),
+		"70 years after epoch":       testkit.Epoch.Add(70 * year),
+		"a year behind the system":   time.Now().Add(-year).Round(0),
+		"a year ahead of the system": time.Now().Add(year).Round(0),
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.h.Clock = fakeplatform.NewClock(start)
+			e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{"root-acme"}, Until: start.Add(8 * time.Hour)}
+			before := time.Now()
+			if code := e.run("unlock"); code != exitOK {
+				t.Fatalf("exit %d (%s)", code, e.stderr())
+			}
+			after := time.Now()
+			if len(e.daemon.unlocks) != 1 {
+				t.Fatalf("%d unlock requests", len(e.daemon.unlocks))
+			}
+			if dl := e.daemon.unlocks[0].Deadline; dl.Before(before.Add(unlockDeadline)) || dl.After(after.Add(unlockDeadline)) {
+				t.Fatalf("deadline %v, want real time %v after [%v, %v] (CLI clock %v)", dl, unlockDeadline, before, after, start)
+			}
+		})
 	}
 }

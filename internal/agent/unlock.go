@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/awnumar/memguard"
@@ -96,10 +97,13 @@ func (u *relayUI) Secret(prompt string) (*memguard.LockedBuffer, error) {
 }
 
 // isPassphrasePrompt reports a generic passphrase prompt that the daemon's
-// C2.passphrase text replaces.
+// C2.passphrase text replaces: the passphrase factor's own prompt
+// (internal/vault promptPassphrase, "precinto passphrase") and the usual
+// generic wordings.
 func isPassphrasePrompt(p string) bool {
-	switch p {
-	case "passphrase", "Passphrase", "Enter passphrase", "Enter passphrase:", "passphrase:":
+	switch strings.TrimSpace(p) {
+	case "precinto passphrase", "precinto passphrase:",
+		"passphrase", "Passphrase", "Enter passphrase", "Enter passphrase:", "passphrase:":
 		return true
 	}
 	return false

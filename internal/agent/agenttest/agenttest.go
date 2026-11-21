@@ -46,11 +46,15 @@ var errNoPinentry = errors.New("agenttest: pinentry is not available in tests")
 // (see Spawned), Screen returns the state set with SetScreen (unlocked,
 // HID idle unknown by default), and Pinentry is a stub that always fails,
 // so no pinentry program can run from a test whatever process table is
-// used (the daemon reports vault.ErrNoUI, ipc.CodeNoUI).
+// used (the daemon reports vault.ErrNoUI, ipc.CodeNoUI). A nil clock is
+// fakeplatform.NewRealClock (a daemon whose caller chose no clock never
+// disagrees with real time, D77); a nil procs is an empty table. The
+// daemon's state machine runs on clock; the deadlines of requests it
+// serves are real time, like a real daemon's (UnlockForTest).
 func Start(t testing.TB, l paths.Layout, clock *fakeplatform.Clock, procs *fakeplatform.Procs) *Agent {
 	t.Helper()
 	if clock == nil {
-		clock = fakeplatform.NewClock(time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC))
+		clock = fakeplatform.NewRealClock()
 	}
 	if procs == nil {
 		procs = fakeplatform.NewProcs()

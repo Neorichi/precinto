@@ -269,7 +269,7 @@ type ActivityReq struct {
 	Kind     ActivityKind `json:"kind"`
 	PromptID string       `json:"prompt_id,omitempty"`
 	TurnID   string       `json:"turn_id,omitempty"`
-	At       time.Time    `json:"at"`
+	At       time.Time    `json:"at"` // the client's time of the activity, informational: the daemon times activity with its own clock (D54, D77)
 }
 
 // RegisterReq announces a live harness process. The daemon measures the
@@ -314,8 +314,8 @@ type UnlockReq struct {
 	TTY         bool          `json:"tty"`       // the client can prompt on a terminal
 	Confirmed   bool          `json:"confirmed"` // the client obtained typed confirmation for multi-root
 	FromHook    bool          `json:"from_hook,omitempty"`
-	SID         string        `json:"sid,omitempty"` // hook: the session requesting it
-	Deadline    time.Time     `json:"deadline"`
+	SID         string        `json:"sid,omitempty"`          // hook: the session requesting it
+	Deadline    time.Time     `json:"deadline"`               // real time (the client's time.Now): the daemon bounds the unlock with it on its own clock; never from a test clock (D77)
 	ConfirmDiff bool          `json:"confirm_diff,omitempty"` // also confirm pending policy changes (D48)
 	// AgentMarkers are the client's own paths.AgentMarkers: a
 	// self-restricting claim. The daemon unions it with the ancestry and

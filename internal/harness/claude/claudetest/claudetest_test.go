@@ -126,7 +126,8 @@ func TestWriteSessionLayoutMatchesSpec(t *testing.T) {
 		{`claude/projects/` + slug + `/memory/MEMORY\.md`, 1, false},
 		{`claude/plans/` + plan + `\.md`, 1, false},
 		{`claude/plans/` + plan + `-agent-[0-9a-f]{8}\.md`, 1, false},
-		{`cache/claude-cli-nodejs/` + slug + `/mcp-logs-claudetest/2026-11-21T08-59-30-000Z\.jsonl`, 1, false},
+		// Named after the session's first record, 30 s before its last (ModTime).
+		{`cache/claude-cli-nodejs/` + slug + `/mcp-logs-claudetest/` + regexp.QuoteMeta(modTime.Add(-30*time.Second).Format("2006-01-02T15-04-05-000Z")) + `\.jsonl`, 1, false},
 	}
 	counts := make([]int, len(layout))
 	seen := map[string]bool{}
