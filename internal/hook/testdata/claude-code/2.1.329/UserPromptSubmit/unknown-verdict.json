@@ -1,0 +1,121 @@
+{
+  "comment": "an unknown verdict is no allow",
+  "args": [
+    "claude-code",
+    "UserPromptSubmit"
+  ],
+  "env": {
+    "CLAUDECODE": "1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli",
+    "CLAUDE_PID": "4242",
+    "CLAUDE_PLUGIN_ROOT": "/u/.claude/plugins/cache/precinto/precinto/0.2.0",
+    "CLAUDE_PROJECT_DIR": "/u/work/acme",
+    "HOME": "/u",
+    "PATH": "/usr/bin:/bin",
+    "PWD": "/u/work/acme"
+  },
+  "stdin": {
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+    "transcript_path": "/u/.claude/projects/-u-work-acme/00000000-0000-4000-8000-000000000001.jsonl",
+    "cwd": "/u/work/acme",
+    "scratchpad_dir": "/tmp/claude-501/-u-work-acme/00000000-0000-4000-8000-000000000001/scratchpad",
+    "permission_mode": "default",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "synthetic prompt text"
+  },
+  "procs": [
+    {
+      "pid": 4242,
+      "ppid": 4000,
+      "start_us": 1763715000000000,
+      "exe": "/u/.local/share/claude/versions/2.1.329",
+      "tty": "/dev/ttys003"
+    },
+    {
+      "pid": 9002,
+      "ppid": 4242,
+      "start_us": 1763715600000000,
+      "exe": "/bin/sh"
+    },
+    {
+      "pid": 9001,
+      "ppid": 9002,
+      "start_us": 1763715600000001,
+      "exe": "/bin/sh"
+    },
+    {
+      "pid": 9000,
+      "ppid": 9001,
+      "start_us": 1763715600000002,
+      "exe": "/u/Library/Application Support/precinto/bin/precinto"
+    }
+  ],
+  "self_pid": 9000,
+  "daemon": {
+    "gate": {
+      "verdict": "maybe",
+      "state": "unlocked",
+      "root_ids": [
+        "root-acme"
+      ],
+      "origin": "human"
+    }
+  },
+  "want": {
+    "exit": 0,
+    "stdout": "{\"decision\":\"block\",\"reason\":\"precinto: the precinto agent isn't running, so ~/work/acme stays locked. Run precinto unlock in a terminal.\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"suppressOriginalPrompt\":true}}",
+    "stderr": "",
+    "calls": [
+      {
+        "op": "gate",
+        "req": {
+          "harness": "claude-code",
+          "host": "claude-code",
+          "event": "UserPromptSubmit",
+          "sid": "00000000-0000-4000-8000-000000000001",
+          "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+          "cwd": "/u/work/acme",
+          "project_dir": "/u/work/acme",
+          "roots": [
+            "root-acme"
+          ],
+          "pid": 4242
+        }
+      }
+    ],
+    "ledger": [
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "start",
+        "harness": "claude-code",
+        "sid": "00000000-0000-4000-8000-000000000001",
+        "proc": {
+          "pid": 4242,
+          "start_us": 1763715000000000
+        },
+        "cwd": "/u/work/acme",
+        "project_dir": "/u/work/acme",
+        "transcript": "/u/.claude/projects/-u-work-acme/00000000-0000-4000-8000-000000000001.jsonl",
+        "config_dir": "/u/.claude",
+        "tmp_dir": "/tmp/claude-501",
+        "entrypoint": "cli"
+      },
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "taint",
+        "harness": "claude-code",
+        "sid": "00000000-0000-4000-8000-000000000001",
+        "proc": {
+          "pid": 4242,
+          "start_us": 1763715000000000
+        },
+        "roots": [
+          "root-acme"
+        ]
+      }
+    ]
+  }
+}

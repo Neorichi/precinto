@@ -1,0 +1,13 @@
+{
+  "name": "precinto",
+  "owner": {
+    "name": "precinto contributors"
+  },
+  "plugins": [
+    {
+      "name": "precinto",
+      "source": "./plugin",
+      "description": "Keeps agent sessions in protected folders sealed at rest; pauses prompts and tools while a folder is locked."
+    }
+  ]
+}

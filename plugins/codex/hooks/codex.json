@@ -1,0 +1,15 @@
+{
+  "description": "precinto: gate and seal Codex sessions in protected folders",
+  "hooks": {
+    "SessionStart": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex SessionStart", "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex UserPromptSubmit", "timeout": 90 }] }],
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PreToolUse", "timeout": 10 }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PermissionRequest", "timeout": 10 }] }],
+    "PostToolUse": [{ "matcher": "apply_patch|Edit|Write", "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PostToolUse", "timeout": 10 }] }],
+    "PreCompact": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PreCompact", "timeout": 10 }] }],
+    "PostCompact": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PostCompact", "async": true }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex Stop", "async": true }] }],
+    "Interrupt": [{ "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex Interrupt", "timeout": 3 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex SessionEnd", "timeout": 3 }] }]
+  }
+}

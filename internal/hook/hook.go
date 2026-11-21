@@ -66,7 +66,7 @@ const (
 
 // IsGate reports whether ev can block on host (prompt, tool, compaction or
 // permission gate).
-func IsGate(host Host, ev Event) bool { panic("unimplemented: hook.IsGate") }
+func IsGate(host Host, ev Event) bool { return isGate(host, ev) }
 
 // Timing is the harness timeout declared in the hooks file and the hook's
 // own deadline, which must end strictly before it (D22).
@@ -77,7 +77,7 @@ type Timing struct {
 }
 
 // Timings returns the normative timing for host/event (docs/HOOKS-IO.md §1).
-func Timings(host Host, ev Event) Timing { panic("unimplemented: hook.Timings") }
+func Timings(host Host, ev Event) Timing { return timings(host, ev) }
 
 // DetectHost identifies the real host (HA21, D56; docs/HOOKS-IO.md §0.7),
 // first match wins: other-host markers (CURSOR_VERSION/CURSOR_PLUGIN_ROOT ⇒
@@ -89,7 +89,7 @@ func Timings(host Host, ev Event) Timing { panic("unimplemented: hook.Timings") 
 // hooks file that invoked it. HostUnknown only for an unrecognised label
 // with no markers. A missing marker never makes a gate fail open.
 func DetectHost(label string, env paths.Env, raw []byte) Host {
-	panic("unimplemented: hook.DetectHost")
+	return detectHost(label, env, raw)
 }
 
 // Payload is the normalized, content-free view of one invocation. Raw
@@ -126,7 +126,7 @@ type Payload struct {
 // Decode reads at most MaxPayload bytes of raw (already read from stdin)
 // and the environment into a Payload.
 func Decode(host Host, label string, ev Event, raw []byte, env paths.Env, procs platform.ProcTable) (Payload, error) {
-	panic("unimplemented: hook.Decode")
+	return decode(host, label, ev, raw, env, procs)
 }
 
 // Decision is what the hook answers.
@@ -150,13 +150,13 @@ type Output struct {
 // ExitBlockCode2; Codex PreCompact: {"continue":false,"stopReason":…};
 // Codex SessionStart: nothing in v0.2; allow: empty stdout, exit 0). It
 // never emits keys a host does not accept (Codex deny_unknown_fields).
-func Encode(host Host, ev Event, d Decision) Output { panic("unimplemented: hook.Encode") }
+func Encode(host Host, ev Event, d Decision) Output { return encode(host, ev, d) }
 
 // FailClosed returns the static block/deny output used on every error path
 // of a gate event in a managed session (daemon unreachable, decode error,
 // deadline, panic) (I5), in the format of host (the detected host, which
 // defaults to the argv label, D56).
-func FailClosed(host Host, ev Event, folder string) Output { panic("unimplemented: hook.FailClosed") }
+func FailClosed(host Host, ev Event, folder string) Output { return failClosed(host, ev, folder) }
 
 // Daemon is the subset of the ipc client the hook uses (fakeable;
 // *ipc.Client implements it, asserted in cmd/precinto).
@@ -202,12 +202,12 @@ type Deps struct {
 // unreachable), optional GUI unlock for human prompts, activity, and the
 // SessionEnd seal request. It never blocks SessionStart and never prompts
 // from it.
-func Handle(ctx context.Context, d Deps, p Payload) Decision { panic("unimplemented: hook.Handle") }
+func Handle(ctx context.Context, d Deps, p Payload) Decision { return handle(ctx, d, p, nil) }
 
 // Main is the whole `precinto hook <label> <event>` command: platform
 // hardening, deadline from Timings, panic recovery (fail closed for managed
 // gate events, exit 0 otherwise), Decode, Handle, Encode. It returns the
 // process exit code.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, env paths.Env) int {
-	panic("unimplemented: hook.Main")
+	return run(args, stdin, stdout, stderr, env, productionSystem())
 }

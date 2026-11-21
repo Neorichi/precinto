@@ -1,0 +1,249 @@
+#!/bin/sh
+# precinto hook shim (docs/HOOKS-IO.md section 5).
+# Usage: sh precinto-hook HARNESS EVENT, with the hook payload on stdin.
+#
+# plugin/scripts/precinto-hook and plugins/codex/scripts/precinto-hook are
+# byte-identical and frozen: Codex's trust hash covers every byte of its
+# plugin (D41), so an edit disables precinto's Codex hooks until the user
+# trusts them again. The shim reads no variable of the PRECINTO_ family:
+# hooks run inside an agent session, whose settings can inject them (D56).
+# It forks once, for the binary, and never prints an OS error.
+
+# D.shim (ui.MsgShimFailed), frozen with these bytes.
+msg='precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor'
+
+# macOS: precinto's base and its path comparisons (ASCII case folded).
+mac=
+if [ -d /System/Library/CoreServices ]; then
+	mac=1
+fi
+
+# <base> (SPEC section 6.1), from HOME and, off macOS, XDG_DATA_HOME.
+base=
+case ${HOME-} in
+/*)
+	if [ -n "$mac" ]; then
+		base="$HOME/Library/Application Support/precinto"
+	else
+		case ${XDG_DATA_HOME-} in
+		/*) base="$XDG_DATA_HOME/precinto" ;;
+		*) base="$HOME/.local/share/precinto" ;;
+		esac
+	fi
+	;;
+esac
+
+usable() {
+	[ -f "$1" ] && [ -x "$1" ]
+}
+
+# Step 1: the binary, first match wins: <base>/bin/precinto, precinto on
+# PATH (absolute entries only), then the usual install locations.
+bin=
+if [ -n "$base" ] && usable "$base/bin/precinto"; then
+	bin="$base/bin/precinto"
+else
+	oifs=$IFS
+	IFS=:
+	set -f
+	# Split on ':' (globbing is off): unquoted on purpose.
+	# shellcheck disable=SC2086
+	for d in ${PATH-}; do
+		case $d in
+		/*)
+			if usable "$d/precinto"; then
+				bin="$d/precinto"
+				break
+			fi
+			;;
+		esac
+	done
+	IFS=$oifs
+	set +f
+	if [ -z "$bin" ]; then
+		# ~/go/bin only with an absolute HOME (base is empty otherwise).
+		for d in /opt/homebrew/bin /usr/local/bin "${base:+$HOME/go/bin}"; do
+			if [ -n "$d" ] && usable "$d/precinto"; then
+				bin="$d/precinto"
+				break
+			fi
+		done
+	fi
+fi
+
+# Step 2: run the binary in a command substitution, never replacing the
+# shim with it, so that its failures are handled below. The substitution
+# execs the binary (one fork) with stdin passed through and its stdout and
+# stderr captured; run is called with stderr on /dev/null so that no shell
+# message about the run (a failed exec, a killed process) reaches the
+# harness.
+run() {
+	out=$(exec "$bin" hook "$1" "$2" 2>&1)
+	rc=$?
+}
+
+if [ -n "$bin" ]; then
+	run "$1" "$2" 2>/dev/null
+	case $rc in
+	0)
+		# Allow (nothing) or one JSON object; anything else is a failed run.
+		case $out in
+		'')
+			exit 0
+			;;
+		'{'*'}')
+			printf '%s' "$out"
+			exit 0
+			;;
+		esac
+		;;
+	10)
+		# The intended "exit 2" block, with its reason (D43).
+		if [ -n "$out" ]; then
+			printf '%s\n' "$out" >&2
+			exit 2
+		fi
+		;;
+	esac
+fi
+
+# Step 3: the binary is missing or failed (exit 1, a Go runtime exit 2, a
+# signal, unexpected output). Gate events inside a folder of roots.list get
+# the harness's static block; everything else exits 0. stdin is not read.
+
+lower() {
+	low=
+	s=$1
+	while [ -n "$s" ]; do
+		t=${s#?}
+		c=${s%"$t"}
+		case $c in
+		A) c=a ;; B) c=b ;; C) c=c ;; D) c=d ;; E) c=e ;; F) c=f ;; G) c=g ;;
+		H) c=h ;; I) c=i ;; J) c=j ;; K) c=k ;; L) c=l ;; M) c=m ;; N) c=n ;;
+		O) c=o ;; P) c=p ;; Q) c=q ;; R) c=r ;; S) c=s ;; T) c=t ;; U) c=u ;;
+		V) c=v ;; W) c=w ;; X) c=x ;; Y) c=y ;; Z) c=z ;;
+		esac
+		low=$low$c
+		s=$t
+	done
+}
+
+# key PATH: the comparison form of PATH in k (no trailing slash; ASCII case
+# folded on macOS, as paths.Within compares).
+key() {
+	k=$1
+	while :; do
+		case $k in
+		/) break ;;
+		*/) k=${k%/} ;;
+		*) break ;;
+		esac
+	done
+	if [ -n "$mac" ]; then
+		lower "$k"
+		k=$low
+	fi
+}
+
+# under ROOT DIR: DIR is ROOT or lies below it, component by component.
+under() {
+	if [ "$1" = / ]; then
+		return 0
+	fi
+	case $2 in
+	"$1" | "$1"/*) return 0 ;;
+	esac
+	return 1
+}
+
+# inside: $PWD or $CLAUDE_PROJECT_DIR lies inside a folder of roots.list.
+inside() {
+	if [ -z "$base" ] || [ ! -f "$base/roots.list" ] || [ ! -r "$base/roots.list" ]; then
+		return 1
+	fi
+	p=
+	q=
+	case ${PWD-} in
+	/*)
+		key "$PWD"
+		p=$k
+		;;
+	esac
+	case ${CLAUDE_PROJECT_DIR-} in
+	/*)
+		key "$CLAUDE_PROJECT_DIR"
+		q=$k
+		;;
+	esac
+	if [ -z "$p" ] && [ -z "$q" ]; then
+		return 1
+	fi
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+		/*) ;;
+		*) continue ;;
+		esac
+		key "$line"
+		if [ -n "$p" ] && under "$k" "$p"; then
+			return 0
+		fi
+		if [ -n "$q" ] && under "$k" "$q"; then
+			return 0
+		fi
+	done 2>/dev/null <"$base/roots.list"
+	return 1
+}
+
+case $2 in
+UserPromptSubmit | PreToolUse | PermissionRequest | PreCompact) ;;
+beforeSubmitPrompt | preToolUse | beforeShellExecution | beforeMCPExecution | beforeReadFile) ;;
+*) exit 0 ;;
+esac
+
+if ! inside; then
+	exit 0
+fi
+
+case $1 in
+codex)
+	if [ "$2" = PreCompact ]; then
+		printf '{"continue":false,"stopReason":"%s"}' "$msg"
+		exit 0
+	fi
+	printf '%s\n' "$msg" >&2
+	exit 2
+	;;
+cursor)
+	if [ "$2" = beforeSubmitPrompt ]; then
+		printf '{"continue":false,"user_message":"%s"}' "$msg"
+	else
+		printf '{"permission":"deny","user_message":"%s","agent_message":"%s"}' "$msg" "$msg"
+	fi
+	exit 0
+	;;
+copilot)
+	printf '{"permissionDecision":"deny","permissionDecisionReason":"%s"}' "$msg"
+	exit 0
+	;;
+esac
+
+# claude-code and the hosts that read its hooks file (Droid).
+case $2 in
+UserPromptSubmit)
+	printf '{"decision":"block","reason":"%s","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","suppressOriginalPrompt":true}}' "$msg"
+	;;
+PreToolUse)
+	printf '{"continue":false,"stopReason":"%s","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$msg" "$msg"
+	;;
+PermissionRequest)
+	printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"%s"}}}' "$msg"
+	;;
+PreCompact)
+	printf '{"decision":"block","reason":"%s"}' "$msg"
+	;;
+*)
+	printf '%s\n' "$msg" >&2
+	exit 2
+	;;
+esac
+exit 0

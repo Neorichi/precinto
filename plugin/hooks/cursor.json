@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor beforeSubmitPrompt", "timeout": 90, "failClosed": true }],
+    "preToolUse": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor preToolUse", "timeout": 10, "failClosed": true }],
+    "beforeShellExecution": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor beforeShellExecution", "timeout": 10, "failClosed": true }],
+    "beforeReadFile": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor beforeReadFile", "timeout": 10, "failClosed": true }],
+    "afterFileEdit": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor afterFileEdit", "timeout": 10 }],
+    "preCompact": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor preCompact", "timeout": 10 }],
+    "stop": [{ "command": "sh \"${CURSOR_PLUGIN_ROOT}/scripts/precinto-hook\" cursor stop", "timeout": 10 }]
+  }
+}

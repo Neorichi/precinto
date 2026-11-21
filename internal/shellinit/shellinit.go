@@ -22,18 +22,18 @@ type Options struct {
 }
 
 // Script returns the integration snippet for o.Shell.
-func Script(o Options) (string, error) { panic("unimplemented: shellinit.Script") }
+func Script(o Options) (string, error) { return script(o) }
 
 // InstallLine returns the rc-file line (`eval "$(precinto shell-init zsh)"`).
-func InstallLine(shell string) string { panic("unimplemented: shellinit.InstallLine") }
+func InstallLine(shell string) string { return installLine(shell) }
 
 // RCFile returns the rc file for shell under home (~/.zshrc, ~/.bashrc,
 // ~/.config/fish/config.fish).
-func RCFile(shell, home string) string { panic("unimplemented: shellinit.RCFile") }
+func RCFile(shell, home string) string { return rcFile(shell, home) }
 
 // Install appends InstallLine to the rc file once (idempotent), only after
 // the caller obtained consent.
-func Install(shell, home string) error { panic("unimplemented: shellinit.Install") }
+func Install(shell, home string) error { return install(shell, home) }
 
 // EnterAction is what the folder-entry hook should do.
 type EnterAction string
@@ -67,5 +67,5 @@ type EnterResult struct {
 // OnEnter decides the action for r using config and a ≤150 ms daemon
 // status query; it never prompts and never autostarts the daemon.
 func OnEnter(ctx context.Context, c config.Config, l paths.Layout, r EnterRequest) (EnterResult, error) {
-	panic("unimplemented: shellinit.OnEnter")
+	return onEnter(ctx, c, l, r)
 }

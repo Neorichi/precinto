@@ -1,0 +1,13 @@
+{
+  "name": "precinto",
+  "owner": {
+    "name": "precinto contributors"
+  },
+  "plugins": [
+    {
+      "name": "precinto",
+      "source": "./plugins/codex",
+      "description": "Gates and seals Codex sessions in folders protected by precinto."
+    }
+  ]
+}

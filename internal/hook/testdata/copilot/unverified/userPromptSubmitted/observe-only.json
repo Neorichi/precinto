@@ -1,0 +1,45 @@
+{
+  "comment": "Copilot prompts cannot be blocked: observe only (wrapper only)",
+  "args": [
+    "copilot",
+    "userPromptSubmitted"
+  ],
+  "env": {
+    "COPILOT_CLI": "1",
+    "HOME": "/u",
+    "PATH": "/usr/bin:/bin",
+    "PWD": "/u/work/acme"
+  },
+  "stdin": {
+    "timestamp": 1763715600000,
+    "cwd": "/u/work/acme",
+    "prompt": "synthetic prompt text"
+  },
+  "daemon": {
+    "gate": {
+      "verdict": "block",
+      "reason": "idle",
+      "state": "locked",
+      "root_ids": [
+        "root-acme"
+      ],
+      "origin": "human"
+    }
+  },
+  "want": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "calls": [
+      {
+        "op": "activity",
+        "req": {
+          "harness": "copilot",
+          "sid": "",
+          "kind": "prompt",
+          "at": "2026-11-21T09:00:00Z"
+        }
+      }
+    ]
+  }
+}

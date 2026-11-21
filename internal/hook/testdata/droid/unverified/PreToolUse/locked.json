@@ -1,0 +1,144 @@
+{
+  "comment": "Droid tool deny like Claude",
+  "args": [
+    "claude-code",
+    "PreToolUse"
+  ],
+  "env": {
+    "DROID_PLUGIN_ROOT": "/u/.factory/plugins/precinto",
+    "FACTORY_PROJECT_DIR": "/u/work/acme",
+    "HOME": "/u",
+    "PATH": "/usr/bin:/bin",
+    "PWD": "/u/work/acme"
+  },
+  "stdin": {
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+    "transcript_path": "/u/.claude/projects/-u-work-acme/00000000-0000-4000-8000-000000000001.jsonl",
+    "cwd": "/u/work/acme",
+    "scratchpad_dir": "/tmp/claude-501/-u-work-acme/00000000-0000-4000-8000-000000000001/scratchpad",
+    "permission_mode": "default",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_input": {
+      "file_path": "/u/work/acme/notes/plan.md",
+      "content": "synthetic note"
+    },
+    "tool_use_id": "toolu_fixture_0001",
+    "effort": {
+      "level": "high"
+    }
+  },
+  "procs": [
+    {
+      "pid": 4242,
+      "ppid": 4000,
+      "start_us": 1763715000000000,
+      "exe": "/u/.local/share/claude/versions/2.1.329",
+      "tty": "/dev/ttys003"
+    },
+    {
+      "pid": 9002,
+      "ppid": 4242,
+      "start_us": 1763715600000000,
+      "exe": "/bin/sh"
+    },
+    {
+      "pid": 9001,
+      "ppid": 9002,
+      "start_us": 1763715600000001,
+      "exe": "/bin/sh"
+    },
+    {
+      "pid": 9000,
+      "ppid": 9001,
+      "start_us": 1763715600000002,
+      "exe": "/u/Library/Application Support/precinto/bin/precinto"
+    }
+  ],
+  "self_pid": 9000,
+  "daemon": {
+    "gate": {
+      "verdict": "deny",
+      "reason": "idle",
+      "state": "locked",
+      "root_ids": [
+        "root-acme"
+      ]
+    }
+  },
+  "want": {
+    "exit": 0,
+    "stdout": "{\"continue\":false,\"stopReason\":\"precinto: ~/work/acme is locked\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"precinto: the user's project ~/work/acme is locked. Do not retry this tool or use other tools. End your turn now with one short sentence asking the user to run \\\"precinto unlock\\\".\"}}",
+    "stderr": "",
+    "calls": [
+      {
+        "op": "gate",
+        "req": {
+          "harness": "claude-code",
+          "host": "droid",
+          "event": "PreToolUse",
+          "sid": "00000000-0000-4000-8000-000000000001",
+          "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+          "cwd": "/u/work/acme",
+          "project_dir": "/u/work/acme",
+          "paths": [
+            "/u/work/acme/notes/plan.md"
+          ],
+          "roots": [
+            "root-acme"
+          ],
+          "tool_name": "Write",
+          "pid": 4242
+        }
+      }
+    ],
+    "ledger": [
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "start",
+        "harness": "claude-code",
+        "host": "droid",
+        "sid": "00000000-0000-4000-8000-000000000001",
+        "proc": {
+          "pid": 4242,
+          "start_us": 1763715000000000
+        },
+        "cwd": "/u/work/acme",
+        "project_dir": "/u/work/acme",
+        "transcript": "/u/.claude/projects/-u-work-acme/00000000-0000-4000-8000-000000000001.jsonl",
+        "config_dir": "/u/.claude",
+        "tmp_dir": "/tmp/claude-501"
+      },
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "taint",
+        "harness": "claude-code",
+        "host": "droid",
+        "sid": "00000000-0000-4000-8000-000000000001",
+        "proc": {
+          "pid": 4242,
+          "start_us": 1763715000000000
+        },
+        "roots": [
+          "root-acme"
+        ]
+      },
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "touch",
+        "harness": "claude-code",
+        "host": "droid",
+        "sid": "00000000-0000-4000-8000-000000000001",
+        "proc": {
+          "pid": 4242,
+          "start_us": 1763715000000000
+        },
+        "path": "/u/work/acme/notes/plan.md"
+      }
+    ]
+  }
+}

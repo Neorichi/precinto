@@ -1,0 +1,94 @@
+{
+  "comment": "daemon unreachable: fail closed in Codex's format",
+  "args": [
+    "codex",
+    "PreCompact"
+  ],
+  "env": {
+    "CLAUDE_PLUGIN_DATA": "/u/.codex/plugins/data/precinto",
+    "CLAUDE_PLUGIN_ROOT": "/u/.codex/plugins/cache/precinto/precinto/0.2.0",
+    "CODEX_HOME": "/u/Library/Application Support/precinto/homes/codex/root-acme",
+    "HOME": "/u",
+    "PATH": "/usr/bin:/bin",
+    "PLUGIN_DATA": "/u/.codex/plugins/data/precinto",
+    "PLUGIN_ROOT": "/u/.codex/plugins/cache/precinto/precinto/0.2.0",
+    "PWD": "/u/work/acme",
+    "SHELL": "/bin/zsh"
+  },
+  "stdin": {
+    "session_id": "00000000-0000-7000-8000-000000000001",
+    "transcript_path": "/u/Library/Application Support/precinto/homes/codex/root-acme/sessions/2026/11/21/rollout-2026-11-21T09-00-00-00000000-0000-7000-8000-000000000001.jsonl",
+    "cwd": "/u/work/acme",
+    "hook_event_name": "PreCompact",
+    "model": "gpt-5.5-codex",
+    "turn_id": "00000000-0000-7000-8000-0000000000b1",
+    "trigger": "auto"
+  },
+  "procs": [
+    {
+      "pid": 7000,
+      "ppid": 6000,
+      "start_us": 1763715000000000,
+      "exe": "/u/.local/bin/codex",
+      "argv": [
+        "codex"
+      ],
+      "tty": "/dev/ttys004"
+    },
+    {
+      "pid": 9002,
+      "ppid": 7000,
+      "start_us": 1763715600000000,
+      "exe": "/bin/zsh"
+    },
+    {
+      "pid": 9001,
+      "ppid": 9002,
+      "start_us": 1763715600000001,
+      "exe": "/bin/sh"
+    },
+    {
+      "pid": 9000,
+      "ppid": 9001,
+      "start_us": 1763715600000002,
+      "exe": "/u/Library/Application Support/precinto/bin/precinto"
+    }
+  ],
+  "self_pid": 9000,
+  "daemon": null,
+  "want": {
+    "exit": 0,
+    "stdout": "{\"continue\":false,\"stopReason\":\"precinto: compaction is paused while ~/work/acme is locked.\"}",
+    "stderr": "",
+    "ledger": [
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "start",
+        "harness": "codex",
+        "sid": "00000000-0000-7000-8000-000000000001",
+        "proc": {
+          "pid": 7000,
+          "start_us": 1763715000000000
+        },
+        "cwd": "/u/work/acme",
+        "transcript": "/u/Library/Application Support/precinto/homes/codex/root-acme/sessions/2026/11/21/rollout-2026-11-21T09-00-00-00000000-0000-7000-8000-000000000001.jsonl",
+        "config_dir": "/u/Library/Application Support/precinto/homes/codex/root-acme"
+      },
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "taint",
+        "harness": "codex",
+        "sid": "00000000-0000-7000-8000-000000000001",
+        "proc": {
+          "pid": 7000,
+          "start_us": 1763715000000000
+        },
+        "roots": [
+          "root-acme"
+        ]
+      }
+    ]
+  }
+}

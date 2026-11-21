@@ -1,0 +1,10 @@
+{
+  "name": "precinto",
+  "version": "0.2.0",
+  "description": "Experimental: pauses prompts and tools in folders precinto has locked.",
+  "author": {
+    "name": "precinto contributors"
+  },
+  "license": "Apache-2.0",
+  "hooks": "./hooks/cursor.json"
+}

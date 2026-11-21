@@ -1,0 +1,58 @@
+{
+  "comment": "UNVERIFIED: fail closed",
+  "args": [
+    "cursor",
+    "beforeSubmitPrompt"
+  ],
+  "env": {
+    "CURSOR_PLUGIN_ROOT": "/u/.cursor/plugins/precinto",
+    "CURSOR_VERSION": "2.0.0",
+    "HOME": "/u",
+    "PATH": "/usr/bin:/bin",
+    "PWD": "/u/work/acme"
+  },
+  "stdin": {
+    "conversation_id": "00000000-0000-4000-8000-0000000000c1",
+    "generation_id": "00000000-0000-4000-8000-0000000000c2",
+    "hook_event_name": "beforeSubmitPrompt",
+    "workspace_roots": [
+      "/u/work/acme"
+    ],
+    "prompt": "synthetic prompt text"
+  },
+  "daemon": null,
+  "want": {
+    "exit": 0,
+    "stdout": "{\"continue\":false,\"user_message\":\"precinto: the precinto agent isn't running, so ~/work/acme stays locked. Run precinto unlock in a terminal.\"}",
+    "stderr": "",
+    "ledger": [
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "start",
+        "harness": "cursor",
+        "sid": "00000000-0000-4000-8000-0000000000c1",
+        "proc": {
+          "pid": 0,
+          "start_us": 0
+        },
+        "cwd": "/u/work/acme",
+        "config_dir": "/u/.claude"
+      },
+      {
+        "v": 1,
+        "t": "2026-11-21T09:00:00Z",
+        "type": "taint",
+        "harness": "cursor",
+        "sid": "00000000-0000-4000-8000-0000000000c1",
+        "proc": {
+          "pid": 0,
+          "start_us": 0
+        },
+        "roots": [
+          "root-acme"
+        ]
+      }
+    ]
+  }
+}

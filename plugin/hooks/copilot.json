@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{ "type": "command", "bash": "precinto hook copilot sessionStart", "timeoutSec": 10 }],
+    "userPromptSubmitted": [{ "type": "command", "bash": "precinto hook copilot userPromptSubmitted", "timeoutSec": 10 }],
+    "preToolUse": [{ "type": "command", "bash": "precinto hook copilot preToolUse", "timeoutSec": 10 }],
+    "postToolUse": [{ "type": "command", "bash": "precinto hook copilot postToolUse", "timeoutSec": 10 }]
+  }
+}

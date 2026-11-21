@@ -1,0 +1,10 @@
+{
+  "name": "precinto",
+  "version": "0.2.0",
+  "description": "Keeps agent sessions in protected folders sealed at rest: prompts, tools and compaction pause while a folder is locked, and sessions are sealed when they end.",
+  "author": {
+    "name": "precinto contributors"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["security", "encryption", "vault", "sessions", "hooks"]
+}

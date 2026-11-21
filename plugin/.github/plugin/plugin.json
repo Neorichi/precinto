@@ -1,0 +1,10 @@
+{
+  "name": "precinto",
+  "version": "0.2.0",
+  "description": "Experimental: denies tools in folders precinto has locked (Copilot cannot pause prompts; use precinto run).",
+  "author": {
+    "name": "precinto contributors"
+  },
+  "license": "Apache-2.0",
+  "hooks": "./hooks/copilot.json"
+}

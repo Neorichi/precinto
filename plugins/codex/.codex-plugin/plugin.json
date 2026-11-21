@@ -1,0 +1,6 @@
+{
+  "name": "precinto",
+  "version": "0.2.0",
+  "description": "Gates and seals Codex sessions in folders protected by precinto.",
+  "hooks": "./hooks/codex.json"
+}

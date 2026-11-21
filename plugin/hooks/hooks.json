@@ -1,0 +1,18 @@
+{
+  "description": "precinto: gate and seal agent sessions in protected folders",
+  "hooks": {
+    "SessionStart": [{ "matcher": "startup|resume|clear|compact|fork", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code SessionStart", "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code UserPromptSubmit", "timeout": 90, "onFailure": "block" }] }],
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code PreToolUse", "timeout": 10, "onFailure": "block" }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code PermissionRequest", "timeout": 10, "onFailure": "block" }] }],
+    "PostToolUse": [{ "matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code PostToolUse", "timeout": 10 }] }],
+    "PreCompact": [{ "matcher": "manual|auto", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code PreCompact", "timeout": 10, "onFailure": "block" }] }],
+    "PostCompact": [{ "matcher": "manual|auto", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code PostCompact", "async": true }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code Stop", "async": true }] }],
+    "StopFailure": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code StopFailure", "async": true }] }],
+    "Notification": [{ "matcher": "idle_prompt", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code Notification", "async": true }] }],
+    "CwdChanged": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code CwdChanged", "timeout": 5 }] }],
+    "DirectoryAdded": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code DirectoryAdded", "timeout": 5 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/precinto-hook\" claude-code SessionEnd" }] }]
+  }
+}

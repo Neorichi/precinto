@@ -1,0 +1,30 @@
+#!/bin/sh
+# Fake precinto binary for the shim tests (internal/hook/shim_test.go).
+# FAKE_PRECINTO_MODE selects what `precinto hook HARNESS EVENT` does;
+# FAKE_PRECINTO_LOG, when set, records the arguments and the payload.
+if [ -n "${FAKE_PRECINTO_LOG-}" ]; then
+	printf 'args:%s\n' "$*" >>"$FAKE_PRECINTO_LOG"
+	printf 'stdin:%s\n' "$(cat)" >>"$FAKE_PRECINTO_LOG"
+else
+	cat >/dev/null
+fi
+case ${FAKE_PRECINTO_MODE-} in
+json) printf '{"fake":true}' ;;
+empty) ;;
+text) printf 'plain text on stdout\n' ;;
+ten)
+	printf 'fake reason\n' >&2
+	exit 10
+	;;
+tenempty) exit 10 ;;
+one)
+	printf 'precinto: open /etc/fake: permission denied\n' >&2
+	exit 1
+	;;
+two)
+	printf 'panic: runtime error: fake\n\ngoroutine 1 [running]:\nmain.main()\n' >&2
+	exit 2
+	;;
+kill) kill -KILL $$ ;;
+*) exit 3 ;;
+esac

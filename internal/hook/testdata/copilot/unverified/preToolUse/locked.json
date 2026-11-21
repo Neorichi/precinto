@@ -1,0 +1,53 @@
+{
+  "comment": "UNVERIFIED Copilot tool deny",
+  "args": [
+    "copilot",
+    "preToolUse"
+  ],
+  "env": {
+    "COPILOT_CLI": "1",
+    "HOME": "/u",
+    "PATH": "/usr/bin:/bin",
+    "PWD": "/u/work/acme"
+  },
+  "stdin": {
+    "timestamp": 1763715600000,
+    "cwd": "/u/work/acme",
+    "toolName": "edit",
+    "toolArgs": "{\"path\": \"/u/work/acme/notes/plan.md\"}"
+  },
+  "daemon": {
+    "gate": {
+      "verdict": "deny",
+      "reason": "idle",
+      "state": "locked",
+      "root_ids": [
+        "root-acme"
+      ]
+    }
+  },
+  "want": {
+    "exit": 0,
+    "stdout": "{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"precinto: the user's project ~/work/acme is locked. Do not retry this tool or use other tools. End your turn now with one short sentence asking the user to run \\\"precinto unlock\\\".\"}",
+    "stderr": "",
+    "calls": [
+      {
+        "op": "gate",
+        "req": {
+          "harness": "copilot",
+          "host": "copilot",
+          "event": "PreToolUse",
+          "sid": "",
+          "cwd": "/u/work/acme",
+          "paths": [
+            "/u/work/acme/notes/plan.md"
+          ],
+          "roots": [
+            "root-acme"
+          ],
+          "tool_name": "edit"
+        }
+      }
+    ]
+  }
+}
