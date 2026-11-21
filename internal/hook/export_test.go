@@ -4,12 +4,13 @@ package hook
 // the external tests in package hook_test use these).
 
 import (
-	"github.com/precinto/precinto/internal/ui"
 	"io"
 	"time"
 
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 // TestSystem replaces what Main takes from the process.
@@ -73,8 +74,32 @@ func SetSelfPID(pid, ppid int) (restore func()) {
 	return func() { selfPID, parentPID = oldSelf, oldParent }
 }
 
-// HookLayout is the hook-mode layout (no PRECINTO_* overrides).
-func HookLayout(env paths.Env) (paths.Layout, bool) { return hookLayout(env) }
+// ProductionLayout is the layout of the production dependencies:
+// paths.HookLayout, without a socket when only the socket path is too
+// long; ok is false when there is no usable base at all.
+func ProductionLayout(env paths.Env) (l paths.Layout, ok bool) {
+	l = productionDeps(env).Layout
+	return l, l.Base != ""
+}
+
+// SpawnCall is one process start the production Spawn asked for.
+type SpawnCall struct {
+	Argv []string
+	Opts platform.SpawnOptions
+}
+
+// SetSpawnProcess makes the production Spawn and autostart see exe as the
+// running executable and record process starts in calls instead of
+// starting anything; it returns a function restoring the real primitives.
+func SetSpawnProcess(exe string, calls *[]SpawnCall) (restore func()) {
+	oldExe, oldSpawn := executable, spawnDetached
+	executable = func() (string, uint64, uint64, error) { return exe, 0, 0, nil }
+	spawnDetached = func(argv []string, o platform.SpawnOptions) (platform.ProcID, error) {
+		*calls = append(*calls, SpawnCall{Argv: append([]string(nil), argv...), Opts: o})
+		return platform.ProcID{}, nil
+	}
+	return func() { executable, spawnDetached = oldExe, oldSpawn }
+}
 
 // EffectiveConfig is the configuration hook mode enforces.
 func EffectiveConfig(l paths.Layout) config.Config { return effectiveConfig(l) }

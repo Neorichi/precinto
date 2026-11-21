@@ -3,6 +3,7 @@ package shellinit_test
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/shellinit"
+	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
 )
 
@@ -182,25 +184,141 @@ func TestResultLines(t *testing.T) {
 }
 
 // C1.prompt names the folder's first usable factor; the Mac password only
-// with a GUI (never on linux or over SSH); a caller's HOME shortens the
-// folder (CC-31, CC-40).
+// with a GUI (never on linux or over SSH, where no dialog can appear);
+// C1.prompt.plain when no reported factor is usable; a caller's HOME
+// shortens the folder (CC-31, CC-40).
 func TestOnEnterPromptFactorAndHome(t *testing.T) {
 	l, err := paths.LayoutAt("/custom/base", "/tmp/pt-run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := func(ctx context.Context) (ipc.StatusResp, error) {
-		return ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "locked", Since: lockedSince, Factors: []string{"se", "passphrase"}}}}, nil
-	}
-	defer shellinit.SetStatus(st, false)()
-	for gui, factor := range map[bool]string{true: "Mac password", false: "precinto passphrase"} {
-		got, err := shellinit.OnEnter(t.Context(), enterConfig(config.OnEnterPrompt), l, shellinit.EnterRequest{PWD: acme, PrevPWD: "/u", Home: "/u", GUI: gui})
+	for _, c := range []struct {
+		factors []string
+		gui     bool
+		factor  string // "" = the plain prompt
+	}{
+		{[]string{"se", "passphrase"}, true, "Mac password"},
+		{[]string{"se", "passphrase"}, false, "precinto passphrase"},
+		{[]string{"se"}, false, ""},
+		{[]string{"se"}, true, "Mac password"},
+		{[]string{"passphrase", "se"}, true, "precinto passphrase"},
+		{[]string{"plugin", "passphrase"}, false, "security key"},
+		{[]string{"recovery"}, true, ""},
+		{nil, true, ""},
+	} {
+		st := func(ctx context.Context) (ipc.StatusResp, error) {
+			return ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "locked", Since: lockedSince, Factors: c.factors}}}, nil
+		}
+		restore := shellinit.SetStatus(st, false)
+		got, err := shellinit.OnEnter(t.Context(), enterConfig(config.OnEnterPrompt), l, shellinit.EnterRequest{PWD: acme, PrevPWD: "/u", Home: "/u", GUI: c.gui})
+		restore()
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := ui.Format(ui.MsgEnterPrompt, ui.Vars{Folder: "~/work/acme", Factor: factor})
-		if got.Message != want || got.Folder != "~/work/acme" || got.Path != acme {
-			t.Errorf("gui=%v: %+v, want message %q", gui, got, want)
+		want := ui.Format(ui.MsgEnterPromptPlain, ui.Vars{Folder: "~/work/acme"})
+		if c.factor != "" {
+			want = ui.Format(ui.MsgEnterPrompt, ui.Vars{Folder: "~/work/acme", Factor: c.factor})
+		}
+		if got.Action != shellinit.EnterPrompt || got.Message != want || got.Folder != "~/work/acme" || got.Path != acme {
+			t.Errorf("factors %v, gui=%v: %+v, want message %q", c.factors, c.gui, got, want)
+		}
+		if !c.gui && strings.Contains(got.Message, "Mac password") {
+			t.Errorf("factors %v without a GUI names the Mac password: %q", c.factors, got.Message)
+		}
+	}
+	// A HOME given by the caller wins over the one recovered from the base;
+	// a relative one is ignored.
+	defer shellinit.SetStatus(status(map[string]string{"root-acme": "locked"}), false)()
+	for home, want := range map[string]string{"/u/work": "~/acme", "relative": acme, "": acme} {
+		got, err := shellinit.OnEnter(t.Context(), enterConfig(config.OnEnterNotify), l, shellinit.EnterRequest{PWD: acme, PrevPWD: "/u", Home: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Folder != want || got.Path != acme {
+			t.Errorf("Home %q: folder %q path %q, want %q and %q", home, got.Folder, got.Path, want, acme)
+		}
+	}
+}
+
+// TestLinesGolden pins the shell-hook output format (D69, CC-31) for
+// folder names made of shell syntax and terminal controls: one key=value
+// line per field, in a fixed order, every value on its line with C0/C1
+// controls stripped and newlines and tabs turned into spaces, nothing at
+// all when there is nothing to do. The scripts read these lines as data.
+func TestLinesGolden(t *testing.T) {
+	hostile := `/u/work/it's "$(touch pwned)" ` + "`id`" + ` $HOME;rm -rf ~|cat&*?[x]{a,b} \t `
+	cases := []struct {
+		name string
+		r    shellinit.EnterResult
+	}{
+		{"prompt, a folder made of shell syntax", shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: hostile,
+			Folder: "~" + strings.TrimPrefix(hostile, "/u"), Epoch: uint64(lockedSince.Unix()),
+			Message: ui.Format(ui.MsgEnterPromptPlain, ui.Vars{Folder: "~" + strings.TrimPrefix(hostile, "/u")})}},
+		{"notify, controls and a forged line in every value", shellinit.EnterResult{Action: shellinit.EnterNotify, RootID: "root-x\nmessage=forged",
+			Path: "/u/a\nb\tc\x1b]0;title\x07\u009b2J", Folder: "~/a\nb", Epoch: 1, Message: "m\r\nmessage=forged\x00"}},
+		{"busy", shellinit.EnterResult{Action: shellinit.EnterBusy, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: 2,
+			Message: ui.Format(ui.MsgEnterElsewhere, ui.Vars{Folder: "~/work/acme"})}},
+		{"nothing to do", shellinit.EnterResult{RootID: "root-acme", Path: hostile, Folder: "~/x", Epoch: 3}},
+	}
+	var b strings.Builder
+	for _, c := range cases {
+		lines := c.r.Lines()
+		b.WriteString("--- " + c.name + "\n" + lines)
+		if c.r.Action == shellinit.EnterNothing {
+			if lines != "" {
+				t.Errorf("%s: printed %q", c.name, lines)
+			}
+			continue
+		}
+		got := strings.Split(strings.TrimSuffix(lines, "\n"), "\n")
+		keys := []string{"action=", "root=", "epoch=", "path=", "folder=", "message="}
+		if len(got) != len(keys) {
+			t.Fatalf("%s: %d lines, want %d: %q", c.name, len(got), len(keys), lines)
+		}
+		for i, k := range keys {
+			if !strings.HasPrefix(got[i], k) {
+				t.Errorf("%s: line %d is %q, want the %s line", c.name, i+1, got[i], k)
+			}
+			if strings.ContainsFunc(got[i], func(r rune) bool { return r < 0x20 || (r >= 0x7f && r <= 0x9f) }) {
+				t.Errorf("%s: line %d keeps a control character: %q", c.name, i+1, got[i])
+			}
+		}
+	}
+	testkit.Golden(t, "shell-hook.lines", []byte(b.String()))
+}
+
+// TestScriptsParseWithoutEval: the snippets read the shell-hook lines as
+// data (D69): no eval anywhere, the path line is kept in dir (zsh's path is
+// PATH) and only Enter runs `command <precinto> unlock --root "$dir"`.
+func TestScriptsParseWithoutEval(t *testing.T) {
+	for _, sh := range []string{shellinit.Zsh, shellinit.Bash, shellinit.Fish} {
+		s, err := shellinit.Script(shellinit.Options{Shell: sh, Harnesses: []string{"claude", "codex"}, Exe: goldenExe})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(s, "\n") {
+			if regexp.MustCompile(`\beval\b`).MatchString(line) {
+				t.Errorf("%s line %d evaluates text: %s", sh, i+1, line)
+			}
+		}
+		unlock := "command '" + goldenExe + `' unlock --root "$dir"`
+		if strings.Count(s, unlock) != 1 || strings.Count(s, goldenExe+"' unlock") != 1 {
+			t.Errorf("%s: want exactly one %q", sh, unlock)
+		}
+		parse := map[string]string{
+			shellinit.Zsh:  `path=*) dir=${line#path=} ;;`,
+			shellinit.Bash: `path=*) dir=${line#path=} ;;`,
+			shellinit.Fish: `set dir (string replace -- 'path=' '' $line)`,
+		}[sh]
+		if !strings.Contains(s, parse) {
+			t.Errorf("%s does not read the path line with %q", sh, parse)
+		}
+		if skip := map[string]string{
+			shellinit.Zsh:  `typeset -g _PRECINTO_SKIP="$root:$epoch"`,
+			shellinit.Bash: `_PRECINTO_SKIP="$root:$epoch"`,
+			shellinit.Fish: `set -g _PRECINTO_SKIP "$root:$epoch"`,
+		}[sh]; !strings.Contains(s, skip) {
+			t.Errorf("%s does not remember the skip key itself (%q)", sh, skip)
 		}
 	}
 }

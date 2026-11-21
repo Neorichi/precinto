@@ -17,31 +17,23 @@ import (
 	"github.com/precinto/precinto/internal/sweep/queue"
 )
 
-// hookLayout is precinto's layout as hook mode sees it: paths.HookLayout,
-// which never honours PRECINTO_HOME, PRECINTO_RUNTIME_DIR or PRECINTO_DEV,
-// not even in builds with -tags testing (hooks always run in an agent
-// context, and Claude's settings env reaches them; SPEC §6.1, D6, D56). ok
-// is false when HOME is unusable; when only the socket path is too long the
-// files stay usable and the daemon is unreachable (Socket is empty).
-func hookLayout(env paths.Env) (paths.Layout, bool) {
-	l, err := paths.HookLayout(env)
-	if err == nil {
-		return l, true
-	}
-	if !errors.Is(err, paths.ErrSocketPath) {
-		return paths.Layout{}, false
-	}
-	base, err := paths.DefaultBase(env) // ignores overrides as well
+// withoutSocket is the layout of hook mode when paths.HookLayout fails
+// only because the socket path would be too long (a very long HOME): the
+// same default base, so the configuration, the ledger and the seal queue
+// keep working, with no socket, so every dial fails with ipc.ErrNoDaemon
+// and managed gates fail closed instead of finding no folder at all.
+func withoutSocket(env paths.Env) (paths.Layout, error) {
+	base, err := paths.DefaultBase(env) // never honours overrides either
 	if err != nil {
-		return paths.Layout{}, false
+		return paths.Layout{}, err
 	}
-	l, err = paths.LayoutAt(base, "/")
+	l, err := paths.LayoutAt(base, "/")
 	if err != nil {
-		return paths.Layout{}, false
+		return paths.Layout{}, err
 	}
 	l.RunDir = filepath.Join(base, "run")
 	l.Socket, l.AgentLock = "", ""
-	return l, true
+	return l, nil
 }
 
 // effectiveConfig is the policy and root set the hook enforces: the
@@ -85,16 +77,26 @@ func withListedRoots(roots []config.Root, listed []string) []config.Root {
 	return out
 }
 
-// productionDeps builds the real dependencies of hook mode.
+// productionDeps builds the real dependencies of hook mode. The layout is
+// paths.HookLayout's, which never honours PRECINTO_HOME,
+// PRECINTO_RUNTIME_DIR or PRECINTO_DEV, not even in builds with -tags
+// testing: hooks always run in an agent context, and Claude's settings env
+// reaches them (SPEC §6.1, D6, D56).
 func productionDeps(env paths.Env) Deps {
-	l, ok := hookLayout(env)
+	l, err := paths.HookLayout(env)
+	if errors.Is(err, paths.ErrSocketPath) {
+		l, err = withoutSocket(env)
+	}
+	if err != nil {
+		l = paths.Layout{}
+	}
 	d := Deps{
 		Cfg:    effectiveConfig(l),
 		Layout: l,
 		Env:    env,
 		Now:    time.Now,
 	}
-	if !ok {
+	if err != nil {
 		// Without a base nothing is known to be protected; the shim's
 		// roots.list rule is the only gate left.
 		return d
@@ -151,7 +153,7 @@ func dialIPC(ctx context.Context, l paths.Layout, env paths.Env, autostart bool)
 	}
 	o := ipc.DialOptions{Layout: l, Client: "hook", Timeout: ipc.GateBudget}
 	if autostart {
-		exe, _, _, err := platform.Executable()
+		exe, _, _, err := executable()
 		if err != nil {
 			return nil, err
 		}
@@ -167,14 +169,23 @@ func dialIPC(ctx context.Context, l paths.Layout, env paths.Env, autostart bool)
 	return c, nil
 }
 
-// spawnWorker starts `precinto <args…>` detached (Setsid, stdio /dev/null,
-// cwd /), with an allowlisted environment.
+// Process primitives of spawnWorker and of the autostart dial (variables so
+// that a test checks the argv, directory and environment of a worker
+// without starting a process).
+var (
+	executable    = platform.Executable
+	spawnDetached = platform.Spawn
+)
+
+// spawnWorker implements Deps.Spawn: `precinto <args…>` (args are the
+// arguments after the executable, e.g. ["seal","--queue"]) started
+// detached (Setsid, stdio /dev/null) in / with an allowlisted environment.
 func spawnWorker(args []string, env paths.Env) error {
-	exe, _, _, err := platform.Executable()
+	exe, _, _, err := executable()
 	if err != nil {
 		return err
 	}
-	_, err = platform.Spawn(append([]string{exe}, args...), platform.SpawnOptions{Dir: "/", Env: workerEnv(env)})
+	_, err = spawnDetached(append([]string{exe}, args...), platform.SpawnOptions{Dir: "/", Env: workerEnv(env)})
 	return err
 }
 

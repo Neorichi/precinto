@@ -14,6 +14,7 @@ import (
 
 	"github.com/precinto/precinto/internal/shellinit"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 const goldenExe = "/opt/precinto/bin/precinto"
@@ -150,6 +151,11 @@ func TestFishScriptStatic(t *testing.T) {
 		"set -q VSCODE_RESOLVING_ENVIRONMENT; and return 0",
 		"shell-hook $args",
 		`set -g _PRECINTO_SKIP "$root:$epoch"`,
+		"case 'path=*'",
+		`set dir (string replace -- 'path=' '' $line)`,
+		`if test -z "$key"; and test -n "$dir"`,
+		`command '/opt/pre cinto/it\'s/precinto' unlock --root "$dir"`,
+		"if test \"$action\" = prompt; and isatty stdin; and isatty stdout",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("fish script lacks %q", want)
@@ -313,8 +319,9 @@ func TestFolderEntryHookRuns(t *testing.T) {
 				}
 			}
 			exe, log, result := fakePrecinto(t, dir)
-			msg := "precinto: ~/work/acme is locked. Unlock now with your Mac password? [Enter = yes · any other key = skip]"
-			if err := os.WriteFile(result, []byte("action=prompt\nroot=root-acme\nepoch=42\nfolder=~/work/acme\nmessage="+msg+"\n"), 0o600); err != nil {
+			msg := ui.Format(ui.MsgEnterPrompt, ui.Vars{Folder: "~/work/acme", Factor: "Mac password"})
+			res := shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: root, Folder: "~/work/acme", Epoch: 42, Message: msg}
+			if err := os.WriteFile(result, []byte(res.Lines()), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			s, err := shellinit.Script(shellinit.Options{Shell: r.shell, Harnesses: []string{"claude"}, Exe: exe})

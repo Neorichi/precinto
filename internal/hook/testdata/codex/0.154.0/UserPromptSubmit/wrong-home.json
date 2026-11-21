@@ -1,5 +1,5 @@
 {
-  "comment": "Codex in a root without its per-root home: the daemon blocks with C3.codexhome (D31)",
+  "comment": "Codex outside its per-root home in a folder that lists codex (D72): the daemon blocks with C3.codexhome (D31)",
   "args": [
     "codex",
     "UserPromptSubmit"
@@ -17,7 +17,7 @@
   },
   "stdin": {
     "session_id": "00000000-0000-7000-8000-000000000001",
-    "transcript_path": "/u/Library/Application Support/precinto/homes/codex/root-acme/sessions/2026/11/21/rollout-2026-11-21T09-00-00-00000000-0000-7000-8000-000000000001.jsonl",
+    "transcript_path": "/u/.codex/sessions/2026/11/21/rollout-2026-11-21T09-00-00-00000000-0000-7000-8000-000000000001.jsonl",
     "cwd": "/u/work/acme",
     "hook_event_name": "UserPromptSubmit",
     "model": "gpt-5.5-codex",
@@ -102,7 +102,7 @@
           "start_us": 1763715000000000
         },
         "cwd": "/u/work/acme",
-        "transcript": "/u/Library/Application Support/precinto/homes/codex/root-acme/sessions/2026/11/21/rollout-2026-11-21T09-00-00-00000000-0000-7000-8000-000000000001.jsonl",
+        "transcript": "/u/.codex/sessions/2026/11/21/rollout-2026-11-21T09-00-00-00000000-0000-7000-8000-000000000001.jsonl",
         "config_dir": "/u/.codex"
       },
       {

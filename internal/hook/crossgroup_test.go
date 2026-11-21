@@ -26,6 +26,7 @@ import (
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep/queue"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 // TestCrossgroupApplyPatchPaths: the real G3 extractor gives the hook the
@@ -44,9 +45,9 @@ func TestCrossgroupApplyPatchPaths(t *testing.T) {
 func crossHome(t *testing.T) (home string, l paths.Layout, root string) {
 	t.Helper()
 	home = testkit.ShortTempDir(t)
-	l, ok := hook.HookLayout(paths.FromMap(map[string]string{"HOME": home}))
-	if !ok || l.Socket == "" {
-		t.Fatalf("no usable hook layout under %s", home)
+	l, err := paths.HookLayout(paths.FromMap(map[string]string{"HOME": home}))
+	if err != nil {
+		t.Fatalf("no usable hook layout under %s: %v", home, err)
 	}
 	if err := l.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -114,7 +115,7 @@ func TestCrossgroupAgentGate(t *testing.T) {
 	deps, _, _ := testDeps(t, nil)
 	deps.Layout = l
 	deps.Cfg.Roots = []config.Root{{ID: "root-acme", Path: root, MD: config.MDLedger}}
-	deps.Dial = func(ctx context.Context) (hook.Daemon, error) { return a.Dial(t), nil }
+	deps.Dial = agentDial(a)
 	for ev, want := range map[hook.Event]ipc.Verdict{hook.UserPromptSubmit: ipc.VerdictBlock, hook.PreToolUse: ipc.VerdictDeny} {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		dec := hook.Handle(ctx, deps, hook.Payload{Host: hook.HostClaude, Label: "claude-code", Event: ev, SID: sidC, Cwd: root})
@@ -122,5 +123,56 @@ func TestCrossgroupAgentGate(t *testing.T) {
 		if dec.Verdict != want {
 			t.Errorf("%s in a locked folder: %+v", ev, dec)
 		}
+	}
+}
+
+// agentDial is a hook Dial to the in-process agent that never calls
+// t.Fatalf (agenttest Client, CC-53): the hook may dial from its own
+// goroutine.
+func agentDial(a *agenttest.Agent) func(context.Context) (hook.Daemon, error) {
+	return func(ctx context.Context) (hook.Daemon, error) {
+		c, err := a.Client(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+}
+
+// TestCrossgroupCodexWrongHome (D31, D72): in a folder whose harnesses
+// list codex, the real daemon blocks a Codex session whose CODEX_HOME is
+// not the folder's per-root home with C3.codexhome, as the hook forwards
+// it; the same session in its per-root home gets the locked-folder answer
+// instead.
+func TestCrossgroupCodexWrongHome(t *testing.T) {
+	home, l, root := crossHome(t) // root-acme lists claude-code and codex
+	a := agenttest.Start(t, l, fakeplatform.NewClock(testkit.Epoch), fakeplatform.NewProcs())
+	defer a.Stop()
+	deps, _, _ := testDeps(t, nil)
+	deps.Layout = l
+	deps.Cfg.Roots = []config.Root{{ID: "root-acme", Path: root, MD: config.MDLedger, Harnesses: []string{"claude-code", "codex"}}}
+	deps.Dial = agentDial(a)
+	wrong := ui.Format(ui.MsgCodexWrongHome, ui.Vars{Folder: root}) // the agenttest daemon has no HOME: full paths
+	gate := func(ev hook.Event, codexHome string) hook.Decision {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return hook.Handle(ctx, deps, hook.Payload{Host: hook.HostCodex, Label: "codex", Event: ev, SID: sidX,
+			TurnID: "00000000-0000-7000-8000-0000000000b1", Cwd: root, CodexHome: codexHome})
+	}
+	userHome := filepath.Join(home, ".codex")
+	if d := gate(hook.UserPromptSubmit, userHome); d.Verdict != ipc.VerdictBlock || d.UserMessage != wrong {
+		t.Errorf("prompt from the user's own Codex home: %+v, want C3.codexhome %q", d, wrong)
+	}
+	if d := gate(hook.PreToolUse, userHome); d.Verdict != ipc.VerdictDeny || d.ModelMessage != wrong {
+		t.Errorf("tool from the user's own Codex home: %+v, want C3.codexhome", d)
+	}
+	if d := gate(hook.UserPromptSubmit, ""); d.Verdict != ipc.VerdictBlock || d.UserMessage != wrong {
+		t.Errorf("prompt without CODEX_HOME (~/.codex): %+v, want C3.codexhome", d)
+	}
+	// In its per-root home the session is only gated by the lock (every
+	// folder is locked when the daemon starts).
+	if d := gate(hook.UserPromptSubmit, l.CodexHome("root-acme")); d.Verdict != ipc.VerdictBlock || d.UserMessage == wrong || d.UserMessage == "" {
+		t.Errorf("prompt from the per-root home in a locked folder: %+v, want the locked-folder block", d)
 	}
 }

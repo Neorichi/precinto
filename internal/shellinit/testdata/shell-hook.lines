@@ -1,0 +1,22 @@
+--- prompt, a folder made of shell syntax
+action=prompt
+root=root-acme
+epoch=1795248000
+path=/u/work/it's "$(touch pwned)" `id` $HOME;rm -rf ~|cat&*?[x]{a,b} \t 
+folder=~/work/it's "$(touch pwned)" `id` $HOME;rm -rf ~|cat&*?[x]{a,b} \t 
+message=precinto: ~/work/it's "$(touch pwned)" `id` $HOME;rm -rf ~|cat&*?[x]{a,b} \t  is locked. Unlock now? [Enter = yes · any other key = skip]
+--- notify, controls and a forged line in every value
+action=notify
+root=root-x message=forged
+epoch=1
+path=/u/a b c]0;title2J
+folder=~/a b
+message=m message=forged
+--- busy
+action=busy
+root=root-acme
+epoch=2
+path=/u/work/acme
+folder=~/work/acme
+message=precinto: ~/work/acme is being unlocked in another terminal.
+--- nothing to do

@@ -3,6 +3,7 @@ package hook_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/sweep/queue"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 // fileLedger writes every appended event as a JSON line below the layout,
@@ -113,19 +115,27 @@ func TestHookStdinNeverLogged(t *testing.T) {
 	}
 }
 
-// TestHookLayoutIgnoresOverrides (SEC-12, SEC-31 hook side): PRECINTO_HOME,
-// PRECINTO_RUNTIME_DIR and PRECINTO_DEV in a hook's environment (Claude's
-// settings env reaches hooks) have no effect, in this -tags testing build
-// too.
+// TestHookLayoutIgnoresOverrides (SEC-12, SEC-31 hook side): the
+// production dependencies use exactly paths.HookLayout, so PRECINTO_HOME,
+// PRECINTO_RUNTIME_DIR, PRECINTO_DEV and PRECINTO_TEST_ANCESTRY_STOP in a
+// hook's environment (Claude's settings env reaches hooks) have no effect,
+// in this -tags testing build too.
 func TestHookLayoutIgnoresOverrides(t *testing.T) {
 	home := testkit.ShortTempDir(t)
 	env := paths.FromMap(map[string]string{
 		"HOME": home, "PRECINTO_HOME": "/tmp/attacker-base", "PRECINTO_RUNTIME_DIR": "/tmp/attacker-run", "PRECINTO_DEV": "1",
-		"XDG_RUNTIME_DIR": "/tmp/attacker-xdg",
+		paths.EnvTestAncestryStop: "1:1", "XDG_RUNTIME_DIR": "/tmp/attacker-xdg",
 	})
-	l, ok := hook.HookLayout(env)
+	l, ok := hook.ProductionLayout(env)
 	if !ok {
 		t.Fatal("no layout")
+	}
+	want, err := paths.HookLayout(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l != want {
+		t.Errorf("hook mode layout %+v\nis not paths.HookLayout %+v", l, want)
 	}
 	base, err := paths.DefaultBase(env)
 	if err != nil {
@@ -134,14 +144,40 @@ func TestHookLayoutIgnoresOverrides(t *testing.T) {
 	if l.Base != base || strings.Contains(l.Base, "attacker") || strings.Contains(l.RunDir, "attacker-base") || strings.Contains(l.RunDir, "attacker-run") {
 		t.Errorf("hook layout %s / %s honours an override", l.Base, l.RunDir)
 	}
-	// A HOME too long for the socket keeps the files and drops the daemon.
-	long := "/" + strings.Repeat("h", 80)
-	l, ok = hook.HookLayout(paths.FromMap(map[string]string{"HOME": long}))
-	if !ok || l.Socket != "" || !strings.HasPrefix(l.RootsList, long) {
-		t.Errorf("long HOME: %v %+v", ok, l)
+	if l.HookDedupeDir != filepath.Join(base, "state", "hookdedupe") {
+		t.Errorf("dedupe markers in %q", l.HookDedupeDir)
 	}
+
+	// A HOME too long for the socket keeps the files and drops the daemon:
+	// a prompt in a protected folder still fails closed (the daemon is
+	// unreachable), it is not taken for a session outside every folder.
+	long := filepath.Join(testkit.ShortTempDir(t), strings.Repeat("h", 80))
+	longEnv := paths.FromMap(map[string]string{"HOME": long, "CLAUDECODE": "1"})
+	if _, err := paths.HookLayout(longEnv); !errors.Is(err, paths.ErrSocketPath) {
+		t.Fatalf("HookLayout with a long HOME: %v, want ErrSocketPath", err)
+	}
+	l, ok = hook.ProductionLayout(longEnv)
+	if !ok || l.Socket != "" || l.AgentLock != "" || !strings.HasPrefix(l.RootsList, long) || l.HookDedupeDir == "" {
+		t.Fatalf("long HOME: %v %+v", ok, l)
+	}
+	acme := filepath.Join(long, "work", "acme")
+	cfg := config.Default()
+	cfg.Roots = []config.Root{{ID: "root-acme", Path: acme, MD: config.MDLedger}}
+	if err := os.MkdirAll(l.Base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(l.ConfigFile, cfg); err != nil {
+		t.Fatal(err)
+	}
+	deps := hook.ProductionDeps(longEnv)
+	deps.Ledger, deps.Spawn, deps.Enqueue = newFakeLedger(nil), nil, nil
+	dec := hook.Handle(t.Context(), deps, hook.Payload{Host: hook.HostClaude, Label: "claude-code", Event: hook.UserPromptSubmit, SID: "s", Cwd: acme})
+	if dec.Verdict != ipc.VerdictBlock || dec.UserMessage != ui.Format(ui.MsgAgentDown, ui.Vars{Folder: "~/work/acme"}) {
+		t.Errorf("long HOME, prompt in a protected folder: %+v", dec)
+	}
+
 	// No HOME: no layout.
-	if _, ok := hook.HookLayout(paths.FromMap(map[string]string{"HOME": "relative"})); ok {
+	if _, ok := hook.ProductionLayout(paths.FromMap(map[string]string{"HOME": "relative"})); ok {
 		t.Error("relative HOME gave a layout")
 	}
 }
@@ -150,9 +186,9 @@ func TestHookLayoutIgnoresOverrides(t *testing.T) {
 // roots.list together (the stricter set, D48, SPEC §12.8).
 func TestEffectiveConfig(t *testing.T) {
 	home := testkit.ShortTempDir(t)
-	l, ok := hook.HookLayout(paths.FromMap(map[string]string{"HOME": home}))
-	if !ok {
-		t.Fatal("no layout")
+	l, err := paths.HookLayout(paths.FromMap(map[string]string{"HOME": home}))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := l.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -262,8 +298,8 @@ func TestDedupe(t *testing.T) {
 	if gates != 2 {
 		t.Errorf("gate asked %d times, want once per invocation", gates)
 	}
-	// Markers are content-free names under state/hookdedupe.
-	entries, err := os.ReadDir(filepath.Join(deps.Layout.StateDir, "hookdedupe"))
+	// Markers are content-free names in state/hookdedupe (Layout.HookDedupeDir).
+	entries, err := os.ReadDir(deps.Layout.HookDedupeDir)
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("dedupe markers: %v %v", entries, err)
 	}
@@ -296,5 +332,47 @@ func TestSpawnedWorkerArgs(t *testing.T) {
 	runMain(t, []string{"claude-code", "SessionStart"}, strings.NewReader(`{"session_id":"s","cwd":"/u/play","source":"startup"}`), env, hook.TestSystem{Deps: deps2})
 	if s := rec2.Spawns(); len(s) != 0 && runtime.GOOS != "windows" {
 		t.Errorf("sweep spawned while the sweep lock is held: %v", s)
+	}
+}
+
+// TestProductionSpawnArgv (CC-33): Deps.Spawn takes the arguments after
+// the precinto executable; the production implementation prepends the
+// running executable and starts it detached in / with the allowlisted
+// environment only (no PRECINTO_* override, no agent marker).
+func TestProductionSpawnArgv(t *testing.T) {
+	var calls []hook.SpawnCall
+	const exe = "/opt/precinto/bin/precinto"
+	defer hook.SetSpawnProcess(exe, &calls)()
+	env := paths.FromMap(map[string]string{
+		"HOME": testkit.ShortTempDir(t), "PATH": "/usr/bin:/bin", "LANG": "C",
+		"PRECINTO_HOME": "/tmp/attacker-base", "PRECINTO_DEV": "1", "CLAUDECODE": "1", "CLAUDE_PROJECT_DIR": "/u/work/acme",
+	})
+	deps := hook.ProductionDeps(env)
+	if deps.Spawn == nil {
+		t.Fatal("no production Spawn")
+	}
+	for _, args := range [][]string{{"seal", "--queue"}, {"sweep", "--quiet"}} {
+		calls = nil
+		if err := deps.Spawn(args); err != nil {
+			t.Fatalf("Spawn(%v): %v", args, err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("Spawn(%v) started %d processes", args, len(calls))
+		}
+		c := calls[0]
+		if want := append([]string{exe}, args...); strings.Join(c.Argv, "\x00") != strings.Join(want, "\x00") {
+			t.Errorf("argv %q, want %q", c.Argv, want)
+		}
+		if c.Opts.Dir != "/" || c.Opts.LogPath != "" {
+			t.Errorf("Spawn(%v): dir %q log %q, want / and /dev/null", args, c.Opts.Dir, c.Opts.LogPath)
+		}
+		if got, want := strings.Join(c.Opts.Env, "\n"), strings.Join(hook.WorkerEnv(env), "\n"); got != want {
+			t.Errorf("Spawn(%v) env:\n%s\nwant the allowlisted:\n%s", args, got, want)
+		}
+		for _, kv := range c.Opts.Env {
+			if strings.HasPrefix(kv, "PRECINTO_") || strings.HasPrefix(kv, "CLAUDE") {
+				t.Errorf("Spawn(%v) passes %s", args, kv)
+			}
+		}
 	}
 }

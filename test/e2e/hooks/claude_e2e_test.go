@@ -65,7 +65,9 @@ func TestE2E2LockedFolder(t *testing.T) {
 	s.initVault()
 	m := testkit.Marker(t)
 	out, _ := s.claude(s.root, pluginDir(t), m+" Reply with the single word PINEAPPLE.")
-	locked := "precinto: ~/work/acme is locked"
+	// C3.blocked up to its lock reason, which depends on how the folder
+	// locked (catalog text, CC-38).
+	locked, _, _ := strings.Cut(ui.Format(ui.MsgPromptBlocked, ui.Vars{Folder: "~/work/acme"}), " (")
 	if !strings.Contains(out, locked) || strings.Contains(out, "PINEAPPLE") {
 		t.Errorf("prompt in the locked folder was not blocked with %q:\n%s", locked, out)
 	}
@@ -213,11 +215,12 @@ func TestE2E8HookUnlockDialog(t *testing.T) {
 	}
 	// unlock_on_prompt = true relaxes the policy (D48): it applies once a
 	// terminal unlock confirms it, so unlock (the answerer accepts the
-	// pending change), then lock again before the dialog test.
+	// pending change listed after C13.policy), then lock again before the
+	// dialog test.
 	if err := os.WriteFile(cfgPath, []byte(strings.Replace(string(b), "unlock_on_prompt = false", "unlock_on_prompt = true", 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s.answerer(s.root, 2*time.Minute, s.bin, "unlock", "--root", s.root)
+	s.answer(answerOptions{acceptPolicy: true}, s.root, 2*time.Minute, s.bin, "unlock", "--root", s.root)
 	if out, code := s.run(s.home, time.Minute, nil, s.bin, "lock"); code != 0 {
 		t.Fatalf("precinto lock: %d\n%s", code, out)
 	}

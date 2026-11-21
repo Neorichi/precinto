@@ -32,24 +32,28 @@ import (
 var goldenHosts = []string{"claude-code", "codex", "cursor", "copilot", "droid", "unknown"}
 
 type goldenCase struct {
-	Comment     string            `json:"comment,omitempty"`
-	Args        []string          `json:"args"`
-	Env         map[string]string `json:"env"`
-	Stdin       json.RawMessage   `json:"stdin,omitempty"`
-	StdinRaw    *string           `json:"stdin_raw,omitempty"`
-	Getwd       string            `json:"getwd,omitempty"`
-	Roots       []string          `json:"roots,omitempty"`      // "id=path"; default root-acme=/u/work/acme
-	RootsList   []string          `json:"roots_list,omitempty"` // extra roots.list folders
-	Unlock      bool              `json:"unlock_on_prompt,omitempty"`
-	Ledger      []ledger.Event    `json:"ledger,omitempty"`
-	LedgerHang  bool              `json:"ledger_hang,omitempty"`
-	LedgerError bool              `json:"ledger_error,omitempty"`
-	Procs       []procSpec        `json:"procs,omitempty"`
-	SelfPID     int               `json:"self_pid,omitempty"`
-	DeadlineMS  int               `json:"deadline_ms,omitempty"`
-	SweepRecent bool              `json:"sweep_recent,omitempty"`
-	Daemon      *daemonSpec       `json:"daemon"`
-	Want        goldenWant        `json:"want"`
+	Comment   string            `json:"comment,omitempty"`
+	Args      []string          `json:"args"`
+	Env       map[string]string `json:"env"`
+	Stdin     json.RawMessage   `json:"stdin,omitempty"`
+	StdinRaw  *string           `json:"stdin_raw,omitempty"`
+	Getwd     string            `json:"getwd,omitempty"`
+	Roots     []string          `json:"roots,omitempty"`      // "id=path"; default root-acme=/u/work/acme
+	RootsList []string          `json:"roots_list,omitempty"` // extra roots.list folders
+	// RootHarnesses is config.Root.Harnesses per root id (a folder manages
+	// Codex only when its list names codex, D72); a root not listed here
+	// lists claude-code and codex.
+	RootHarnesses map[string][]string `json:"root_harnesses,omitempty"`
+	Unlock        bool                `json:"unlock_on_prompt,omitempty"`
+	Ledger        []ledger.Event      `json:"ledger,omitempty"`
+	LedgerHang    bool                `json:"ledger_hang,omitempty"`
+	LedgerError   bool                `json:"ledger_error,omitempty"`
+	Procs         []procSpec          `json:"procs,omitempty"`
+	SelfPID       int                 `json:"self_pid,omitempty"`
+	DeadlineMS    int                 `json:"deadline_ms,omitempty"`
+	SweepRecent   bool                `json:"sweep_recent,omitempty"`
+	Daemon        *daemonSpec         `json:"daemon"`
+	Want          goldenWant          `json:"want"`
 }
 
 type procSpec struct {
@@ -136,7 +140,11 @@ func runGolden(t *testing.T, c goldenCase) goldenWant {
 		if !ok {
 			t.Fatalf("bad root %q", r)
 		}
-		cfg.Roots = append(cfg.Roots, config.Root{ID: id, Path: p, MD: config.MDLedger, Harnesses: []string{"claude-code", "codex"}})
+		hs := []string{"claude-code", "codex"}
+		if listed, ok := c.RootHarnesses[id]; ok {
+			hs = listed
+		}
+		cfg.Roots = append(cfg.Roots, config.Root{ID: id, Path: p, MD: config.MDLedger, Harnesses: hs})
 	}
 	for _, p := range c.RootsList {
 		cfg.Roots = append(cfg.Roots, config.Root{Path: p, MD: config.MDLedger})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -109,7 +110,11 @@ func foldLedger(harness, sid string, evs []ledger.Event) ledger.Session {
 // daemonSpec scripts the fake daemon of a golden case; a nil spec is an
 // unreachable daemon.
 type daemonSpec struct {
-	DialError   string          `json:"dial_error,omitempty"` // "untrusted" | "no_daemon"
+	// DialError: "untrusted" (ipc.ErrUntrustedServer), "timeout" (no answer
+	// within the gate budget: ipc.ErrNoDaemon wrapping the deadline, as
+	// ipc.Dial reports it), "version" (a daemon speaking another protocol,
+	// CodeVersion), anything else ipc.ErrNoDaemon.
+	DialError   string          `json:"dial_error,omitempty"`
 	Gate        *ipc.GateResp   `json:"gate,omitempty"`
 	Regate      *ipc.GateResp   `json:"regate,omitempty"`
 	GateError   string          `json:"gate_error,omitempty"` // an ipc.Code
@@ -185,6 +190,10 @@ func (r *recorder) dialer(spec *daemonSpec, gates *int) func(context.Context) (h
 		case "":
 		case "untrusted":
 			return nil, ipc.ErrUntrustedServer
+		case "timeout":
+			return nil, fmt.Errorf("%w (%v)", ipc.ErrNoDaemon, context.DeadlineExceeded)
+		case "version":
+			return nil, &ipc.Error{Code: ipc.CodeVersion, Msg: "fake: another protocol version"}
 		default:
 			return nil, ipc.ErrNoDaemon
 		}
