@@ -65,6 +65,24 @@ type sandbox struct {
 	bin     string // the -tags testing build
 	env     []string
 	agent   *exec.Cmd
+	model   *bool // whether claude -p reaches the model from this HOME (modelReachable)
+}
+
+// harnessPath finds a harness for the sandbox: PRECINTO_E2E_<NAME> (an
+// absolute path, for example PRECINTO_E2E_CLAUDE=$HOME/.local/bin/claude)
+// first, else the runner's PATH. A machine can carry several installs of
+// one harness (a native one and an old npm one), so newSandbox logs the
+// binary and the version every run tests.
+func harnessPath(t *testing.T, name string) (string, bool) {
+	t.Helper()
+	if p := os.Getenv("PRECINTO_E2E_" + strings.ToUpper(name)); p != "" {
+		if !filepath.IsAbs(p) {
+			t.Fatalf("PRECINTO_E2E_%s=%q: give an absolute path", strings.ToUpper(name), p)
+		}
+		return p, true
+	}
+	p, err := exec.LookPath(name) // the runner's PATH, only to find the harness
+	return p, err == nil
 }
 
 // newSandbox creates the throwaway HOME and links <base>/bin/precinto to the
@@ -79,6 +97,14 @@ func newSandbox(t *testing.T, harnesses ...string) *sandbox {
 		}
 	}
 	s := &sandbox{t: t, home: testkit.ShortTempDir(t)}
+	// Harnesses report their working directory resolved (/tmp is a symlink
+	// on macOS) and precinto records roots realpath'd at protect time, so
+	// the sandbox resolves its HOME too, or its folder would never match.
+	real, err := filepath.EvalSymlinks(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.home = real
 	if runtime.GOOS == "darwin" {
 		s.base = filepath.Join(s.home, "Library", "Application Support", "precinto")
 		s.runDir = filepath.Join(s.base, "run")
@@ -99,8 +125,8 @@ func newSandbox(t *testing.T, harnesses ...string) *sandbox {
 		t.Fatal(err)
 	}
 	for _, h := range append(harnesses, "node") {
-		real, err := exec.LookPath(h) // the runner's PATH, only to find the harness
-		if err != nil {
+		real, ok := harnessPath(t, h)
+		if !ok {
 			if h == "node" {
 				continue
 			}
@@ -134,7 +160,104 @@ func newSandbox(t *testing.T, harnesses ...string) *sandbox {
 	}
 	s.writeConfig()
 	t.Cleanup(s.stopAgent)
+	for _, h := range harnesses {
+		link := filepath.Join(s.fakeBin, h)
+		target, _ := filepath.EvalSymlinks(link)
+		out, _ := s.run(s.home, time.Minute, nil, link, "--version")
+		version, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+		t.Logf("%s: %s (%s)", h, version, target)
+	}
 	return s
+}
+
+// loginError reports whether a claude -p result is Claude's own refusal to
+// start a turn without credentials.
+func loginError(result string) bool {
+	for _, m := range []string{"Invalid API key", "Please run /login", "Not logged in"} {
+		if strings.Contains(result, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// modelReachable reports whether claude -p reaches the model from the
+// sandbox. A throwaway HOME can hide Claude's login (on macOS the keychain
+// item is found through the real HOME); every prompt that passes precinto's
+// gates then ends with Claude's login error before any model call. The
+// gates themselves run before the model, so they are checked either way;
+// only the checks that need the model's answer are skipped. Set
+// ANTHROPIC_API_KEY to run those too.
+func (s *sandbox) modelReachable() bool {
+	s.t.Helper()
+	if s.model != nil {
+		return *s.model
+	}
+	out, _ := s.claude(s.outside, pluginDir(s.t), "Reply with the single word OK.")
+	r := parseClaude(out)
+	ok := !(r.IsError && loginError(r.Result))
+	s.model = &ok
+	if !ok {
+		s.t.Logf("claude reaches no model from the throwaway HOME (%q): checks that need its answer are skipped; set ANTHROPIC_API_KEY to run them", r.Result)
+	}
+	return ok
+}
+
+// passedGates reports whether a claude -p run got past every precinto gate:
+// a turn started (the model answered, or Claude stopped at its own login
+// error when modelReachable is false) and no hook blocked the prompt.
+func passedGates(r claudeResult) bool {
+	return r.NumTurns > 0 && !strings.Contains(r.Result, "blocked by hook")
+}
+
+// awaitIdle waits, at most within, until precinto's seal queue and journal
+// are empty (the detached workers finished, SPEC §9), and returns the files
+// left below state/ relative to it.
+func (s *sandbox) awaitIdle(within time.Duration) []string {
+	s.t.Helper()
+	state := filepath.Join(s.base, "state")
+	deadline := time.Now().Add(within)
+	for {
+		busy := false
+		for _, d := range []string{"queue", "journal"} {
+			if entries, _ := os.ReadDir(filepath.Join(state, d)); len(entries) > 0 {
+				busy = true
+			}
+		}
+		if !busy || time.Now().After(deadline) {
+			var left []string
+			_ = filepath.WalkDir(state, func(p string, e os.DirEntry, err error) error {
+				if err == nil && !e.IsDir() {
+					rel, _ := filepath.Rel(state, p)
+					left = append(left, rel)
+				}
+				return nil
+			})
+			if busy {
+				s.t.Errorf("precinto's queue or journal is still busy after %v: %v", within, left)
+			}
+			return left
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// awaitSealed waits until marker is in no file below s.home outside
+// precinto's capsules: what Claude wrote of a session (its transcript holds
+// even a blocked prompt, SPEC §19) is sealed once the session ended.
+func (s *sandbox) awaitSealed(marker string, within time.Duration) {
+	s.t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		hits := testkit.GrepTree(s.t, s.home, marker, "capsules")
+		if len(hits) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("plaintext with the marker remains after the session ended: %v", hits)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // writeConfig protects s.root the way `precinto protect` records it.
@@ -476,6 +599,7 @@ type claudeResult struct {
 	SessionID string `json:"session_id"`
 	Result    string `json:"result"`
 	IsError   bool   `json:"is_error"`
+	NumTurns  int    `json:"num_turns"`
 }
 
 func parseClaude(out string) claudeResult {

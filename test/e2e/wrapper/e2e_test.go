@@ -442,14 +442,29 @@ func goEnv() []string {
 	return append(env, "CGO_ENABLED=0")
 }
 
+// harness finds an installed harness: PRECINTO_E2E_<NAME> (an absolute
+// path) first, else PATH, or skips. A machine can carry several installs of
+// one harness, so the test logs which one it runs (TESTPLAN §2).
+func harness(t *testing.T, name string) string {
+	t.Helper()
+	p := startEnv.Get("PRECINTO_E2E_" + strings.ToUpper(name))
+	if p == "" {
+		var err error
+		if p, err = paths.LookPath(startEnv, name); err != nil {
+			t.Skipf("%s is not installed", name)
+		}
+	} else if !filepath.IsAbs(p) {
+		t.Fatalf("PRECINTO_E2E_%s=%q: give an absolute path", strings.ToUpper(name), p)
+	}
+	real, _ := filepath.EvalSymlinks(p)
+	t.Logf("%s: %s", name, real)
+	return p
+}
+
 // realClaude returns the directory of an installed claude, or skips.
 func realClaude(t *testing.T) string {
 	t.Helper()
-	p, err := paths.LookPath(startEnv, "claude")
-	if err != nil {
-		t.Skip("claude is not installed")
-	}
-	return filepath.Dir(p)
+	return filepath.Dir(harness(t, "claude"))
 }
 
 // TestE2E4LockScreenSyntheticTUI is E2E-4 with the synthetic Codex TUI:
@@ -715,11 +730,7 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 // and the snapshot is sealed after the child exits.
 func TestE2E6CodexHomeThroughTheWrapper(t *testing.T) {
 	requireE2E(t)
-	p, err := paths.LookPath(startEnv, "codex")
-	if err != nil {
-		t.Skip("codex is not installed")
-	}
-	w := newWorld(t, filepath.Dir(p))
+	w := newWorld(t, filepath.Dir(harness(t, "codex")))
 	run := w.start("run", "--harness", "codex", "--", "codex", "exec", "--ephemeral", "Reply OK.")
 	run.answer(w.launchRules()...)
 	run.wait() // no Codex login in the synthetic home: only the home and the seal matter

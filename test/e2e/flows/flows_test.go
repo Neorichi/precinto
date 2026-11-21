@@ -58,10 +58,18 @@ func setup(t *testing.T) *e2e {
 	if host.Get(paths.EnvE2E) != "1" {
 		t.Skip("opt-in: set PRECINTO_E2E=1 (make test-e2e)")
 	}
-	claude, err := paths.LookPath(host, "claude")
-	if err != nil {
-		t.Skip("claude is not installed")
+	// PRECINTO_E2E_CLAUDE (an absolute path) picks one of several installs
+	// (TESTPLAN §2).
+	claude := host.Get("PRECINTO_E2E_CLAUDE")
+	if claude == "" {
+		var err error
+		if claude, err = paths.LookPath(host, "claude"); err != nil {
+			t.Skip("claude is not installed")
+		}
+	} else if !filepath.IsAbs(claude) {
+		t.Fatalf("PRECINTO_E2E_CLAUDE=%q: give an absolute path", claude)
 	}
+	t.Logf("claude: %s", claude)
 	root := moduleRoot(t)
 	plugin := filepath.Join(root, "plugin")
 	if _, err := os.Stat(filepath.Join(plugin, "hooks", "hooks.json")); err != nil {

@@ -26,8 +26,10 @@ func pluginDir(t *testing.T) string {
 }
 
 // TestE2E1SessionSealedAfterExit (E2E-1): `claude -p --plugin-dir ./plugin`
-// in an unlocked protected folder answers; once it exits the session is
-// sealed and no marker is left in the throwaway home outside capsules.
+// in an unlocked protected folder passes every gate (and answers when the
+// model is reachable); once it exits the session is sealed and no marker is
+// left in the throwaway home outside capsules. Claude writes the transcript,
+// with the marker, whether or not the model answered.
 func TestE2E1SessionSealedAfterExit(t *testing.T) {
 	s := newSandbox(t, "claude")
 	s.initVault()
@@ -35,49 +37,52 @@ func TestE2E1SessionSealedAfterExit(t *testing.T) {
 	m := testkit.Marker(t)
 	out, code := s.claude(s.root, pluginDir(t), "Remember the word "+m+". Reply with the single word OK.")
 	r := parseClaude(out)
-	if code != 0 || r.IsError || r.SessionID == "" {
+	if r.SessionID == "" || !passedGates(r) {
+		t.Fatalf("claude -p in an unlocked folder did not get past the gates: exit %d\n%s", code, out)
+	}
+	if (code != 0 || r.IsError) && (s.modelReachable() || !loginError(r.Result)) {
 		t.Fatalf("claude -p in an unlocked folder: exit %d\n%s", code, out)
 	}
 	// SessionEnd queued the seal; the detached worker seals once claude has
 	// exited and the transcript is quiet.
-	deadline := time.Now().Add(3 * time.Minute)
-	for {
-		hits := testkit.GrepTree(t, s.home, m, "capsules")
-		if len(hits) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("plaintext with the marker remains after the session ended: %v", hits)
-		}
-		time.Sleep(2 * time.Second)
-	}
+	s.awaitSealed(m, 3*time.Minute)
 	if entries, _ := os.ReadDir(filepath.Join(s.base, "capsules", "claude-code")); len(entries) == 0 {
 		t.Error("no claude-code capsule was written")
 	}
+	t.Logf("state after the workers: %v", s.awaitIdle(2*time.Minute))
 	testkit.Hygiene(t, filepath.Join(s.base, "state"))
 }
 
 // TestE2E2LockedFolder (E2E-2, SEC-17): in a locked folder the prompt is
 // blocked with the C3 text, the model never sees it, and the marker reaches
-// none of precinto's files; outside the folder Claude answers.
+// none of precinto's files; Claude still writes the blocked prompt into the
+// session's transcript (SPEC §19), which is sealed once the session ended.
+// Outside the folder the prompt passes every gate (and Claude answers when
+// the model is reachable).
 func TestE2E2LockedFolder(t *testing.T) {
 	s := newSandbox(t, "claude")
 	s.initVault()
 	m := testkit.Marker(t)
 	out, _ := s.claude(s.root, pluginDir(t), m+" Reply with the single word PINEAPPLE.")
+	r := parseClaude(out)
 	// C3.blocked up to its lock reason, which depends on how the folder
 	// locked (catalog text, CC-38).
 	locked, _, _ := strings.Cut(ui.Format(ui.MsgPromptBlocked, ui.Vars{Folder: "~/work/acme"}), " (")
-	if !strings.Contains(out, locked) || strings.Contains(out, "PINEAPPLE") {
+	if passedGates(r) || !strings.Contains(out, locked) || strings.Contains(r.Result, "PINEAPPLE") {
 		t.Errorf("prompt in the locked folder was not blocked with %q:\n%s", locked, out)
 	}
 	if strings.Contains(out, m) {
 		t.Errorf("the blocked prompt was echoed (suppressOriginalPrompt):\n%s", out)
 	}
 	s.leakCheck(m)
+	s.awaitSealed(m, 3*time.Minute)
 
 	out, code := s.claude(s.outside, pluginDir(t), "Reply with the single word OK.")
-	if r := parseClaude(out); code != 0 || r.IsError || !strings.Contains(r.Result, "OK") {
+	r = parseClaude(out)
+	switch {
+	case !passedGates(r):
+		t.Errorf("outside every folder the prompt must pass precinto's gates: exit %d\n%s", code, out)
+	case s.modelReachable() && (code != 0 || r.IsError || !strings.Contains(r.Result, "OK")):
 		t.Errorf("outside every folder Claude must answer: exit %d\n%s", code, out)
 	}
 }
@@ -129,31 +134,40 @@ func TestE2EReplayClaudeOutputs(t *testing.T) {
 	}
 
 	out, _ := s.claude(s.outside, replayPlugin(t, s, "UserPromptSubmit", blockPrompt.Stdout), "Reply with the single word PINEAPPLE.")
-	if strings.Contains(parseClaude(out).Result, "PINEAPPLE") || !strings.Contains(out, "is locked") {
+	if r := parseClaude(out); passedGates(r) || strings.Contains(r.Result, "PINEAPPLE") || !strings.Contains(out, "is locked") {
 		t.Errorf("UserPromptSubmit block not honoured:\n%s", out)
 	}
 	noHookError("UserPromptSubmit", out)
 
-	marker := filepath.Join(s.outside, "tool-ran")
-	out, _ = s.claude(s.outside, replayPlugin(t, s, "PreToolUse", denyTool.Stdout),
-		"Use the Bash tool to run exactly this command: touch "+marker, "--allowedTools", "Bash")
-	if _, err := os.Stat(marker); err == nil {
-		t.Errorf("PreToolUse deny not honoured: the tool ran\n%s", out)
-	}
-	noHookError("PreToolUse", out)
+	// The tool and permission replays need the model to ask for a tool.
+	if s.modelReachable() {
+		marker := filepath.Join(s.outside, "tool-ran")
+		out, _ = s.claude(s.outside, replayPlugin(t, s, "PreToolUse", denyTool.Stdout),
+			"Use the Bash tool to run exactly this command: touch "+marker, "--allowedTools", "Bash")
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("PreToolUse deny not honoured: the tool ran\n%s", out)
+		}
+		noHookError("PreToolUse", out)
 
-	marker = filepath.Join(s.outside, "permission-granted")
-	out, _ = s.claude(s.outside, replayPlugin(t, s, "PermissionRequest", denyPermission.Stdout),
-		"Use the Bash tool to run exactly this command: touch "+marker, "--permission-mode", "default")
-	if _, err := os.Stat(marker); err == nil {
-		t.Errorf("PermissionRequest deny not honoured\n%s", out)
+		marker = filepath.Join(s.outside, "permission-granted")
+		out, _ = s.claude(s.outside, replayPlugin(t, s, "PermissionRequest", denyPermission.Stdout),
+			"Use the Bash tool to run exactly this command: touch "+marker, "--permission-mode", "default")
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("PermissionRequest deny not honoured\n%s", out)
+		}
+		noHookError("PermissionRequest", out)
+	} else {
+		t.Log("PreToolUse and PermissionRequest replays skipped: no model to ask for a tool")
 	}
-	noHookError("PermissionRequest", out)
 
 	first, _ := s.claude(s.outside, pluginDir(t), "Reply with the single word OK.")
 	if sid := parseClaude(first).SessionID; sid != "" {
 		out, _ = s.claude(s.outside, replayPlugin(t, s, "PreCompact", blockCompact.Stdout), "/compact", "--resume", sid)
-		if !strings.Contains(out, "compaction is paused") {
+		switch {
+		case strings.Contains(out, "compaction is paused"):
+		case !s.modelReachable():
+			t.Logf("PreCompact replay inconclusive without a model (a session with no answer may not compact):\n%s", tail(out))
+		default:
 			t.Errorf("PreCompact block not honoured:\n%s", out)
 		}
 		noHookError("PreCompact", out)
@@ -162,7 +176,7 @@ func TestE2EReplayClaudeOutputs(t *testing.T) {
 	}
 
 	out, code := s.claude(s.outside, replayPlugin(t, s, "SessionStart", startNotice.Stdout), "Reply with the single word OK.")
-	if code != 0 {
+	if r := parseClaude(out); code != 0 && (s.modelReachable() || !passedGates(r) || !loginError(r.Result)) {
 		t.Errorf("SessionStart notice broke the session: exit %d\n%s", code, out)
 	}
 	noHookError("SessionStart", out)
@@ -185,11 +199,14 @@ func TestE2ESEC13FailClosed(t *testing.T) {
 		}
 		m := testkit.Marker(t)
 		out, _ := s.claude(s.root, pluginDir(t), m+" Reply with the single word PINEAPPLE.")
-		if !strings.Contains(out, shim) || strings.Contains(parseClaude(out).Result, "PINEAPPLE") {
+		if r := parseClaude(out); passedGates(r) || !strings.Contains(out, shim) || strings.Contains(r.Result, "PINEAPPLE") {
 			t.Errorf("%s binary inside the folder: not blocked with D.shim:\n%s", variant, out)
 		}
 		out, code := s.claude(s.outside, pluginDir(t), "Reply with the single word OK.")
-		if r := parseClaude(out); code != 0 || !strings.Contains(r.Result, "OK") {
+		switch r := parseClaude(out); {
+		case !passedGates(r):
+			t.Errorf("%s binary outside every folder: the prompt must pass the shim: exit %d\n%s", variant, code, out)
+		case s.modelReachable() && (code != 0 || !strings.Contains(r.Result, "OK")):
 			t.Errorf("%s binary outside every folder: Claude must answer: exit %d\n%s", variant, code, out)
 		}
 		s.leakCheck(m)
