@@ -16,6 +16,8 @@ var neverTouch = []string{
 	"packages/**", "models_cache.json", "installation_id", "version.json",
 	".tmp/**", "tmp/**", "thread-writer-locks/**", "app-server-control/**", "log/**",
 	"rollout-maintenance.lock", "*-shm",
+	// precinto's own record of the auth.json last synchronized (D100).
+	".precinto-auth",
 }
 
 // SQLite file suffixes (opaque groups: no SQLite driver is linked).

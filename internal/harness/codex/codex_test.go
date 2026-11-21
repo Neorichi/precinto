@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ func TestClassifyDenyListAndSQLiteGroups(t *testing.T) {
 		"app-server-control/sock":             codex.ClassNeverTouch,
 		"log/codex-tui.log":                   codex.ClassNeverTouch,
 		"rollout-maintenance.lock":            codex.ClassNeverTouch,
+		".precinto-auth":                      codex.ClassNeverTouch,
 		"state_5.sqlite-shm":                  codex.ClassSHM,
 		"sub/x.sqlite-shm":                    codex.ClassSHM,
 		"state_5.sqlite":                      codex.ClassSQLiteMain,
@@ -224,14 +226,37 @@ func TestPrepareHomeSeedsOnce(t *testing.T) {
 	if h, _ := os.ReadFile(filepath.Join(home, "history.jsonl")); string(h) != "{}\n" {
 		t.Fatal("PrepareHome touched a content file")
 	}
-	// A real plugins directory in the home is never replaced.
-	other := t.TempDir()
+	// D99: a real plugins directory in the home (Codex made it while the
+	// user had none) is never deleted: it moves, with its content, next to
+	// the home, and plugins/ becomes the link to the user's.
+	other := filepath.Join(t.TempDir(), "root-other")
 	os.MkdirAll(filepath.Join(other, "plugins", "mine"), 0o700)
+	os.WriteFile(filepath.Join(other, "plugins", "mine", "keep.json"), []byte("{}"), 0o600)
 	if err := codex.PrepareHome(ctx, codex.Seed{UserHome: user, RootHome: other}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(other, "plugins", "mine")); err != nil {
-		t.Fatal("an existing plugins directory was replaced")
+	moved, _ := filepath.Glob(filepath.Join(other+".displaced", "plugins-*", "mine", "keep.json"))
+	if len(moved) != 1 {
+		t.Fatalf("the existing plugins directory was not kept next to the home: %v", moved)
+	}
+	if b, err := os.ReadFile(moved[0]); err != nil || string(b) != "{}" {
+		t.Fatalf("displaced content changed: %q %v", b, err)
+	}
+	if target, err := os.Readlink(filepath.Join(other, "plugins")); err != nil || target != filepath.Join(user, "plugins") {
+		t.Fatalf("plugins/ after the move = %q %v, want the link to the user's", target, err)
+	}
+	if fi, err := os.Lstat(other + ".displaced"); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("displaced directory %v %v", fi, err)
+	}
+	// Any other real entry (a file) is left as it is.
+	odd := filepath.Join(t.TempDir(), "root-odd")
+	os.MkdirAll(odd, 0o700)
+	os.WriteFile(filepath.Join(odd, "skills"), []byte("x"), 0o600)
+	if err := codex.PrepareHome(ctx, codex.Seed{UserHome: user, RootHome: odd}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(odd, "skills")); err != nil || string(b) != "x" {
+		t.Fatalf("a regular file named skills was replaced: %q %v", b, err)
 	}
 	if err := codex.PrepareHome(ctx, codex.Seed{UserHome: user, RootHome: "relative"}); err == nil {
 		t.Fatal("relative root home accepted")
@@ -330,48 +355,142 @@ func TestSyncAuthBack(t *testing.T) {
 	}
 }
 
+// installPlugin makes home load precinto's Codex plugin the way `codex
+// plugin add precinto@precinto` leaves it: the marketplace and plugin
+// tables and the plugin cache (D99).
+func installPlugin(t *testing.T, home string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(home, "plugins", "cache", "precinto", "precinto", "0.2.0", ".codex-plugin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return pluginTables
+}
+
+const pluginTables = "\n[marketplaces.precinto]\nsource_type = \"local\"\nsource = \"/u/src/precinto\"\n\n[plugins.\"precinto@precinto\"]\nenabled = true\n"
+
+// trustTables writes a [hooks.state."…"] table per precinto hook with the
+// hash hash(tail) (the golden hash, or a stale one).
+func trustTables(id string, hash func(tail string) string, tails map[string]string) string {
+	keys := make([]string, 0, len(tails))
+	for k := range tails {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString("\n[hooks.state.\"" + id + ":hooks/codex.json:" + k + "\"]\ntrusted_hash = \"" + hash(k) + "\"\n")
+	}
+	return b.String()
+}
+
+// D98, D99 (M2, M3): Codex 0.154 runs precinto's hooks only when the home
+// enables an installed precinto plugin and every hook's trusted_hash is
+// the hash of its current declaration; HooksTrusted says why it is not.
 func TestHooksTrusted(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || err != nil {
-		t.Fatalf("no config: %v %v %v", trusted, known, err)
+	golden := codex.GoldenTrust(t)
+	if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || !errors.Is(err, codex.ErrPluginMissing) {
+		t.Fatalf("no config: %v %v %v, want the plugin missing", trusted, known, err)
 	}
-	events := []string{"session_start", "user_prompt_submit", "pre_tool_use", "permission_request", "post_tool_use",
-		"pre_compact", "post_compact", "stop", "interrupt", "session_end"}
+	plugin := installPlugin(t, dir)
 	var b strings.Builder
-	b.WriteString("model = \"m\"\n\n[hooks]\n")
+	b.WriteString("model = \"m\"\n" + plugin + "\n[hooks]\n")
 	// Mix every TOML form Codex or a user could use: a dotted key below
 	// [hooks], an inline table and a dotted key below [hooks.state], and
 	// [hooks.state."…"] tables (what Codex's own writer produces).
-	b.WriteString("state.\"precinto@precinto:hooks/codex.json:session_start:0:0\".trusted_hash = \"sha256:1\"\n")
-	b.WriteString("\n[hooks.state]\n\"precinto@precinto:hooks/codex.json:user_prompt_submit:0:0\" = { trusted_hash = \"sha256:2\" }\n")
-	b.WriteString("\"precinto@precinto:hooks/codex.json:pre_tool_use:0:0\".trusted_hash = \"sha256:3\"\n")
-	for _, ev := range events[3:] {
-		b.WriteString("\n[hooks.state.\"precinto@precinto:hooks/codex.json:" + ev + ":0:0\"]\ntrusted_hash = \"sha256:x\"\n")
+	b.WriteString("state.\"precinto@precinto:hooks/codex.json:session_start:0:0\".trusted_hash = \"" + golden["session_start:0:0"] + "\"\n")
+	b.WriteString("\n[hooks.state]\n\"precinto@precinto:hooks/codex.json:user_prompt_submit:0:0\" = { trusted_hash = \"" + golden["user_prompt_submit:0:0"] + "\" }\n")
+	b.WriteString("\"precinto@precinto:hooks/codex.json:pre_tool_use:0:0\".trusted_hash = \"" + golden["pre_tool_use:0:0"] + "\"\n")
+	rest := map[string]string{}
+	for k, v := range golden {
+		if k != "session_start:0:0" && k != "user_prompt_submit:0:0" && k != "pre_tool_use:0:0" {
+			rest[k] = v
+		}
 	}
+	b.WriteString(trustTables("precinto@precinto", func(k string) string { return golden[k] }, rest))
 	full := b.String()
-	os.WriteFile(filepath.Join(dir, "config.toml"), []byte(full), 0o600)
+	write := func(cfg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(full)
 	if trusted, known, err := codex.HooksTrusted(dir); !trusted || !known || err != nil {
 		t.Fatalf("all trusted: %v %v %v\n%s", trusted, known, err, full)
 	}
-	// One hook disabled, or missing: not trusted.
-	os.WriteFile(filepath.Join(dir, "config.toml"), []byte(full+"enabled = false\n"), 0o600)
-	if trusted, known, _ := codex.HooksTrusted(dir); trusted || !known {
-		t.Fatal("a disabled hook counted as trusted")
+	// One hook disabled, or missing: not trusted yet.
+	write(full + "enabled = false\n")
+	if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || err != nil {
+		t.Fatalf("a disabled hook: %v %v %v", trusted, known, err)
 	}
-	partial := strings.Replace(full, "session_end", "session_end_renamed", 1)
-	os.WriteFile(filepath.Join(dir, "config.toml"), []byte(partial), 0o600)
+	write(strings.Replace(full, "session_end", "session_end_renamed", 1))
+	if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || err != nil {
+		t.Fatalf("a missing hook: %v %v %v", trusted, known, err)
+	}
+	// Another plugin's trust entries, and entries of another index, do not
+	// count.
+	write(strings.ReplaceAll(full, "precinto@precinto:hooks", "other@market:hooks"))
+	if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || err != nil {
+		t.Fatalf("another plugin's trust: %v %v %v", trusted, known, err)
+	}
+	write(strings.ReplaceAll(full, ":0:0\"", ":1:0\""))
 	if trusted, _, _ := codex.HooksTrusted(dir); trusted {
-		t.Fatal("a missing hook counted as trusted")
+		t.Fatal("trust of handlers precinto does not declare counted")
 	}
-	// Another plugin's trust entries do not count.
-	other := strings.ReplaceAll(full, "precinto@precinto", "other@market")
-	os.WriteFile(filepath.Join(dir, "config.toml"), []byte(other), 0o600)
-	if trusted, _, _ := codex.HooksTrusted(dir); trusted {
-		t.Fatal("another plugin's trust counted")
+	// M3: a hash Codex would not accept is never trusted: Codex marks the
+	// hook Modified and skips it until the user reviews it in /hooks.
+	for name, cfg := range map[string]string{
+		"all zero": "model = \"m\"\n" + plugin + trustTables("precinto@precinto",
+			func(string) string { return "sha256:" + strings.Repeat("0", 64) }, golden),
+		"one stale": strings.Replace(full, golden["post_compact:0:0"], "sha256:"+strings.Repeat("a", 64), 1),
+	} {
+		write(cfg)
+		if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || !errors.Is(err, codex.ErrHooksModified) {
+			t.Errorf("%s: %v %v %v, want modified", name, trusted, known, err)
+		}
 	}
+	// Entries written by a Codex newer than the verified 0.154 (they carry
+	// trusted_content_hash): matching declaration hashes are trusted, other
+	// hashes cannot be read as "modified" (that Codex may hash another
+	// way), so the state is unknown — no claim that Codex skips the hooks.
+	withContent := func(cfg string) string {
+		return strings.ReplaceAll(cfg, "trusted_hash = ", "trusted_content_hash = \"sha256:"+strings.Repeat("c", 64)+"\"\ntrusted_hash = ")
+	}
+	tablesOnly := "model = \"m\"\n" + plugin + trustTables("precinto@precinto", func(k string) string { return golden[k] }, golden)
+	write(withContent(tablesOnly))
+	if trusted, known, err := codex.HooksTrusted(dir); !trusted || !known || err != nil {
+		t.Errorf("newer Codex, current declarations: %v %v %v", trusted, known, err)
+	}
+	write(withContent(strings.Replace(tablesOnly, golden["post_compact:0:0"], "sha256:"+strings.Repeat("a", 64), 1)))
+	if trusted, known, err := codex.HooksTrusted(dir); trusted || known || err != nil {
+		t.Errorf("newer Codex, another hash: %v %v %v, want unknown", trusted, known, err)
+	}
+	// M2: the hooks run only when the home loads the plugin: enabled in
+	// config.toml (an entry without enabled is enabled) and installed.
+	write(strings.Replace(full, "enabled = true", "enabled = false", 1))
+	if trusted, known, err := codex.HooksTrusted(dir); trusted || !known || !errors.Is(err, codex.ErrPluginMissing) {
+		t.Errorf("plugin disabled: %v %v %v", trusted, known, err)
+	}
+	write(strings.Replace(full, "enabled = true\n", "", 1))
+	if trusted, _, err := codex.HooksTrusted(dir); !trusted || err != nil {
+		t.Errorf("plugin entry without enabled: %v %v", trusted, err)
+	}
+	write(strings.Replace(full, "[plugins.\"precinto@precinto\"]\nenabled = true\n", "", 1))
+	if trusted, _, err := codex.HooksTrusted(dir); trusted || !errors.Is(err, codex.ErrPluginMissing) {
+		t.Errorf("no plugin entry: %v %v", trusted, err)
+	}
+	write(full)
+	if err := os.RemoveAll(filepath.Join(dir, "plugins")); err != nil {
+		t.Fatal(err)
+	}
+	if trusted, _, err := codex.HooksTrusted(dir); trusted || !errors.Is(err, codex.ErrPluginMissing) {
+		t.Errorf("plugin not installed: %v %v", trusted, err)
+	}
+	installPlugin(t, dir)
 	// Unparseable: unknown, not an error.
-	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[hooks\n"), 0o600)
+	write("[hooks\n")
 	if trusted, known, err := codex.HooksTrusted(dir); trusted || known || err != nil {
 		t.Fatalf("unparseable: %v %v %v", trusted, known, err)
 	}
@@ -686,10 +805,46 @@ func TestPlanLaunchCodex(t *testing.T) {
 	if err := plan.Finish(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
+	// D99: the user's home has no precinto plugin, so the folder's home
+	// will not load it either: C9.codexplugin names the fix (with
+	// {folder}), not /hooks, which could not list the hooks.
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex", "resume", "--last"})
-	if plan.Confirm != "C9.codex" || plan.Resume.Kind != harness.ResumeContinue {
-		t.Errorf("hooks untrusted / resume --last: %+v", plan)
+	if plan.Confirm != "C9.codexplugin" || plan.MsgVars["folder"] != "~/work/acme" || plan.Resume.Kind != harness.ResumeContinue {
+		t.Errorf("no plugin / resume --last: %+v", plan)
 	}
+	// After `precinto integrate codex` in the user's home, the question is
+	// asked about the home as Prepare leaves it (the plugin tables merged,
+	// plugins/ linked): the hooks are not trusted yet (C9.codex).
+	ucfg, _ := os.ReadFile(filepath.Join(f.h.CodexUser, "config.toml"))
+	os.WriteFile(filepath.Join(f.h.CodexUser, "config.toml"), append(ucfg, installPlugin(t, f.h.CodexUser)...), 0o600)
+	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex", "resume", "--last"})
+	if plan.Confirm != "C9.codex" {
+		t.Errorf("hooks untrusted: confirm %q", plan.Confirm)
+	}
+	if err := plan.Prepare(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// D98: trusted for the current declarations asks nothing; a stale hash
+	// asks C9.codexmodified (Codex skips the hooks until reviewed).
+	golden := codex.GoldenTrust(t)
+	hcfg := filepath.Join(f.home, "config.toml")
+	seeded, _ := os.ReadFile(hcfg)
+	os.WriteFile(hcfg, []byte(string(seeded)+trustTables("precinto@precinto", func(k string) string { return golden[k] }, golden)), 0o600)
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex"}); plan.Confirm != "" {
+		t.Errorf("trusted hooks: confirm %q", plan.Confirm)
+	}
+	stale := trustTables("precinto@precinto", func(string) string { return "sha256:" + strings.Repeat("0", 64) }, golden)
+	os.WriteFile(hcfg, []byte(string(seeded)+stale), 0o600)
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex"}); plan.Confirm != "C9.codexmodified" {
+		t.Errorf("stale trust: confirm %q", plan.Confirm)
+	}
+	// The same hashes written by a Codex newer than 0.154 (with
+	// trusted_content_hash): precinto cannot tell, so it asks nothing.
+	os.WriteFile(hcfg, []byte(string(seeded)+strings.ReplaceAll(stale, "trusted_hash = ", "trusted_content_hash = \"sha256:"+strings.Repeat("c", 64)+"\"\ntrusted_hash = ")), 0o600)
+	if plan, _ := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex"}); plan.Confirm != "" {
+		t.Errorf("trust written by a newer Codex: confirm %q", plan.Confirm)
+	}
+	os.WriteFile(hcfg, seeded, 0o600)
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"codex", "exec", "resume", "00000000-0000-7000-8000-00000000000A"})
 	if plan.Mode != harness.LaunchDirect || plan.Resume.Kind != harness.ResumeSID || plan.Resume.Value != "00000000-0000-7000-8000-00000000000a" {
 		t.Errorf("exec resume: %+v", plan)

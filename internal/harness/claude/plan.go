@@ -125,6 +125,7 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	recent := harness.Selector{Kind: capsule.KindClaudeSession, RootID: root.ID, ProjectDir: cwd,
 		Recent: e.Cfg.Policy.RestoreRecent, MaxAge: maxAge, MaxBytes: e.Cfg.Policy.RestoreMaxBytes}
 	project := a.projectSelector(e, h, registered, root, cwd)
+	var extra []harness.Selector // best effort before exec, after project
 
 	if sid, ok := a.resumeTarget(e, h, plan.Resume); ok {
 		if registered {
@@ -151,22 +152,50 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 			plan.SealScope.SIDs = []string{sid}
 		}
 	} else {
+		// restore_recent = 0 restores no recent session (a zero counter is
+		// "none", D62), while a selector's Recent 0 is every match: the
+		// recent selectors below are added only for a positive count.
+		someRecent := recent.Recent > 0
 		switch plan.Resume.Kind {
 		case harness.ResumeName:
 			sel := recent
 			sel.Title, sel.Recent, sel.MaxAge, sel.MtimeNow = plan.Resume.Value, 0, 0, true
 			plan.Sync = append(plan.Sync, sel)
 		case harness.ResumePicker:
-			plan.Sync = append(plan.Sync, recent)
+			if someRecent {
+				plan.Sync = append(plan.Sync, recent)
+			}
 		case harness.ResumeContinue:
 			sel := recent
 			sel.Recent, sel.Newest, sel.MaxAge, sel.MtimeNow = 0, true, 0, true
+			if printMode(args) {
+				// claude -p --continue picks the newest session of any kind.
+				plan.Sync = append(plan.Sync, sel)
+				break
+			}
+			// D102: an interactive --continue skips sessions created by
+			// claude -p or an Agent SDK, and sessions whose first prompt
+			// was /loop. The newest session it can pick by entrypoint is
+			// restored first (clamped like any explicit resume, which
+			// keeps it the newest); the folder's other recent sessions it
+			// can pick follow before exec too, after the project unit
+			// (best effort: under StopOnErr a failure among them must not
+			// stop the targeted units) and unclamped, so Claude orders
+			// them by their own times and the one it picks after a /loop
+			// session (which precinto cannot tell) is there.
+			sel.SkipEntrypoints = sdkEntrypoints
 			plan.Sync = append(plan.Sync, sel)
+			if someRecent {
+				next := recent
+				next.SkipEntrypoints = sdkEntrypoints
+				extra = append(extra, next)
+			}
 		}
 	}
 	plan.Sync = append(plan.Sync, project)
+	plan.Sync = append(plan.Sync, extra...)
 	plan.Lease = append(plan.Lease, project.Keys...)
-	if plan.Resume.Kind != harness.ResumePicker {
+	if plan.Resume.Kind != harness.ResumePicker && recent.Recent > 0 {
 		plan.Background = []harness.Selector{recent}
 	}
 	plan.Argv = final

@@ -141,12 +141,23 @@ func checkCodexVersion(e *env) []Finding {
 		if len(unknown) > 0 {
 			out = append(out, info(CheckCodexVersion, "the sealed Codex home of "+e.folder(h.root)+" has entries precinto does not know ("+joinNames(unknown)+"); they are sealed with the rest (HA24)", ""))
 		}
+		// D99: directories Codex created in the home while the user had
+		// none, moved aside (never deleted) when precinto linked the
+		// user's.
+		if moved, err := listDir(h.dir + codexDisplacedSuffix); err == nil && len(moved) > 0 {
+			out = append(out, info(CheckCodexVersion, plural(len(moved), "directory", "directories")+" that Codex had created in the sealed Codex home of "+e.folder(h.root)+" "+verb(len(moved), "was", "were")+" moved to "+e.show(h.dir+codexDisplacedSuffix)+" when precinto linked your plugins/ and skills/ there; nothing reads "+verb(len(moved), "it", "them")+" now",
+				"delete "+e.arg(h.dir+codexDisplacedSuffix)+" once you no longer need "+verb(len(moved), "it", "them")))
+		}
 	}
 	if len(out) == 0 {
 		out = append(out, ok(CheckCodexVersion, fmt.Sprintf("Codex %s is a verified version", in.version)))
 	}
 	return out
 }
+
+// codexDisplacedSuffix names the directory next to a per-root home where
+// PrepareHome keeps what it moved out of the home (D99).
+const codexDisplacedSuffix = ".displaced"
 
 // looksLikeCodexData recognises the content files Codex 0.154 writes at the
 // top of its home (SQLite databases and their side files).
@@ -162,11 +173,22 @@ func checkCodexHooksTrust(e *env) []Finding {
 	trustedN := 0
 	for _, h := range e.codexHomes() {
 		trusted, known, err := e.d.CodexHooksTrusted(h.dir)
+		const sealedStill = " (its history is still sealed when Codex exits)"
 		switch {
+		case errors.Is(err, codex.ErrPluginMissing):
+			// D99: /hooks cannot list hooks of a plugin the home does not
+			// load, so trusting is not the fix.
+			out = append(out, warn(CheckCodexHooksTrust, "the sealed Codex home of "+e.folder(h.root)+" does not load precinto's Codex plugin (it is not enabled in that home's config.toml, or not installed), so Codex runs none of precinto's hooks there and does not pause prompts when the folder locks"+sealedStill,
+				"precinto integrate codex, then precinto run codex in that folder (or precinto codex sync-config --root "+e.arg(h.root.Path)+" if the plugin is installed)"))
+		case errors.Is(err, codex.ErrHooksModified):
+			// D98: Codex skips hooks whose declaration changed since they
+			// were trusted, until the user reviews them again.
+			out = append(out, e.codexModified("in the sealed Codex home of "+e.folder(h.root), ", so it does not pause prompts when the folder locks"+sealedStill,
+				"in that folder run precinto run codex"))
 		case err != nil || !known:
 			out = append(out, info(CheckCodexHooksTrust, "could not tell whether Codex trusts precinto's hooks in the sealed Codex home of "+e.folder(h.root), ""))
 		case !trusted:
-			out = append(out, warn(CheckCodexHooksTrust, "Codex has not trusted precinto's hooks in the sealed Codex home of "+e.folder(h.root)+", so it does not pause prompts when the folder locks (its history is still sealed when Codex exits)",
+			out = append(out, warn(CheckCodexHooksTrust, "Codex has not trusted precinto's hooks in the sealed Codex home of "+e.folder(h.root)+", so it does not pause prompts when the folder locks"+sealedStill,
 				`in that folder run precinto run codex, then /hooks, and trust "precinto"`))
 		default:
 			trustedN++
@@ -174,10 +196,18 @@ func checkCodexHooksTrust(e *env) []Finding {
 	}
 	if home := e.codexUserHome(); home != "" {
 		trusted, known, err := e.d.CodexHooksTrusted(home)
-		if err == nil && known && !trusted {
-			out = append(out, warn(CheckCodexHooksTrust, "Codex has not trusted precinto's hooks in your own Codex home ("+e.show(home)+"), so Codex started there without precinto in a protected folder is not stopped (D31)",
+		const unstopped = ", so Codex started there without precinto in a protected folder is not stopped"
+		switch {
+		case errors.Is(err, codex.ErrPluginMissing):
+			out = append(out, warn(CheckCodexHooksTrust, "your own Codex home ("+e.show(home)+") does not load precinto's Codex plugin"+unstopped,
+				"precinto integrate codex"))
+		case errors.Is(err, codex.ErrHooksModified):
+			out = append(out, e.codexModified("in your own Codex home ("+e.show(home)+")", unstopped,
+				"run codex (outside precinto)"))
+		case err == nil && known && !trusted:
+			out = append(out, warn(CheckCodexHooksTrust, "Codex has not trusted precinto's hooks in your own Codex home ("+e.show(home)+")"+unstopped,
 				`run codex (outside precinto), then /hooks, and trust "precinto"`))
-		} else if err == nil && known {
+		case err == nil && known:
 			trustedN++
 		}
 	}
@@ -185,6 +215,28 @@ func checkCodexHooksTrust(e *env) []Finding {
 		out = append(out, ok(CheckCodexHooksTrust, "Codex trusts precinto's hooks"))
 	}
 	return out
+}
+
+// codexModified reports hooks whose trust entries hold other hashes than
+// Codex 0.154 computes for their declarations (codex.ErrHooksModified,
+// D98); run says how to start Codex on that home. Only a verified Codex is
+// known to skip such hooks: for a version doctor found outside the
+// verified range it says it cannot tell (a newer Codex may record trust
+// another way), and for a version it could not tell (the version check
+// says so) the warning names that assumption.
+func (e *env) codexModified(where, effect, run string) Finding {
+	in := e.codex()
+	verified := e.verifiedRange(harness.Codex, codexVerifiedDefault)
+	inR, ok := inRange(in.version, verified)
+	retrust := run + `, then /hooks, and trust "precinto" again`
+	switch {
+	case in.exe != "" && in.versionOK && ok && !inR:
+		return info(CheckCodexHooksTrust, fmt.Sprintf("Codex %s is outside the versions precinto was verified with (%s), so precinto cannot tell whether it runs precinto's hooks %s: their trust entries hold other hashes than the verified versions compute", in.version, verified, where),
+			run+`, then /hooks, and check that "precinto" is trusted`)
+	case in.exe != "" && in.versionOK:
+		return warn(CheckCodexHooksTrust, "Codex trusted another version of precinto's hooks "+where+" and skips them until you review them"+effect, retrust)
+	}
+	return warn(CheckCodexHooksTrust, "Codex trusted another version of precinto's hooks "+where+" and, if it is a verified version (precinto could not tell its version), skips them until you review them"+effect, retrust)
 }
 
 // checkCodexShellNoise runs `$SHELL -lc true`, which executes the user's

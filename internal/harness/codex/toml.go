@@ -539,6 +539,10 @@ func setPath(m map[string]any, key []string, v any) error {
 // hookState is one [hooks.state."<key>"] entry of Codex's config.
 type hookState struct {
 	trustedHash string
+	// contentHash is trusted_content_hash, which only Codex versions newer
+	// than 0.154 write (the plugin's file contents, kept apart from the
+	// declaration hash).
+	contentHash string
 	enabled     *bool
 	// stmts are the indices of the statements that define the entry (all
 	// of them must go when the entry is replaced).
@@ -565,6 +569,9 @@ func (d *tomlDoc) hookStates() map[string]*hookState {
 		hs.inline = hs.inline || inline
 		if v, ok := fields["trusted_hash"].(string); ok {
 			hs.trustedHash = v
+		}
+		if v, ok := fields["trusted_content_hash"].(string); ok {
+			hs.contentHash = v
 		}
 		if v, ok := fields["enabled"].(bool); ok {
 			b := v
@@ -626,6 +633,141 @@ func (d *tomlDoc) hookStates() map[string]*hookState {
 				}
 			}
 		}
+	}
+	return out
+}
+
+// familyFields returns, for every entity "<family>.<name>" the document
+// defines (family "plugins" or "marketplaces"), its key/values with dotted
+// sub-keys joined by ".", whatever TOML form defines them: [family.name]
+// tables and their sub-tables, dotted keys below [family] or the root, and
+// inline tables.
+func (d *tomlDoc) familyFields(family string) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	set := func(name string, path []string, v any) {
+		if out[name] == nil {
+			out[name] = map[string]any{}
+		}
+		if len(path) == 0 {
+			flattenInto(out[name], "", v)
+			return
+		}
+		flattenInto(out[name], strings.Join(path, "."), v)
+	}
+	for _, st := range d.stmts {
+		switch st.kind {
+		case stmtTable, stmtArrayTable:
+			if len(st.table) >= 2 && st.table[0] == family && out[st.table[1]] == nil {
+				out[st.table[1]] = map[string]any{}
+			}
+			continue
+		}
+		full := append(append([]string{}, st.table...), st.key...)
+		if len(full) == 0 || full[0] != family {
+			continue
+		}
+		if len(full) == 1 {
+			if m, ok := st.value.(map[string]any); ok {
+				for name, v := range m {
+					set(name, nil, v)
+				}
+			}
+			continue
+		}
+		set(full[1], full[2:], st.value)
+	}
+	return out
+}
+
+// flattenInto stores v at key of m; an inline table is flattened into
+// dotted keys below key ("" for the entity itself).
+func flattenInto(m map[string]any, key string, v any) {
+	if t, ok := v.(map[string]any); ok {
+		for k, x := range t {
+			sub := k
+			if key != "" {
+				sub = key + "." + k
+			}
+			flattenInto(m, sub, x)
+		}
+		return
+	}
+	if key != "" {
+		m[key] = v
+	}
+}
+
+// familyClosed reports whether the document defines family itself as a
+// value (an inline table or an array of tables): then no [family.name]
+// table may be added to it.
+func (d *tomlDoc) familyClosed(family string) bool {
+	for _, st := range d.stmts {
+		switch st.kind {
+		case stmtArrayTable:
+			if len(st.table) == 1 && st.table[0] == family {
+				return true
+			}
+		case stmtKeyVal:
+			full := append(append([]string{}, st.table...), st.key...)
+			if len(full) == 1 && full[0] == family {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tableBlock is the source text of the [family.name…] tables of one
+// entity: each header with everything up to the next header.
+type tableBlock struct {
+	name string
+	text string
+}
+
+// familyBlocks returns, in file order, the entities of family that the
+// document defines only with [family.name] (and [family.name.…]) tables
+// (the form Codex's own writer produces), with their source text. An
+// entity also defined another way (dotted keys, inline tables) is left out:
+// its text alone would not define it.
+func (d *tomlDoc) familyBlocks(family string) []tableBlock {
+	other := map[string]bool{}
+	for _, st := range d.stmts {
+		if st.kind != stmtKeyVal {
+			continue
+		}
+		full := append(append([]string{}, st.table...), st.key...)
+		if len(full) >= 1 && full[0] == family && len(st.table) < 2 {
+			// A key/value whose own table is not [family.name…] defines
+			// entities by dotted keys or inline tables.
+			if len(full) >= 2 {
+				other[full[1]] = true
+			} else if m, ok := st.value.(map[string]any); ok {
+				for name := range m {
+					other[name] = true
+				}
+			}
+		}
+	}
+	var out []tableBlock
+	index := map[string]int{}
+	for i, st := range d.stmts {
+		if st.kind == stmtKeyVal || len(st.table) < 2 || st.table[0] != family || other[st.table[1]] {
+			continue
+		}
+		end := len(d.src)
+		for _, next := range d.stmts[i+1:] {
+			if next.kind != stmtKeyVal {
+				end = next.start
+				break
+			}
+		}
+		text := d.src[st.start:end]
+		if j, ok := index[st.table[1]]; ok {
+			out[j].text += text
+			continue
+		}
+		index[st.table[1]] = len(out)
+		out = append(out, tableBlock{name: st.table[1], text: text})
 	}
 	return out
 }

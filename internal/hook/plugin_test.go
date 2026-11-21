@@ -440,8 +440,9 @@ func TestShimsIdentical(t *testing.T) {
 }
 
 // TestCodexPluginByteStable records the SHA-256 of every file of the Codex
-// plugin root (D41): Codex's trust hash covers these bytes, so a change
-// must be deliberate (update with -update, and re-run E2E-9, D61).
+// plugin root (D41, D104): newer Codex versions hash these bytes for hook
+// trust (0.154 hashes the hook declarations), so a change must be
+// deliberate (update with -update, and re-run E2E-9, D61).
 func TestCodexPluginByteStable(t *testing.T) {
 	root := filepath.Join(repo, "plugins/codex")
 	var lines []string

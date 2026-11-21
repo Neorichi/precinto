@@ -3555,6 +3555,11 @@ type Selector struct {
 	MaxAge     time.Duration // skip units whose last activity is older (D14: cleanupPeriodDays − 2 days); 0 = no limit
 	MtimeNow   bool          // explicit resume of an old session: clamp mtimes to now − 1 day (D14)
 	MaxBytes   int64         // budget for this selector; 0 = policy.restore_max_bytes
+	// SkipEntrypoints drops units whose ledger (in the manifest) records
+	// one of these entrypoints for the session's start, e.g. the sdk-*
+	// entrypoints Claude's interactive --continue skips (D102); a unit
+	// that records none is kept.
+	SkipEntrypoints []string
 }
 
 // TargetRules says where a capsule of a kind may restore, computed from
@@ -3762,6 +3767,19 @@ func ScanTranscript(ctx context.Context, path string) (TranscriptFacts, error)
 > as opaque file groups.
 
 ```go
+// Errors of HooksTrusted for the states that are known but not "trusted".
+var (
+	// ErrHooksModified: trust entries exist for precinto's hooks but hold
+	// the hash of other declarations (another version of hooks/codex.json,
+	// or another normalization by Codex): Codex skips the hooks until the
+	// user reviews them in /hooks again (D98).
+	ErrHooksModified = errors.New("codex: precinto's hooks are trusted for other hook declarations")
+	// ErrPluginMissing: the home's config.toml enables no precinto plugin,
+	// or the plugin is not installed in the home's plugins/cache: Codex
+	// loads no precinto hook there, so /hooks cannot list them (D99).
+	ErrPluginMissing = errors.New("codex: the home does not load precinto's Codex plugin")
+)
+
 // ApplyPatchPaths extracts "*** Add File:", "*** Update File:" and
 // "*** Move to:" paths from an apply_patch command, resolved against cwd
 // (HA25). Only paths are returned.
@@ -3770,8 +3788,18 @@ func ApplyPatchPaths(patch []byte, cwd string) []string
 // GroupOf returns the SQLite group id of a home-relative path ("" if none).
 func GroupOf(rel string) string
 
-// HooksTrusted reports, read-only, whether config.toml of home has a
-// [hooks.state."…"] trusted_hash entry for every precinto hook (UX10).
+// HooksTrusted reports, read-only, whether Codex 0.154 runs precinto's
+// hooks in home (UX10): config.toml enables a precinto plugin installed in
+// home's plugins/cache, and has a [hooks.state."…"] entry for every hook of
+// plugins/codex/hooks/codex.json whose trusted_hash equals the hash Codex
+// computes for that hook's declaration and that is not disabled (D98).
+// When the state is known but not trusted, err tells why: ErrPluginMissing
+// (no such plugin) or ErrHooksModified (trusted for other declarations:
+// Codex 0.154 skips them until reviewed again); nil means some hook is not
+// trusted yet. known is false (with trusted false) when config.toml cannot
+// be read or parsed — a read failure is also returned in err — and when
+// entries with other hashes were written by a Codex newer than 0.154
+// (they carry trusted_content_hash: that Codex may hash another way).
 func HooksTrusted(home string) (trusted bool, known bool, err error)
 
 // LaunchEnv returns the environment additions for a managed launch:
@@ -3784,13 +3812,19 @@ func New() harness.Adapter
 
 // PrepareHome creates RootHome 0700 if missing and seeds it: copies
 // config.toml once (or again with ForceConfig), removing sqlite_home and
-// log_dir keys; synchronizes auth.json from UserHome when newer; and
-// symlinks plugins/ and skills/ to UserHome. It never touches content
-// files.
+// log_dir keys, and at every call adds the [marketplaces.*] and
+// [plugins.*] tables of the user's config.toml that RootHome's lacks
+// (D99); synchronizes auth.json from UserHome when newer, never into a
+// home that logged out, removing the other copy of logged-out credentials,
+// and only with a UserHome that exists (D100); and symlinks plugins/ and
+// skills/ to UserHome, moving a real directory Codex created there to
+// <RootHome>.displaced/ first (never deleted, D99). It never touches
+// content files.
 func PrepareHome(ctx context.Context, s Seed) error
 
 // SyncAuthBack copies RootHome/auth.json to UserHome/auth.json atomically
-// when it is newer and differs (token refresh), after the child exited.
+// when it is newer and differs (token refresh), after the child exited; a
+// logout on either side is never undone (D100).
 func SyncAuthBack(ctx context.Context, s Seed) error
 
 // UserHome resolves the user's own Codex home (CODEX_HOME or ~/.codex) from e.
@@ -4579,7 +4613,7 @@ type RestoreRequest struct {
 	// placed (the wrapper adds it to its launch lease, SPEC §9.3).
 	BeforePlace func(unit string) error
 	Budget      int64 // bytes; 0 = policy.restore_max_bytes
-	MtimeNow    bool  // explicit resume of a session older than cleanupPeriodDays−2 (D14)
+	MtimeNow    bool  // Units only: explicit resume of a session older than cleanupPeriodDays−2 (D14); a selector's units follow its own MtimeNow (D102)
 	Purpose     string
 	StopOnErr   bool
 	// Abort is closed by the caller on any lock event (R6, D58): file keys
@@ -5875,6 +5909,8 @@ const (
 	MsgPurgeForget        MsgID = "C7.purge"           // precinto: claude purge deletes Claude's own copies of these sessions. precinto keeps its sealed copies (precinto forget deletes them). Run claude purge? [y/N]
 	MsgExpiry             MsgID = "C8.expiry"          // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
+	MsgCodexModified      MsgID = "C9.codexmodified"   // precinto: the trust Codex keeps for precinto's hooks doesn't match the hooks precinto ships: they changed since you trusted them, or this Codex version records trust differently. If /hooks in Codex shows them as changed, Codex skips them and won't pause prompts when this folder locks: trust "precinto" again there. Your history is still sealed when Codex exits. Start anyway? [Y/n]
+	MsgCodexNoPlugin      MsgID = "C9.codexplugin"     // precinto: this folder's Codex doesn't have precinto's plugin enabled, so it won't pause prompts when the folder locks. Your history is still sealed when Codex exits. Run precinto integrate codex (if it is installed already: precinto codex sync-config --root {folder}). Start anyway? [Y/n]
 	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
 	MsgBareWarning        MsgID = "C9.bare"            // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
 	MsgUngatedSession     MsgID = "C9.ungated"         // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}

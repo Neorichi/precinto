@@ -1,13 +1,16 @@
 package sweep
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 )
@@ -360,7 +364,7 @@ func (r *run) planRestore(ctx context.Context, keys KeySource, kg *keyGuard, req
 	}
 	for _, sel := range req.Select {
 		cands := r.selectCandidates(groups, sel, seen)
-		if sel.ProjectDir != "" || sel.Title != "" {
+		if sel.ProjectDir != "" || sel.Title != "" || len(sel.SkipEntrypoints) > 0 {
 			cands = r.filterByManifest(ctx, keys, kg, cands, sel, purpose)
 		}
 		sort.SliceStable(cands, func(a, b int) bool { return cands[a].last.After(cands[b].last) })
@@ -393,7 +397,11 @@ func (r *run) planRestore(ctx context.Context, keys KeySource, kg *keyGuard, req
 				continue
 			}
 			used += p.bytes
-			p.mtimeNow = sel.MtimeNow || req.MtimeNow
+			// A selector's units are clamped by its own MtimeNow only
+			// (req.MtimeNow is for explicit Units): the recent sessions
+			// `claude -c` restores beside its clamped newest one keep
+			// their own times, which Claude's --continue orders by (D102).
+			p.mtimeNow = sel.MtimeNow
 			plans = append(plans, p)
 		}
 	}
@@ -458,7 +466,9 @@ func contains(s []string, v string) bool {
 }
 
 // filterByManifest keeps candidates whose newest manifest matches the
-// selector's ProjectDir/Title (needs keys for those manifests only).
+// selector's ProjectDir/Title and whose ledger does not record the
+// session's creation by one of its SkipEntrypoints (D102) (needs keys for
+// those manifests only).
 func (r *run) filterByManifest(ctx context.Context, keys KeySource, kg *keyGuard, cands []*restoreUnitPlan, sel harness.Selector, purpose string) []*restoreUnitPlan {
 	var paths []string
 	for _, p := range cands {
@@ -478,7 +488,8 @@ func (r *run) filterByManifest(ctx context.Context, keys KeySource, kg *keyGuard
 			continue
 		}
 		if (sel.ProjectDir != "" && m.ProjectDir != sel.ProjectDir) ||
-			(sel.Title != "" && !strings.Contains(strings.ToLower(m.Title), strings.ToLower(sel.Title))) {
+			(sel.Title != "" && !strings.Contains(strings.ToLower(m.Title), strings.ToLower(sel.Title))) ||
+			(len(sel.SkipEntrypoints) > 0 && slices.Contains(sel.SkipEntrypoints, ledgerEntrypoint(m.Ledger, m.UnitID))) {
 			kg.forget(p.newest.Path) // not restored: its key goes now
 			continue
 		}
@@ -488,6 +499,39 @@ func (r *run) filterByManifest(ctx context.Context, keys KeySource, kg *keyGuard
 		out = append(out, p)
 	}
 	return out
+}
+
+// creationSources are the SessionStart sources that create a session: a
+// new session (startup) and the one /clear starts (clear). A resume,
+// compact or fork start names a process that continued the session (or
+// copied it), never the one that created it.
+var creationSources = []string{"startup", "clear"}
+
+// ledgerEntrypoint returns the entrypoint that the ledger lines of a
+// manifest record for the creation of session sid ("cli", "sdk-cli"…): the
+// entrypoint of its start line whose source is startup or clear, the
+// process whose entrypoint heads the transcript, which is what Claude's
+// --continue reads. It returns "" when no such line is there (D102): the
+// session was created in an earlier generation (S13 moves only the lines
+// since the previous seal into a manifest; a later `claude -p -c` adds a
+// resume line of sdk-cli to an interactive session), or became managed
+// after its start (a first-contact start), or was forked. Only these
+// fields are decoded; lines of another session are skipped, as the ledger
+// fold does.
+func ledgerEntrypoint(raw []byte, sid string) string {
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		var e struct {
+			Type       string `json:"type"`
+			SID        string `json:"sid"`
+			Source     string `json:"source"`
+			Entrypoint string `json:"entrypoint"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(line), &e) == nil && e.Type == string(ledger.TypeStart) &&
+			slices.Contains(creationSources, e.Source) && e.Entrypoint != "" && strings.EqualFold(e.SID, sid) {
+			return e.Entrypoint
+		}
+	}
+	return ""
 }
 
 // splitLogPath splits a capsule log path into its unit directory parts and

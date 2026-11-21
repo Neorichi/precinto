@@ -312,10 +312,13 @@ func (w *world) cliRules() []rule {
 }
 
 // launchRules are cliRules plus yes to precinto run's own questions before
-// a launch (C9.codex, C9.bare).
+// a launch (C9.codex and its variants for a home without precinto's plugin
+// or with stale trust, D98/D99; C9.bare).
 func (w *world) launchRules() []rule {
 	return append([]rule{
 		say(ui.MsgCodexUntrusted, ui.Vars{}, "y\r"),
+		say(ui.MsgCodexNoPlugin, ui.Vars{Folder: w.folder()}, "y\r"),
+		say(ui.MsgCodexModified, ui.Vars{}, "y\r"),
 		say(ui.MsgBareWarning, ui.Vars{}, "y\r"),
 	}, w.cliRules()...)
 }

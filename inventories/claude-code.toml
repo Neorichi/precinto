@@ -10,9 +10,18 @@ verified_versions = ">=2.1.295 <=2.1.329"
 mode = "capsule"
 
 # argv prefixes (after argv[0]) that bypass gate and restore (UX14).
+# Claude Code runs its daemon subcommand only when `daemon` comes first or
+# follows nothing but --dangerously-skip-permissions and
+# --allow-dangerously-skip-permissions: a --settings injected ahead of it
+# would start a session instead (D101).
 passthrough = [
   ["update"], ["doctor"], ["mcp"], ["plugin"], ["config"], ["install"],
   ["setup-token"], ["--version"], ["-v"], ["--help"], ["-h"],
+  ["daemon"],
+  ["--dangerously-skip-permissions", "daemon"],
+  ["--allow-dangerously-skip-permissions", "daemon"],
+  ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "daemon"],
+  ["--allow-dangerously-skip-permissions", "--dangerously-skip-permissions", "daemon"],
 ]
 # argv prefixes that run gated and sealed, without a PTY.
 direct = [["-p"], ["--print"], ["--output-format"]]

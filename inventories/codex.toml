@@ -13,12 +13,14 @@ partition = "home"
 # Everything under the per-root home that is not listed here is content
 # (fail-closed, HA24). Paths are relative to the home.
 # Mirrors SPEC §7.2 exactly; `-shm` files are never sealed whatever their
-# database name. precinto-tmp/ (TMPDIR of managed launches, D44) is content.
+# database name. precinto-tmp/ (TMPDIR of managed launches, D44) is content;
+# .precinto-auth (precinto's record of the auth.json last synchronized, D100)
+# is not.
 never_touch = [
   "auth.json", "config.toml", "hooks.json", "plugins/**", "skills/**", "cache/**",
   "packages/**", "models_cache.json", "installation_id", "version.json",
   ".tmp/**", "tmp/**", "thread-writer-locks/**", "app-server-control/**", "log/**",
-  "rollout-maintenance.lock", "*-shm",
+  "rollout-maintenance.lock", "*-shm", ".precinto-auth",
 ]
 
 passthrough = [
