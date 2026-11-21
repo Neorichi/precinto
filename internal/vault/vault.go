@@ -153,11 +153,18 @@ type InitOptions struct {
 	Factors []FactorSpec
 	UI      UI
 	Now     func() time.Time
+	// Confirm, when set, receives the new recovery identity before
+	// anything is written (the caller shows or writes it and has the user
+	// confirm it, D7); an error from it ends Init with nothing created, so
+	// init can run again with a new key (UX-07). The buffer stays the
+	// caller's to read only: Init returns it on success.
+	Confirm func(recovery *memguard.LockedBuffer) error
 }
 
 // Init creates the install-wide recovery identity and the global vault
 // wrapped to every factor, and returns the recovery identity once, in a
-// locked buffer, for the caller to show or write per D7.
+// locked buffer, for the caller to show or write per D7 (with
+// InitOptions.Confirm, before the vault exists).
 func (s *Store) Init(ctx context.Context, o InitOptions) (*memguard.LockedBuffer, error) {
 	return s.init(ctx, o)
 }

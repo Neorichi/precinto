@@ -3,17 +3,24 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
 	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/precinto/precinto/inventories"
 )
 
 // run passes the command line verbatim to wrapper.Run with the backend,
@@ -212,5 +219,150 @@ func TestDoctorBuildsNoEngine(t *testing.T) {
 	}
 	if len(e.engExp) != 0 || registered != 1 {
 		t.Fatalf("engine built %d times, adapters registered %d times", len(e.engExp), registered)
+	}
+}
+
+// UX-09: doctor diagnoses a config.toml that does not load instead of
+// failing on it: the error goes to doctor (its config finding), with the
+// settings confirmed last standing in for the folders.
+func TestDoctorWithBrokenConfig(t *testing.T) {
+	e := newEnv(t)
+	writeBrokenConfig(t, e)
+	var got []doctor.Options
+	a := e.app()
+	a.sys.doctorRun = func(ctx context.Context, o doctor.Options) ([]doctor.Finding, error) {
+		got = append(got, o)
+		return []doctor.Finding{{Code: doctor.CheckConfig, Severity: doctor.Fail, Message: "config.toml does not load"}}, nil
+	}
+	if code := a.run([]string{"doctor"}); code != exitError {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if len(got) != 1 || got[0].ConfigErr == nil || !strings.Contains(got[0].ConfigErr.Error(), "policy.min_free") {
+		t.Fatalf("doctor options %+v", got)
+	}
+	if strings.Contains(e.stderr(), "doctor: config") {
+		t.Errorf("doctor aborted on the config: %q", e.stderr())
+	}
+	// Without confirmed settings the other checks still see every folder
+	// whose vault records its path, never the empty defaults alone.
+	if len(got[0].Cfg.Roots) != 0 {
+		t.Fatalf("stand-in roots %+v without a vault path", got[0].Cfg.Roots)
+	}
+	e = newEnv(t)
+	writeBrokenConfig(t, e)
+	e.vaults.metas["root-acme"] = vault.Meta{ID: "root-acme", RootPath: e.h.Root}
+	if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	a = e.app()
+	a.sys.doctorRun = func(ctx context.Context, o doctor.Options) ([]doctor.Finding, error) {
+		got = append(got, o)
+		return nil, nil
+	}
+	a.run([]string{"doctor"})
+	if len(got) != 1 || len(got[0].Cfg.Roots) != 1 || got[0].Cfg.Roots[0].Path != e.h.Root || got[0].ConfigErr == nil {
+		t.Fatalf("doctor options %+v, want the folder of its vault", got)
+	}
+}
+
+// UX-16: a harness that is not installed is detected while the launch is
+// planned; `precinto run` exits 127 (SPEC §16.2) with one plain line that
+// names it, never the planner's repeated error chain.
+func TestRunHarnessNotInstalled(t *testing.T) {
+	_, lookErr := paths.LookPath(paths.FromMap(map[string]string{"PATH": "/nonexistent"}), "codex")
+	e := newEnv(t)
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, fmt.Errorf("codex: %s not found: %w", "codex", lookErr)
+	if code := e.run("run", "--", "codex"); code != 127 {
+		t.Fatalf("exit %d, want 127 (stderr %q)", code, e.stderr())
+	}
+	if got, want := e.stderr(), "precinto: "+fmt.Sprintf(textRunNotFound, "codex")+"\n"; got != want {
+		t.Fatalf("stderr %q, want %q", got, want)
+	}
+}
+
+// UX-18: --harness names the harness of a command precinto does not know
+// by name; the command itself still runs, never the configured binary of
+// that harness: a bare name is looked up in PATH, a relative path is made
+// absolute, and a command that does not exist exits 127 unstarted.
+func TestRunHarnessHonoursTheCommand(t *testing.T) {
+	e := newEnv(t)
+	dir := fakePluginDir(t, e, "my-claude")
+	cfg := e.loadConfig()
+	hc := cfg.Harness["claude-code"]
+	hc.Bin = "/opt/claude/bin/claude"
+	cfg.Harness["claude-code"] = hc
+	e.saveConfig(cfg)
+	if code := e.run("run", "--harness", "claude-code", "--", "my-claude", "-p", "x"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if got := strings.Join(e.wrapped[0].Argv, " "); got != filepath.Join(dir, "my-claude")+" -p x" {
+		t.Fatalf("argv %q, want the named command", got)
+	}
+	// A relative path runs from the working directory.
+	e.wrapped = nil
+	if code := e.run("run", "--harness", "claude-code", "--", "./bin/claude", "-p"); code != exitOK {
+		t.Fatalf("relative: exit %d (%s)", code, e.stderr())
+	}
+	if got := e.wrapped[0].Argv[0]; got != filepath.Join(e.cwd, "bin", "claude") {
+		t.Fatalf("relative: argv[0] %q", got)
+	}
+	// The harness's own name keeps the configured binary (the adapter
+	// resolves it).
+	e.wrapped = nil
+	if code := e.run("run", "--harness", "claude-code", "--", "claude"); code != exitOK || e.wrapped[0].Argv[0] != "claude" {
+		t.Fatalf("own name: exit %d %+v", code, e.wrapped)
+	}
+	// A command that does not exist is not replaced by the configured one.
+	e.wrapped = nil
+	if code := e.run("run", "--harness", "claude-code", "--", "nosuchclaude"); code != 127 {
+		t.Fatalf("missing: exit %d (%s)", code, e.stderr())
+	}
+	if len(e.wrapped) != 0 || !strings.Contains(e.stderr(), fmt.Sprintf(textRunNotFound, "nosuchclaude")) {
+		t.Fatalf("missing: wrapped %+v stderr %q", e.wrapped, e.stderr())
+	}
+}
+
+// UX-18: the harness's own name keeps the configured binary for every
+// harness, also an experimental one whose inventory recognises it only by
+// argv_regex (gemini, qwen: no exe_basenames): `run --harness gemini --
+// gemini` leaves argv[0] bare, so the adapter runs [harness.gemini].bin,
+// even when gemini is not in PATH. The configured bin's own file name is
+// the harness's too; any other bare name is still looked up in PATH.
+func TestRunGenericHarnessKeepsItsBin(t *testing.T) {
+	e := newEnv(t)
+	invs, err := harness.LoadInventories(inventories.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inv := range invs {
+		e.eng.invs[harness.ID(inv.ID)] = inv
+	}
+	cfg := e.loadConfig()
+	cfg.Harness["gemini"] = config.Harness{Enabled: true, Experimental: true, Bin: "/opt/gemini/bin/gemini-cli"}
+	cfg.Harness["qwen"] = config.Harness{Enabled: true, Experimental: true, Bin: "/opt/qwen/bin/qwen"}
+	e.saveConfig(cfg)
+	e.h.Env = e.h.Env.With("PATH", mkdir(t, filepath.Join(e.h.Dir, "empty-bin")))
+	for _, c := range []struct {
+		h    string
+		argv []string
+	}{
+		{"gemini", []string{"gemini", "hello"}},
+		{"gemini", []string{"gemini.js"}},
+		{"gemini", []string{"gemini-cli", "-p", "x"}},
+		{"qwen", []string{"qwen"}},
+	} {
+		e.wrapped = nil
+		args := append([]string{"run", "--no-pty", "--harness", c.h, "--"}, c.argv...)
+		if code := e.run(args...); code != exitOK || len(e.wrapped) != 1 {
+			t.Fatalf("%v: exit %d (%s)", c.argv, code, e.stderr())
+		}
+		if got := strings.Join(e.wrapped[0].Argv, " "); got != strings.Join(c.argv, " ") {
+			t.Errorf("%v: argv %q, want it unchanged for the adapter to use the configured bin", c.argv, got)
+		}
+	}
+	e.wrapped = nil
+	if code := e.run("run", "--no-pty", "--harness", "gemini", "--", "not-gemini"); code != 127 || len(e.wrapped) != 0 {
+		t.Fatalf("another command: exit %d, wrapped %+v", code, e.wrapped)
 	}
 }

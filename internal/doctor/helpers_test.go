@@ -79,6 +79,9 @@ var (
 	// pathToken is a path in a message: its components are names, not
 	// words of the text (a folder id such as root-acme).
 	pathToken = regexp.MustCompile(`(?:~|/)[^\s,()]*`)
+	// decisionID is an internal reference of the design documents (D8,
+	// S15, HA6, …): findings never show one (UX-18).
+	decisionID = regexp.MustCompile(`\b(?:D|S|HA|IM|UX|CC|DC|R|I|SEC|OD|FX)-?[0-9]{1,3}\b`)
 )
 
 // checkInvariants: codes from the vocabulary, known severities, one-line
@@ -108,6 +111,9 @@ func checkInvariants(t *testing.T, fs []doctor.Finding, secrets []string) {
 			words := pathToken.ReplaceAllString(strings.ReplaceAll(s, "--root", ""), "PATH")
 			if w := forbiddenWord.FindString(words); w != "" {
 				t.Errorf("%s: forbidden user-facing word %q in %q", f.Code, w, s)
+			}
+			if id := decisionID.FindString(words); id != "" {
+				t.Errorf("%s: internal decision id %s in %q", f.Code, id, s)
 			}
 			for _, sec := range secrets {
 				if sec != "" && strings.Contains(s, sec) {

@@ -394,10 +394,10 @@ func questions() []question {
 		{re: catalog(ui.MsgInitRefuseAgent, ui.Vars{}), fail: "init refused an agent context (is PRECINTO_TEST_ANCESTRY_STOP honoured?)"},
 		{re: catalog(ui.MsgRefuseAgent, ui.Vars{Action: "\x00a", Folder: "\x00f", Command: "\x00c"}, "\x00a", "\x00f", "\x00c"), fail: "refused as an agent context"},
 		{re: catalog(ui.MsgNeedTerminal, ui.Vars{Command: "\x00c"}, "\x00c"), fail: "the command saw no terminal"},
-		// unlock lists pending weakening edits (C13.policy, with {n} the
+		// unlock lists pending weakening edits (C13.review, with {n} the
 		// test cannot know) and then asks whether to confirm them
 		// (C13.confirm).
-		{re: regexp.MustCompile(catalog(ui.MsgPolicyPending, ui.Vars{N: n}, "987654").String() + `[\s\S]*?` + catalog(ui.MsgPolicyConfirm, ui.Vars{}).String()), policy: true},
+		{re: regexp.MustCompile(catalog(ui.MsgPolicyReview, ui.Vars{N: n}, "987654").String() + `[\s\S]*?` + catalog(ui.MsgPolicyConfirm, ui.Vars{}).String()), policy: true},
 	}
 }
 

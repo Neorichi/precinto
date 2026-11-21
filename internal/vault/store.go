@@ -244,6 +244,14 @@ func (s *Store) init(ctx context.Context, o InitOptions) (*memguard.LockedBuffer
 		recovery.Destroy()
 		return nil, err
 	}
+	if o.Confirm != nil {
+		// Nothing exists yet: a key the user never confirmed leaves no
+		// vault behind (UX-07).
+		if err := o.Confirm(recovery); err != nil {
+			recovery.Destroy()
+			return nil, err
+		}
+	}
 	global, err := s.createVault(ctx, GlobalID, "", recoveryRcpt, plans, o.UI, now)
 	if err != nil {
 		recovery.Destroy()

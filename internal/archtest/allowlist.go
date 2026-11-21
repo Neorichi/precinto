@@ -1,7 +1,28 @@
 package archtest
 
+import "strings"
+
 // Module is the module path.
 const Module = "github.com/precinto/precinto"
+
+// ImportPath returns the import path of the contract path rel ("." is the
+// module root package).
+func ImportPath(rel string) string {
+	if rel == root {
+		return Module
+	}
+	return Module + "/" + rel
+}
+
+// ContractPath is ImportPath's inverse for a path of the module (ok is
+// false for any other import path).
+func ContractPath(importPath string) (string, bool) {
+	if importPath == Module {
+		return root, true
+	}
+	rel, ok := strings.CutPrefix(importPath, Module+"/")
+	return rel, ok
+}
 
 // Group identifiers (docs/OWNERSHIP.md).
 const (
@@ -38,6 +59,7 @@ const (
 )
 
 var (
+	root      = "." // the module root package: the embedded plugins (D116)
 	fsx       = "internal/fsx"
 	failpoint = "internal/fsx/failpoint"
 	fsxtest   = "internal/fsx/fsxtest"
@@ -120,6 +142,8 @@ var Packages = []Package{
 		Tests: "unit with fakes: LIVE-1–LIVE-10 of the crash matrix (registry gone + end + pid alive, launch window via lease, PID reuse, zombie, unknown procStart, wall jump, warm, half-written registry), lease inode swap, hold caps, cwd evidence through ProcTable.Cwd (D47)"},
 	{Path: invs, Owner: G3, Layer: 0,
 		Tests: "every *.toml decodes strictly (no undecoded keys) into harness.Inventory"},
+	{Path: root, Owner: G5, Layer: 0,
+		Tests: "the embedded files equal the repository's two marketplace manifests and plugin roots byte for byte, nothing more, nothing less (plugins_test.go)"},
 	{Path: harness, Owner: G3, Layer: 5, Internal: harnessDeps, External: []string{toml},
 		Tests: "unit: registry, inventory parsing/validation, MatchProcess, Classify passthrough/direct, UnitKeyFor vectors and refusals (unitkey_test.go)"},
 	{Path: claude, Owner: G3, Layer: 6, Internal: with(harnessDeps, harness, invs),
@@ -153,7 +177,7 @@ var Packages = []Package{
 	{Path: apidoc, Owner: G7, Layer: 10, Internal: []string{archtest},
 		Tests: "none (generator for docs/API.md)"},
 	{Path: cmd, Owner: G7, Layer: 10,
-		Internal: []string{fsx, failpoint, paths, platform, config, capsule, vault, ui, journal, capslog, queue, ledger, ipc, live, invs, harness, claude, codex, generic, sweep, agent, hook, shellinit, wrapper, doctor},
+		Internal: []string{root, fsx, failpoint, paths, platform, config, capsule, vault, ui, journal, capslog, queue, ledger, ipc, live, invs, harness, claude, codex, generic, sweep, agent, hook, shellinit, wrapper, doctor},
 		External: []string{age, memg, term},
 		Tests:    "unit: seam assertions compile (seams.go), marker text mirrors ui C11.marker; integration (test/integration, -tags testing): every subcommand's flags, exit codes and messages against testkit homes; E2E (PRECINTO_E2E=1): real claude/codex flows"},
 }

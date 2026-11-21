@@ -82,7 +82,11 @@ func main() {
 }
 
 func renderPackage(p archtest.Package) error {
-	fmt.Fprintf(out, "\n### `%s`\n\n", p.Path)
+	if p.Path == "." {
+		fmt.Fprintf(out, "\n### `%s` (module root)\n\n", archtest.Module)
+	} else {
+		fmt.Fprintf(out, "\n### `%s`\n\n", p.Path)
+	}
 	kind := "production"
 	if p.TestOnly {
 		kind = "test-only helper (production packages must not import it)"
@@ -132,7 +136,7 @@ func renderPackage(p archtest.Package) error {
 		}
 		files = append(files, f)
 	}
-	dp, err := doc.NewFromFiles(fset, files, archtest.Module+"/"+p.Path)
+	dp, err := doc.NewFromFiles(fset, files, archtest.ImportPath(p.Path))
 	if err != nil {
 		return err
 	}

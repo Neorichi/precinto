@@ -83,7 +83,7 @@ func (e *env) quarantined() []Finding {
 	})
 	var out []Finding
 	if caps > 0 {
-		out = append(out, warn(CheckQuarantine, plural(caps, "capsule", "capsules")+" without provenance "+verb(caps, "is", "are")+" quarantined in "+e.show(dir)+": precinto never restores them (D8)",
+		out = append(out, warn(CheckQuarantine, plural(caps, "capsule", "capsules")+" without provenance "+verb(caps, "is", "are")+" quarantined in "+e.show(dir)+": precinto never restores them",
 			"delete them once you know where they came from (precinto import is not available yet)"))
 	}
 	if other > 0 {
@@ -170,11 +170,11 @@ func (e *env) unloggedCapsules() []Finding {
 	}
 	var out []Finding
 	if replaced > 0 {
-		out = append(out, fail(CheckQuarantine, plural(replaced, "capsule", "capsules")+" in the store no longer "+verb(replaced, "matches its", "match their")+" log entry (the file was replaced): precinto refuses to restore "+verb(replaced, "it", "them")+" (D8)",
+		out = append(out, fail(CheckQuarantine, plural(replaced, "capsule", "capsules")+" in the store no longer "+verb(replaced, "matches its", "match their")+" log entry (the file was replaced): precinto refuses to restore "+verb(replaced, "it", "them"),
 			"restore "+e.arg(l.CapsulesDir)+" from a backup"))
 	}
 	if unlogged > 0 {
-		out = append(out, warn(CheckQuarantine, plural(unlogged, "file", "files")+" in the capsule store "+verb(unlogged, "is", "are")+" not in the provenance log: the next sweep quarantines what has no provenance, and precinto never restores it (D8)",
+		out = append(out, warn(CheckQuarantine, plural(unlogged, "file", "files")+" in the capsule store "+verb(unlogged, "is", "are")+" not in the provenance log: the next sweep quarantines what has no provenance, and precinto never restores it",
 			"precinto sweep"))
 	}
 	if missing > 0 {
@@ -260,7 +260,7 @@ func (e *env) interrupted() []Finding {
 	for _, k := range sortedKeys(kinds) {
 		ks = append(ks, fmt.Sprintf("%s %d", k, kinds[k]))
 	}
-	return []Finding{warn(CheckInterrupted, plural(n, "interrupted operation", "interrupted operations")+" ("+strings.Join(ks, ", ")+") "+verb(n, "waits", "wait")+" for recovery: the files involved may still be readable on disk (I9)",
+	return []Finding{warn(CheckInterrupted, plural(n, "interrupted operation", "interrupted operations")+" ("+strings.Join(ks, ", ")+") "+verb(n, "waits", "wait")+" for recovery: the files involved may still be readable on disk",
 		"precinto sweep")}
 }
 
@@ -351,7 +351,7 @@ func (e *env) holdCapped() []Finding {
 		if n <= 0 || e.unlocked(p.RootID) {
 			continue
 		}
-		out = append(out, warn(CheckHoldCapped, plural(n, "file", "files")+" of "+e.folderOf(p.RootID)+" "+verb(n, "stays", "stay")+" unencrypted although the folder is locked: precinto sees only weak signs that something still writes "+verb(n, "it", "them")+" (S14)",
+		out = append(out, warn(CheckHoldCapped, plural(n, "file", "files")+" of "+e.folderOf(p.RootID)+" "+verb(n, "stays", "stay")+" unencrypted although the folder is locked: precinto sees only weak signs that something still writes "+verb(n, "it", "them"),
 			"quit whatever still runs in that folder, then run: precinto sweep"))
 	}
 	return out
@@ -429,7 +429,7 @@ func (e *env) staleStaging() []Finding {
 				}
 				return nil
 			})
-			out = append(out, warn(CheckInterrupted, e.show(p)+" is an abandoned restore staging folder with "+plural(files, "decrypted file", "decrypted files")+" (D12)",
+			out = append(out, warn(CheckInterrupted, e.show(p)+" is an abandoned restore staging folder with "+plural(files, "decrypted file", "decrypted files"),
 				"rm -r "+e.arg(p)))
 		}
 	}
@@ -560,7 +560,7 @@ func (e *env) claudeTmpPermissions() []Finding {
 	var out []Finding
 	for _, d := range e.claudeTmpDirs() {
 		if p := dirProblem(d, e.d.EUID); p.text != "" {
-			out = append(out, warn(CheckPermissions, "Claude's temp folder "+e.show(d)+" "+p.text+": other users may read session scratch files, and precinto does not restore sessions there (S7)",
+			out = append(out, warn(CheckPermissions, "Claude's temp folder "+e.show(d)+" "+p.text+": other users may read session scratch files, and precinto does not restore sessions there",
 				p.fix(e, d, true)))
 		}
 	}
@@ -590,7 +590,7 @@ func (e *env) staleShellSnapshots() []Finding {
 			}
 		}
 		if n > 0 {
-			out = append(out, warn(CheckResidue, plural(n, "old shell snapshot", "old shell snapshots")+" in "+e.show(dir)+" "+verb(n, "holds", "hold")+" copies of your environment variables (crash leftovers, IM14)",
+			out = append(out, warn(CheckResidue, plural(n, "old shell snapshot", "old shell snapshots")+" in "+e.show(dir)+" "+verb(n, "holds", "hold")+" copies of your environment variables (crash leftovers)",
 				"precinto sweep (it removes them while no Claude session runs)"))
 		}
 	}
@@ -627,7 +627,7 @@ func (e *env) leakResidue() []Finding {
 				return strings.Contains(n, "hook_outputs") || strings.Contains(n, "hook-outputs")
 			}, 2) {
 				if n, size := countFiles(d, 4); n > 0 {
-					out = append(out, warn(CheckResidue, e.show(d)+" holds "+plural(n, "file", "files")+" ("+ui.HumanBytes(size)+") of Codex hook outputs written outside a sealed Codex home (D44)", "remove "+e.arg(d)+" while Codex is not running"))
+					out = append(out, warn(CheckResidue, e.show(d)+" holds "+plural(n, "file", "files")+" ("+ui.HumanBytes(size)+") of Codex hook outputs written outside a sealed Codex home", "remove "+e.arg(d)+" while Codex is not running"))
 				}
 			}
 		}
@@ -760,7 +760,7 @@ func checkPolicyTampered(e *env) []Finding {
 	if !present {
 		for _, id := range e.vaultIDs() {
 			if vi := e.vault(id); vi.v != nil && !vi.v.Meta.LastAudit.IsZero() {
-				return []Finding{warn(CheckPolicyTampered, "the saved copy of the settings you confirmed (state/policy.pinned) is missing although folders have been unlocked before: config.toml alone decides the policy now (D55)", fix)}
+				return []Finding{warn(CheckPolicyTampered, "the saved copy of the settings you confirmed (state/policy.pinned) is missing although folders have been unlocked before: config.toml alone decides the policy now", fix)}
 			}
 		}
 		return nil
@@ -824,7 +824,7 @@ func checkConflict(e *env) []Finding {
 	}
 	var out []Finding
 	for _, id := range sortedKeys(counts) {
-		out = append(out, warn(CheckConflict, plural(counts[id], "file", "files")+" of "+e.folderOf(id)+" "+verb(counts[id], "has", "have")+" two versions kept side by side (the sealed one and a newer copy, D11)",
+		out = append(out, warn(CheckConflict, plural(counts[id], "file", "files")+" of "+e.folderOf(id)+" "+verb(counts[id], "has", "have")+" two versions kept side by side (the sealed one and a newer copy)",
 			"precinto ls --conflicts, then precinto resolve FILE"))
 	}
 	if len(out) == 0 {

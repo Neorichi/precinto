@@ -60,6 +60,7 @@ type env struct {
 	eng    *fakeEngine
 	engErr error
 	engExp []bool
+	engCfg []config.Config // the settings each engine was built from
 
 	vaults *fakeVaults
 	shell  *fakeShell
@@ -155,6 +156,13 @@ func (e *env) app() *app {
 		vaults: func(paths.Layout) vaultStore { return e.vaults },
 		engine: func(ctx context.Context, a *app, experimental bool) (engine, error) {
 			e.engExp = append(e.engExp, experimental)
+			// Like newSweepEngine, the engine is built from the app's
+			// settings: a config.toml that does not load fails it.
+			cfg, err := a.config()
+			if err != nil {
+				return nil, err
+			}
+			e.engCfg = append(e.engCfg, cfg)
 			if e.engErr != nil {
 				return nil, e.engErr
 			}
@@ -236,6 +244,7 @@ type fakeTTY struct {
 	confirms []bool   // Confirm answers
 	prompts  []string // every prompt shown
 	shown    []string // ShowSecretScreen secrets (test only)
+	screens  []error  // ShowSecretScreen results, in order (nil when exhausted)
 	display  []string
 	closed   int
 }
@@ -310,6 +319,11 @@ func (f *fakeTTY) ShowSecretScreen(header []string, secret *memguard.LockedBuffe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.shown = append(f.shown, string(secret.Bytes()))
+	if len(f.screens) > 0 {
+		err := f.screens[0]
+		f.screens = f.screens[1:]
+		return err
+	}
 	return nil
 }
 
@@ -357,6 +371,7 @@ type fakeDaemon struct {
 
 	policies  []ipc.PolicyReq
 	pending   []string
+	policyErr error // the result of a confirming Policy call
 	shutdowns int
 
 	registers []ipc.RegisterReq
@@ -418,6 +433,9 @@ func (d *fakeDaemon) Policy(ctx context.Context, r ipc.PolicyReq) (ipc.PolicyRes
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.policies = append(d.policies, r)
+	if r.Confirm && d.policyErr != nil {
+		return ipc.PolicyResp{}, d.policyErr
+	}
 	return ipc.PolicyResp{Pending: d.pending}, nil
 }
 
@@ -850,12 +868,21 @@ func (v *fakeVaults) Init(ctx context.Context, o vault.InitOptions) (*memguard.L
 	if v.initErr != nil {
 		return nil, v.initErr
 	}
-	v.initialized = true
 	rec := v.recovery
 	if rec == "" {
 		rec = "TEST-RECOVERY-PLACEHOLDER"
 	}
-	return memguard.NewBufferFromBytes([]byte(rec)), nil
+	buf := memguard.NewBufferFromBytes([]byte(rec))
+	if o.Confirm != nil {
+		// vault.Store.Init: Confirm sees the key before anything exists,
+		// and a refusal creates nothing (UX-07).
+		if err := o.Confirm(buf); err != nil {
+			buf.Destroy()
+			return nil, err
+		}
+	}
+	v.initialized = true
+	return buf, nil
 }
 
 func (v *fakeVaults) List() ([]string, error) {

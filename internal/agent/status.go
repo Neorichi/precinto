@@ -309,6 +309,21 @@ func (d *daemon) loadFactors(id string) {
 // creation, factor enrollment, repair).
 func (d *daemon) refreshFactors(id string) { d.loadFactors(id) }
 
+// factorKinds returns vault id's enrolled factor kinds in unlock order
+// (never "recovery"), loading the cache when it has none yet.
+func (d *daemon) factorKinds(id string) []string {
+	d.mu.Lock()
+	kinds, ok := d.factors[id]
+	d.mu.Unlock()
+	if !ok {
+		d.loadFactors(id)
+		d.mu.Lock()
+		kinds = d.factors[id]
+		d.mu.Unlock()
+	}
+	return slices.Clone(kinds)
+}
+
 // pinentryAvailable reports whether a pinentry program the daemon would
 // run is on the PATH (D97: a trusted one only).
 func (d *daemon) pinentryAvailable() bool {

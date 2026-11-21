@@ -287,7 +287,7 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 		t.Fatalf("min_free lowered in config.toml: %d pending policy changes, want 1: %+v", n, s.Attention)
 	}
 	p = startPTY(t, exe, h, h.Root, nil, "unlock", "--root", h.Root)
-	p.expect(ui.Format(ui.MsgPolicyPending, ui.Vars{N: 1}))
+	p.expect(ui.Format(ui.MsgPolicyReview, ui.Vars{N: 1})) // the terminal review (C13.review, UX-14)
 	p.expect("policy.min_free")
 	p.send("y\r")
 	if code := p.wait(); code != 0 {

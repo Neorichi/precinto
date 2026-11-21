@@ -67,6 +67,45 @@ func TestLoadRejects(t *testing.T) {
 	}
 }
 
+// UX-09: a config.toml that does not load names the file, the line and
+// the key, and keeps the reason with its hint (a decimal size, a duration
+// without a unit), so the user can fix it without guessing.
+func TestLoadErrorSaysWhereAndWhy(t *testing.T) {
+	for name, c := range map[string]struct {
+		body string
+		want []string
+	}{
+		"decimal size":  {"version = 1\n[policy]\nidle_soft = \"15m\"\nmin_free = \"2GB\"\n", []string{"config.toml", "line 4", "policy.min_free", `"2GiB"`}},
+		"unitless time": {"version = 1\n[policy]\nidle_soft = \"15\"\n", []string{"config.toml", "line 3", "policy.idle_soft", `"15m"`}},
+		"syntax":        {"version = 1\n[policy]\nidle_soft = 15m\n", []string{"config.toml", "line 3"}},
+		"unknown key":   {"version = 1\n[policy]\nidle_sotf = \"1m\"\n", []string{"config.toml line 3, policy.idle_sotf: unknown key (did you mean idle_soft?)"}},
+		"far key":       {"version = 1\n[policy]\n\n# a comment\nzzz_top = 1\n", []string{"config.toml line 5, policy.zzz_top: unknown key (check its spelling)"}},
+		"root key":      {"version = 1\n[[roots]]\nid = \"a\"\npath = \"/u/a\"\n[[roots]]\nid = \"b\"\npath = \"/u/b\"\nmdd = \"all\"\n", []string{"config.toml line 8, roots.mdd: unknown key (did you mean md?)"}},
+		"harness key":   {"version = 1\n[harness.\"claude-code\"]\nbinn = \"/x\"\n", []string{"config.toml line 3, harness.claude-code.binn: unknown key (did you mean bin?)"}},
+		"dotted key":    {"version = 1\npolicy.idle_sotf = \"1m\"\n", []string{"config.toml line 2, policy.idle_sotf: unknown key (did you mean idle_soft?)"}},
+		"unknown table": {"version = 1\n[polcy]\nidle_soft = \"1m\"\n", []string{"config.toml line 2, polcy: unknown key (did you mean policy?)"}},
+		"enum":          {"version = 1\n[policy]\non_enter = \"always\"\n", []string{"config.toml line 3: policy.on_enter must be prompt, notify or off"}},
+		"zero time":     {"version = 1\n[policy]\nmin_free = \"1GiB\"\nidle_soft = \"0s\"\n", []string{"config.toml line 4: policy.idle_soft must be positive"}},
+		"root enum": {"version = 1\n[[roots]]\nid = \"a\"\npath = \"/u/a\"\nmd = \"all\"\n[[roots]]\nid = \"b\"\npath = \"/u/b\"\nmd = \"some\"\n",
+			[]string{"config.toml line 9: root b md must be ledger, all or off"}},
+		"counter": {"version = 1\n[policy]\nprompt_rate_per_minute = -1\n", []string{"config.toml line 3: policy counters must not be negative"}},
+	} {
+		_, err := config.Load(write(t, c.body))
+		if !errors.Is(err, config.ErrInvalid) {
+			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: %q does not say %q", name, err, w)
+			}
+		}
+		if strings.Count(err.Error(), "invalid configuration") != 1 || strings.Contains(err.Error(), "\n") {
+			t.Errorf("%s: %q is not one plain line", name, err)
+		}
+	}
+}
+
 func TestRootsAndDurations(t *testing.T) {
 	c := config.Default()
 	c.Roots = []config.Root{{ID: "outer", Path: "/u/work"}, {ID: "inner", Path: "/u/work/acme"}}

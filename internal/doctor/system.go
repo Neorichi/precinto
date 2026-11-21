@@ -4,10 +4,27 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/precinto/precinto/internal/config"
 )
 
-// System checks: disk encryption, the binary's hardening, the loader
-// environment, cloud sync, backups and Spotlight (SPEC §4.6, §8.6, §19).
+// System checks: config.toml, disk encryption, the binary's hardening, the
+// loader environment, cloud sync, backups and Spotlight (SPEC §4.6, §8.6,
+// §19).
+
+// checkConfig reports a config.toml that does not load, with the key, line
+// and reason config.Load gives (UX-09). config.toml holds the user's own
+// settings (timers, sizes, folder paths), never session content, so its
+// error text is shown as is.
+func checkConfig(e *env) []Finding {
+	err := e.o.ConfigErr
+	if err == nil {
+		return []Finding{ok(CheckConfig, "config.toml loads")}
+	}
+	text := strings.TrimPrefix(err.Error(), config.ErrInvalid.Error()+": ")
+	return []Finding{fail(CheckConfig, "config.toml does not load ("+oneLine(text)+"): the commands that read it stop until it is fixed; the precinto agent keeps the settings it loaded last",
+		"correct it in "+e.arg(e.o.Layout.ConfigFile)+", then run precinto doctor again")}
+}
 
 func checkDiskEncryption(e *env) []Finding {
 	ctx, cancel := e.bounded()
@@ -55,7 +72,7 @@ func checkUnhardenedBuild(e *env) []Finding {
 			if signed {
 				how = "signed without the hardened runtime"
 			}
-			out = append(out, warn(CheckUnhardenedBuild, e.show(p)+" is "+how+": other programs of your user can inject code into it more easily (S15)",
+			out = append(out, warn(CheckUnhardenedBuild, e.show(p)+" is "+how+": other programs of your user can inject code into it more easily",
 				"install a signed release of precinto once one is published (builds from source are not hardened)"))
 		}
 	}
@@ -86,7 +103,7 @@ func checkLoaderEnv(e *env) []Finding {
 	}
 	sort.Strings(names)
 	list := joinNames(names)
-	msg := "loader variables are set in this environment (" + list + "): they can load other code into precinto and the harnesses (S15)"
+	msg := "loader variables are set in this environment (" + list + "): they can load other code into precinto and the harnesses"
 	fix := "unset " + strings.Join(names, " ") + " and remove them from your shell profile"
 	if inject {
 		return []Finding{fail(CheckLoaderEnv, msg, fix)}
@@ -97,7 +114,7 @@ func checkLoaderEnv(e *env) []Finding {
 func checkBaseSynced(e *env) []Finding {
 	base := e.o.Layout.Base
 	if e.d.CloudSynced(base) {
-		return []Finding{fail(CheckBaseSynced, "precinto's data folder "+e.show(base)+" is inside a cloud-synced folder: the Codex homes and restore staging there hold plaintext while folders are unlocked (S9)",
+		return []Finding{fail(CheckBaseSynced, "precinto's data folder "+e.show(base)+" is inside a cloud-synced folder: the Codex homes and restore staging there hold plaintext while folders are unlocked",
 			"exclude "+e.arg(base)+" from syncing")}
 	}
 	return []Finding{ok(CheckBaseSynced, "precinto's data folder is not cloud-synced")}
@@ -107,7 +124,7 @@ func checkCloudRoot(e *env) []Finding {
 	var out []Finding
 	for _, r := range e.o.Cfg.Roots {
 		if e.d.CloudSynced(r.Path) {
-			out = append(out, warn(CheckCloudRoot, e.folder(r)+" is in a cloud-synced folder: its notes are uploaded while it is unlocked (S17)",
+			out = append(out, warn(CheckCloudRoot, e.folder(r)+" is in a cloud-synced folder: its notes are uploaded while it is unlocked",
 				"move the folder out of the synced location, or exclude it from syncing"))
 		}
 	}
@@ -134,7 +151,7 @@ func checkSpotlight(e *env) []Finding {
 		case err != nil || !known:
 			out = append(out, info(CheckSpotlight, "could not tell whether Spotlight indexes "+e.folder(r), ""))
 		case indexed:
-			out = append(out, warn(CheckSpotlight, "Spotlight indexes "+e.folder(r)+": its index can keep the text of notes after they are sealed (S17)",
+			out = append(out, warn(CheckSpotlight, "Spotlight indexes "+e.folder(r)+": its index can keep the text of notes after they are sealed",
 				"add "+e.folder(r)+" to System Settings > Siri & Spotlight > Spotlight Privacy"))
 		default:
 			clean++

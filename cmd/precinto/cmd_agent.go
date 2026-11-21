@@ -106,15 +106,20 @@ func cmdDoctor(a *app, args []string) int {
 	if len(pos) > 1 {
 		return a.usageFail(f, "doctor takes at most one harness")
 	}
-	cfg, err := a.config()
-	if err != nil {
-		return a.fail("doctor", err)
-	}
 	l, err := a.layout()
 	if err != nil {
 		return a.fail("doctor", err)
 	}
-	o := doctor.Options{Cfg: cfg, Layout: l, Env: a.env, Procs: a.procs(), Leaks: *leaks}
+	cfg, cfgErr := a.config()
+	if cfgErr != nil {
+		// doctor diagnoses a broken config.toml instead of stopping on it
+		// (UX-09): its config check reports the error, the other checks
+		// run with the settings standing in for it (the settings confirmed
+		// last or the defaults, plus every folder whose vault records its
+		// path), and doctor never calls a folder check ok then.
+		cfg, _ = a.standInConfig(l)
+	}
+	o := doctor.Options{Cfg: cfg, Layout: l, Env: a.env, Procs: a.procs(), Leaks: *leaks, ConfigErr: cfgErr}
 	if len(pos) == 1 {
 		o.Harness = pos[0]
 		if _, ok := cfg.Harness[o.Harness]; !ok {

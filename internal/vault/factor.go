@@ -138,7 +138,7 @@ func planPlugin(spec FactorSpec, now time.Time) (*factorPlan, error) {
 	}
 	if tr, err := tag.ParseRecipient(spec.Recipient); err == nil {
 		if tr.Hybrid() {
-			return nil, errors.New("vault: post-quantum tag recipients are not supported in v0.2 (D2)")
+			return nil, errors.New("vault: post-quantum tag recipients are not supported in v0.2")
 		}
 	} else if name, _, err := plugin.ParseRecipient(spec.Recipient); err != nil || name != stubName {
 		// Plain X25519 recipients have no plugin name and are refused: a
@@ -155,7 +155,7 @@ func planPlugin(spec FactorSpec, now time.Time) (*factorPlan, error) {
 			policy = defaultSEAccess
 		}
 		if !seAccessAllowed[policy] {
-			return nil, fmt.Errorf("vault: Secure Enclave access control %q refused (biometry-only and none are not allowed, D3)", policy)
+			return nil, fmt.Errorf("vault: Secure Enclave access control %q refused (biometry-only and none are not allowed)", policy)
 		}
 	} else {
 		if spec.SEAccessControl != "" {

@@ -199,7 +199,7 @@ These rules stop accidents and prompt-injected agents. They are not a boundary a
 - Install the precinto binary in a directory that only an administrator can write.
 - Re-pin an age plugin (`precinto factor repin NAME`) only after an upgrade you made yourself, and only when the new binary it shows is the one you installed.
 - Keep protected folders out of Spotlight and cloud sync, and run `precinto doctor --leaks` now and then.
-- Run `precinto status --check` in scripts: it exits 3 when a locked folder still has unencrypted files.
+- Run `precinto status --check` in scripts: it exits 3 when a locked folder still has unencrypted files, and 1 when it cannot tell (config.toml does not load, or a locked folder could not be scanned), so treat any non-zero exit as a failure.
 
 ## 9. Invariants
 

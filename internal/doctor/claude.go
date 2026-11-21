@@ -62,7 +62,7 @@ func checkClaudeVersion(e *env) []Finding {
 	case !in.versionOK:
 		out = append(out, info(CheckClaudeVersion, "could not tell the version of Claude Code at "+e.show(in.exe), "claude --version"))
 	case in.version.compare(min) < 0:
-		out = append(out, fail(CheckClaudeVersion, fmt.Sprintf("Claude Code %s is older than %s: its hooks cannot block when precinto fails (onFailure), so prompts in a locked folder can go through (D22)", in.version, min),
+		out = append(out, fail(CheckClaudeVersion, fmt.Sprintf("Claude Code %s is older than %s: its hooks cannot block when precinto fails (onFailure), so prompts in a locked folder can go through", in.version, min),
 			"claude update"))
 	default:
 		if inR, ok := inRange(in.version, verified); ok && !inR {
@@ -158,7 +158,7 @@ func checkClaudeHooksOff(e *env) []Finding {
 	var out []Finding
 	for _, f := range e.userSettingsFiles() {
 		if s := e.settingsAt(f); s != nil && s.disableAllHooks {
-			out = append(out, fail(CheckClaudeHooksOff, e.show(f)+" turns off every hook (disableAllHooks): no Claude session can be paused when a folder locks (S6)",
+			out = append(out, fail(CheckClaudeHooksOff, e.show(f)+" turns off every hook (disableAllHooks): no Claude session can be paused when a folder locks",
 				"remove disableAllHooks from "+e.show(f)))
 		}
 	}
@@ -175,7 +175,7 @@ func checkClaudeHooksOff(e *env) []Finding {
 				continue
 			}
 			if s.disableAllHooks {
-				out = append(out, fail(CheckClaudeHooksOff, e.show(f)+" turns off every hook (disableAllHooks): Claude sessions in "+e.folder(r)+" cannot be paused when it locks (S6, S16)",
+				out = append(out, fail(CheckClaudeHooksOff, e.show(f)+" turns off every hook (disableAllHooks): Claude sessions in "+e.folder(r)+" cannot be paused when it locks",
 					"remove disableAllHooks from "+e.show(f)))
 			}
 			var off []string
@@ -185,7 +185,7 @@ func checkClaudeHooksOff(e *env) []Finding {
 				}
 			}
 			if len(off) > 0 {
-				out = append(out, fail(CheckClaudeHooksOff, e.show(f)+" disables precinto's plugin ("+joinNames(off)+"): Claude sessions in "+e.folder(r)+" cannot be paused when it locks (S16)",
+				out = append(out, fail(CheckClaudeHooksOff, e.show(f)+" disables precinto's plugin ("+joinNames(off)+"): Claude sessions in "+e.folder(r)+" cannot be paused when it locks",
 					"remove "+joinNames(off)+" from enabledPlugins in "+e.show(f)))
 			}
 		}
@@ -232,7 +232,7 @@ func checkClaudeSettings(e *env) []Finding {
 			}
 		}
 		if len(drifted) > 0 {
-			out = append(out, warn(CheckClaudeSettings, "the Claude settings precinto wrote in "+e.folder(r)+"/.claude were changed ("+joinNames(drifted)+"): Claude may compact or summarize while the folder is locked (D32)",
+			out = append(out, warn(CheckClaudeSettings, "the Claude settings precinto wrote in "+e.folder(r)+"/.claude were changed ("+joinNames(drifted)+"): Claude may compact or summarize while the folder is locked",
 				"precinto protect "+e.arg(r.Path)+" --claude-settings"))
 		}
 	}
@@ -278,7 +278,7 @@ func checkClaudeSettingsEnv(e *env) []Finding {
 				"check the file by hand: an env with PRECINTO_*, HOME, XDG_*, PATH, DYLD_* or LD_* keys reaches every precinto hook"))
 		default:
 			if bad := flaggedEnvKeys(s.env); len(bad) > 0 {
-				out = append(out, fail(CheckClaudeSettingsEnv, e.show(f)+" sets "+joinNames(bad)+" in env: these reach every precinto hook and can change where it looks for precinto (S2, D56)",
+				out = append(out, fail(CheckClaudeSettingsEnv, e.show(f)+" sets "+joinNames(bad)+" in env: these reach every precinto hook and can change where it looks for precinto",
 					`remove `+joinNames(bad)+` from "env" in `+e.show(f)))
 			}
 		}
@@ -297,10 +297,10 @@ func checkClaudeRetention(e *env) []Finding {
 		case err != nil:
 			out = append(out, info(CheckClaudeRetention, "could not read cleanupPeriodDays from the settings in "+e.show(d), ""))
 		case days <= 2:
-			out = append(out, warn(CheckClaudeRetention, fmt.Sprintf("Claude deletes sessions older than %d days when it starts (cleanupPeriodDays), so precinto restores sessions only when you ask for them (the sealed copies are kept, D14)", days),
+			out = append(out, warn(CheckClaudeRetention, fmt.Sprintf("Claude deletes sessions older than %d days when it starts (cleanupPeriodDays), so precinto restores sessions only when you ask for them (the sealed copies are kept)", days),
 				"set cleanupPeriodDays to 30 or more in "+e.show(filepath.Join(d, "settings.json"))))
 		default:
-			out = append(out, info(CheckClaudeRetention, fmt.Sprintf("Claude deletes sessions older than %d days when it starts (cleanupPeriodDays); precinto keeps the sealed copies and restores sessions up to %d days old by itself, older ones with precinto resume --pick (D14)", days, days-2), ""))
+			out = append(out, info(CheckClaudeRetention, fmt.Sprintf("Claude deletes sessions older than %d days when it starts (cleanupPeriodDays); precinto keeps the sealed copies and restores sessions up to %d days old by itself, older ones with precinto resume --pick", days, days-2), ""))
 		}
 	}
 	return out

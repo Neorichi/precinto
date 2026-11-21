@@ -79,7 +79,7 @@ Every file belongs to exactly one area, and areas never share directories; the f
 | Daemon | `internal/agent/`, `internal/ipc/`, `internal/platform/` | the daemon and its lock state machine, the socket protocol, macOS and Linux specifics |
 | Harness adapters | `internal/harness/`, `internal/ledger/`, `internal/live/`, `inventories/` | what each harness writes, the content-free ledger, liveness |
 | Orchestration | `internal/sweep/` | seal and restore, generations, lineage, the journal, the capsule log, the seal queue |
-| Hooks and packaging | `internal/hook/`, `internal/shellinit/`, `plugin/`, `plugins/codex/`, `.claude-plugin/`, `.agents/plugins/`, `test/e2e/hooks/` | hook decisions, shell integration, the plugins and the POSIX shim |
+| Hooks and packaging | `internal/hook/`, `internal/shellinit/`, `plugin/`, `plugins/codex/`, `.claude-plugin/`, `.agents/plugins/`, `plugins.go`, `test/e2e/hooks/` | hook decisions, shell integration, the plugins and the POSIX shim; `plugins.go` embeds the plugins in the binary for `precinto integrate`, and a file added to a plugin folder joins its `//go:embed` list (a test compares both) |
 | Wrapper | `internal/wrapper/`, `test/e2e/wrapper/` | the PTY proxy, the lock screen, launch orchestration |
 | CLI and tooling | `cmd/precinto/`, `internal/config/`, `internal/paths/`, `internal/doctor/`, `internal/ui/`, `internal/testkit/`, `internal/archtest/`, `Makefile`, `go.mod`, `go.sum`, `test/integration/`, `test/e2e/flows/` | commands, configuration, environment, the message catalog, the test kit, CI |
 | Documentation | `README.md`, `README.es.md`, `docs/THREAT_MODEL.md`, `docs/HARNESSES.md`, `docs/COMPACTION.md`, `SECURITY.md`, `CONTRIBUTING.md`, `TRADEMARKS.md` | user and contributor documentation |

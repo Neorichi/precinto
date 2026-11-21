@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/vault"
@@ -173,6 +176,52 @@ func TestInitFailureRemovesRecoveryOut(t *testing.T) {
 	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
 		t.Fatal("recovery file left behind")
+	}
+}
+
+// UX-07: the recovery key is confirmed before anything exists. Stopping
+// at its screen (Ctrl-C, then no to seeing it again) sets nothing up: init
+// exits 3 saying so, never with a raw "ui: cancelled" or a lost key, and
+// the next init starts over instead of saying "already set up".
+func TestInitStoppedBeforeTheKeyIsConfirmed(t *testing.T) {
+	e := newEnv(t)
+	e.vaults.initialized = false
+	fakePluginDir(t, e, "age-plugin-se")
+	e.execOut["keygen"] = []byte("# public key: age1se1q\nAGE-PLUGIN-SE-1Q\n")
+	e.tty.screens = []error{ui.ErrCancelled}
+	e.tty.yesno = []bool{false} // Show it again? no
+	if code := e.run("init"); code != exitLocked {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if e.vaults.initialized {
+		t.Fatal("init set up the vaults without a confirmed recovery key")
+	}
+	got := e.stderr()
+	if !strings.Contains(got, textInitNotConfirmed) || strings.Contains(got, "ui: cancelled") || strings.Contains(got, ui.Format(ui.MsgRecoveryLost, ui.Vars{})) {
+		t.Fatalf("stderr %q", got)
+	}
+	e.tty.yesno = []bool{false} // no service
+	if code := e.run("init"); code != exitOK || !e.vaults.initialized {
+		t.Fatalf("init again: exit %d (%s)", code, e.stderr())
+	}
+	if len(e.tty.shown) != 2 {
+		t.Fatalf("the second init showed %d keys in all, want a new one", len(e.tty.shown))
+	}
+
+	// With --recovery-out the key is in the file first: a cancelled
+	// --show-recovery screen does not stop init.
+	e = newEnv(t)
+	e.vaults.initialized = false
+	fakePluginDir(t, e, "age-plugin-se")
+	e.execOut["keygen"] = []byte("# public key: age1se1q\nAGE-PLUGIN-SE-1Q\n")
+	e.tty.screens = []error{ui.ErrCancelled}
+	e.tty.yesno = []bool{false, false} // not again; no service
+	out := filepath.Join(e.h.Dir, "recovery.txt")
+	if code := e.run("init", "--recovery-out", out, "--show-recovery"); code != exitOK || !e.vaults.initialized {
+		t.Fatalf("--recovery-out: exit %d (%s)", code, e.stderr())
+	}
+	if b, err := os.ReadFile(out); err != nil || string(b) != "TEST-RECOVERY-PLACEHOLDER\n" {
+		t.Fatalf("recovery file %q %v", b, err)
 	}
 }
 
@@ -537,4 +586,39 @@ func TestFactorRepin(t *testing.T) {
 	if code := e.run("factor", "repin", "recovery"); code != exitUsage {
 		t.Fatalf("recovery: exit %d", code)
 	}
+}
+
+// UX-07: an Init that fails after the key was confirmed says the key of
+// this run is not used, and leaves no recovery file behind.
+func TestInitFailureAfterTheKeyWasConfirmed(t *testing.T) {
+	e := newEnv(t)
+	e.vaults.initialized = false
+	fakePluginDir(t, e, "age-plugin-se")
+	e.execOut["keygen"] = []byte("# public key: age1se1q\nAGE-PLUGIN-SE-1Q\n")
+	a := e.app()
+	inner := a.sys.vaults
+	a.sys.vaults = func(l paths.Layout) vaultStore { return failAfterConfirm{inner(l)} }
+	out := filepath.Join(e.h.Dir, "recovery.txt")
+	if code := a.run([]string{"init", "--recovery-out", out}); code != exitError {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if !strings.Contains(e.stderr(), textInitKeyUnused) {
+		t.Fatalf("stderr %q", e.stderr())
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("recovery file of a failed init left behind")
+	}
+}
+
+// failAfterConfirm is a store whose Init fails after Confirm accepted the
+// key (a factor that could not be wrapped).
+type failAfterConfirm struct{ vaultStore }
+
+func (f failAfterConfirm) Init(ctx context.Context, o vault.InitOptions) (*memguard.LockedBuffer, error) {
+	rec := memguard.NewBufferFromBytes([]byte("TEST-RECOVERY-PLACEHOLDER"))
+	defer rec.Destroy()
+	if err := o.Confirm(rec); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("wrapping a factor failed")
 }

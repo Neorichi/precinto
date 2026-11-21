@@ -48,7 +48,7 @@ func (d *Duration) UnmarshalText(b []byte) error {
 	}
 	v, err := time.ParseDuration(s)
 	if err != nil || v < 0 {
-		return fmt.Errorf("%w: duration %q", ErrInvalid, s)
+		return fmt.Errorf("%w: duration %q (use e.g. \"90s\", \"15m\" or \"8h\")", ErrInvalid, s)
 	}
 	*d = Duration(v)
 	return nil
@@ -323,12 +323,13 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	c := Default()
+	file := filepath.Base(path)
 	md, err := toml.NewDecoder(bytes.NewReader(b)).Decode(&c)
 	if err != nil {
-		return Config{}, fmt.Errorf("%w: %s", ErrInvalid, filepath.Base(path))
+		return Config{}, loadError(file, err)
 	}
 	if und := md.Undecoded(); len(und) > 0 {
-		return Config{}, fmt.Errorf("%w: unknown key %s", ErrInvalid, und[0])
+		return Config{}, unknownKeyError(file, b, und[0])
 	}
 	def := Default()
 	for id, h := range c.Harness {
@@ -345,9 +346,60 @@ func Load(path string) (Config, error) {
 		c.Harness[id] = h
 	}
 	if err := c.Validate(); err != nil {
-		return Config{}, err
+		where := file
+		var ke *keyError
+		if errors.As(err, &ke) {
+			if n := keyLine(b, ke.key, ke.nth); n > 0 {
+				where += " line " + strconv.Itoa(n)
+			}
+		}
+		return Config{}, fmt.Errorf("%w: %s: %s", ErrInvalid, where, reason(err))
 	}
 	return c, nil
+}
+
+// unknownKeyError is the ErrInvalid of a key config.toml does not have,
+// with the line that sets it and the key it probably meant ("config.toml
+// line 3, policy.idle_sotf: unknown key (did you mean idle_soft?)").
+func unknownKeyError(file string, src []byte, key toml.Key) error {
+	where := file
+	if n := keyLine(src, key, -1); n > 0 {
+		where += " line " + strconv.Itoa(n)
+	}
+	hint := "check its spelling"
+	if s := suggestKey(key); s != "" {
+		hint = "did you mean " + s + "?"
+	}
+	return fmt.Errorf("%w: %s, %s: unknown key (%s)", ErrInvalid, where, key, hint)
+}
+
+// loadError is the ErrInvalid of a file the TOML decoder refused, located
+// as the decoder knows it ("config.toml line 4, policy.min_free: size …")
+// and kept on one line: the reason of a refused value carries its hint
+// (UX-09), so the user fixes the file without guessing.
+func loadError(file string, err error) error {
+	where := file
+	var pe toml.ParseError
+	if errors.As(err, &pe) {
+		if pe.Position.Line > 0 {
+			where += " line " + strconv.Itoa(pe.Position.Line)
+		}
+		if pe.LastKey != "" {
+			where += ", " + pe.LastKey
+		}
+		return fmt.Errorf("%w: %s: %s", ErrInvalid, where, reason(errors.New(pe.Message)))
+	}
+	return fmt.Errorf("%w: %s: %s", ErrInvalid, where, reason(err))
+}
+
+// reason is the text of err without a leading ErrInvalid text, on one
+// line.
+func reason(err error) string {
+	s := strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // Save validates c and writes it atomically with mode 0600. Implemented in
@@ -370,8 +422,14 @@ func (c Config) Validate() error {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 	}
+	// badKey is bad for one key, which Load locates in the file (UX-09):
+	// nth is the index of its [[roots]] or [[harness.<id>.homes]] table,
+	// -1 for a key outside an array of tables.
+	badKey := func(key string, nth int, format string, args ...any) error {
+		return &keyError{key: strings.Split(key, "."), nth: nth, err: bad(format, args...)}
+	}
 	if c.Version != SchemaVersion {
-		return bad("version %d (want %d)", c.Version, SchemaVersion)
+		return badKey("version", -1, "version %d (want %d)", c.Version, SchemaVersion)
 	}
 	p := c.Policy
 	positive := map[string]Duration{
@@ -380,13 +438,13 @@ func (c Config) Validate() error {
 	}
 	for k, d := range positive {
 		if d <= 0 {
-			return bad("policy.%s must be positive", k)
+			return badKey("policy."+k, -1, "policy.%s must be positive", k)
 		}
 	}
 	// D63: every sealing process waits once for quiet_window, so it must
 	// be long enough to see a writer pause; 0 keeps the 120 s default.
 	if q := p.QuietWindow.D(); q != 0 && q < minQuietWindow {
-		return bad("policy.quiet_window must be at least %s (0 means the %s default)", minQuietWindow, defaultQuietWindow)
+		return badKey("policy.quiet_window", -1, "policy.quiet_window must be at least %s (0 means the %s default)", minQuietWindow, defaultQuietWindow)
 	}
 	nonNegative := map[string]Duration{
 		"idle_hard": p.IdleHard, "screen_lock_hard_after": p.ScreenLockHardAfter, "busy_grace": p.BusyGrace,
@@ -394,53 +452,55 @@ func (c Config) Validate() error {
 	}
 	for k, d := range nonNegative {
 		if d < 0 {
-			return bad("policy.%s is negative", k)
+			return badKey("policy."+k, -1, "policy.%s is negative", k)
 		}
 	}
 	if p.MaxUnlock.D() > MaxUnlockCap {
-		return bad("policy.max_unlock above %s", MaxUnlockCap)
+		return badKey("policy.max_unlock", -1, "policy.max_unlock above %s", MaxUnlockCap)
 	}
-	if p.RestoreRecent < 0 || p.RestoreMaxBytes < 0 || p.PromptRatePerMinute < 0 {
-		return bad("policy counters must not be negative")
+	for k, n := range map[string]int64{"restore_recent": int64(p.RestoreRecent), "restore_max_bytes": p.RestoreMaxBytes, "prompt_rate_per_minute": int64(p.PromptRatePerMinute)} {
+		if n < 0 {
+			return badKey("policy."+k, -1, "policy counters must not be negative")
+		}
 	}
 	// D76: the floor keeps precinto from filling the volume; 0 keeps the
 	// 2 GiB default.
 	if m := p.MinFree; m != 0 && m < MinMinFree {
-		return bad("policy.min_free must be at least %s (0 means the %s default)", sizeText(MinMinFree), sizeText(DefaultMinFree))
+		return badKey("policy.min_free", -1, "policy.min_free must be at least %s (0 means the %s default)", sizeText(MinMinFree), sizeText(DefaultMinFree))
 	}
 	if !oneOf(p.OnEnter, OnEnterPrompt, OnEnterNotify, OnEnterOff) {
-		return bad("policy.on_enter %q", p.OnEnter)
+		return badKey("policy.on_enter", -1, "policy.on_enter must be %s, %s or %s", OnEnterPrompt, OnEnterNotify, OnEnterOff)
 	}
 	if !oneOf(p.MDSealOn, MDSealOnLock, MDSealOnEnd) {
-		return bad("policy.md_seal_on %q", p.MDSealOn)
+		return badKey("policy.md_seal_on", -1, "policy.md_seal_on must be %s or %s", MDSealOnLock, MDSealOnEnd)
 	}
 	ids, roots := map[string]bool{}, map[string]bool{}
-	for _, r := range c.Roots {
+	for i, r := range c.Roots {
 		if r.ID == "" || ids[r.ID] {
-			return bad("root id %q missing or duplicate", r.ID)
+			return badKey("roots.id", i, "root id %q missing or duplicate", r.ID)
 		}
 		ids[r.ID] = true
 		if cp, ok := paths.Clean(r.Path); !ok || cp == "/" {
-			return bad("root %s path is not an absolute clean path", r.ID)
+			return badKey("roots.path", i, "root %s path is not an absolute clean path", r.ID)
 		}
 		if strings.ContainsFunc(r.Path, func(c rune) bool { return c < 0x20 || c == 0x7f }) {
-			return bad("root %s path contains a control character", r.ID) // roots.list is line-based
+			return badKey("roots.path", i, "root %s path contains a control character", r.ID) // roots.list is line-based
 		}
 		if roots[r.Path] {
-			return bad("root path listed twice")
+			return badKey("roots.path", i, "root path listed twice")
 		}
 		roots[r.Path] = true
 		if r.MD != "" && !oneOf(r.MD, MDLedger, MDAll, MDOff) {
-			return bad("root %s md %q", r.ID, r.MD)
+			return badKey("roots.md", i, "root %s md must be %s, %s or %s", r.ID, MDLedger, MDAll, MDOff)
 		}
 		if r.OnEnter != "" && !oneOf(r.OnEnter, OnEnterPrompt, OnEnterNotify, OnEnterOff) {
-			return bad("root %s on_enter %q", r.ID, r.OnEnter)
+			return badKey("roots.on_enter", i, "root %s on_enter must be %s, %s or %s", r.ID, OnEnterPrompt, OnEnterNotify, OnEnterOff)
 		}
 	}
 	for id, h := range c.Harness {
-		for _, home := range h.Homes {
+		for j, home := range h.Homes {
 			if _, ok := paths.Clean(home.Dir); !ok {
-				return bad("harness.%s home is not an absolute clean path", id)
+				return &keyError{key: []string{"harness", id, "homes", "dir"}, nth: j, err: bad("harness.%s home is not an absolute clean path", id)}
 			}
 		}
 	}

@@ -139,7 +139,7 @@ func checkCodexVersion(e *env) []Finding {
 			}
 		}
 		if len(unknown) > 0 {
-			out = append(out, info(CheckCodexVersion, "the sealed Codex home of "+e.folder(h.root)+" has entries precinto does not know ("+joinNames(unknown)+"); they are sealed with the rest (HA24)", ""))
+			out = append(out, info(CheckCodexVersion, "the sealed Codex home of "+e.folder(h.root)+" has entries precinto does not know ("+joinNames(unknown)+"); they are sealed with the rest", ""))
 		}
 	}
 	if len(out) == 0 {
@@ -175,7 +175,7 @@ func checkCodexHooksTrust(e *env) []Finding {
 	if home := e.codexUserHome(); home != "" {
 		trusted, known, err := e.d.CodexHooksTrusted(home)
 		if err == nil && known && !trusted {
-			out = append(out, warn(CheckCodexHooksTrust, "Codex has not trusted precinto's hooks in your own Codex home ("+e.show(home)+"), so Codex started there without precinto in a protected folder is not stopped (D31)",
+			out = append(out, warn(CheckCodexHooksTrust, "Codex has not trusted precinto's hooks in your own Codex home ("+e.show(home)+"), so Codex started there without precinto in a protected folder is not stopped",
 				`run codex (outside precinto), then /hooks, and trust "precinto"`))
 		} else if err == nil && known {
 			trustedN++
@@ -211,7 +211,7 @@ func checkCodexShellNoise(e *env) []Finding {
 		return []Finding{warn(CheckCodexShellNoise, fmt.Sprintf("%s -lc true did not finish within %s: Codex runs every hook through your login shell and gives SessionEnd 3 s", name, shellTimeout),
 			"make your login profile start faster")}
 	case printed > 0:
-		return []Finding{warn(CheckCodexShellNoise, fmt.Sprintf("%s -lc true prints %s on stdout: Codex runs hooks through your login shell, and that output corrupts their answers (HA6)", name, plural(printed, "byte", "bytes")),
+		return []Finding{warn(CheckCodexShellNoise, fmt.Sprintf("%s -lc true prints %s on stdout: Codex runs hooks through your login shell, and that output corrupts their answers", name, plural(printed, "byte", "bytes")),
 			"move whatever prints in your login profile behind an interactive-shell check, or send it to stderr")}
 	case err != nil:
 		return []Finding{info(CheckCodexShellNoise, fmt.Sprintf("%s -lc true failed, so Codex hooks may fail to start", name), "check that "+e.arg(shell)+" -lc true succeeds")}
@@ -301,7 +301,7 @@ func checkCodexOutsideRuns(e *env) []Finding {
 			n++
 		}
 		if n > 0 {
-			out = append(out, warn(CheckCodexOutsideRuns, plural(n, "Codex conversation", "Codex conversations")+" in the sealed Codex home of "+e.folder(h.root)+" "+verb(n, "has", "have")+" no matching sealed copy and no precinto run is active: Codex may have run there without precinto (R12)",
+			out = append(out, warn(CheckCodexOutsideRuns, plural(n, "Codex conversation", "Codex conversations")+" in the sealed Codex home of "+e.folder(h.root)+" "+verb(n, "has", "have")+" no matching sealed copy and no precinto run is active: Codex may have run there without precinto",
 				"precinto sweep seals them; if precinto run codex then refuses, choose a side: precinto codex reconcile --root "+e.arg(h.root.Path)+" --prefer capsule|plaintext"))
 		}
 	}

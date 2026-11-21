@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/shellinit"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/ui"
@@ -35,6 +38,20 @@ type statusV1 struct {
 	Folders   []statusFolder  `json:"folders"`
 	Harnesses []statusHarness `json:"harnesses"`
 	Attention []ipc.Attention `json:"attention"`
+
+	// policy is the policy in force (floorPolicy: config.toml merged with
+	// the confirmed settings, as the agent enforces it) that the human
+	// output quotes; never part of the JSON.
+	policy config.Policy
+	// When config.toml does not load (UX-09): standIn names the settings
+	// that stand in for it ("the settings confirmed last"), and configErr
+	// is its error, so --check never passes.
+	standIn   string
+	configErr error
+	// plainScanned: the plaintext summary ran (with config.toml or the
+	// stand-in settings); plainNote: why it did not.
+	plainScanned bool
+	plainNote    string
 }
 
 type statusVault struct {
@@ -89,6 +106,10 @@ type statusPlaintext struct {
 	Files    int            `json:"files"`
 	Bytes    int64          `json:"bytes"`
 	ByReason map[string]int `json:"by_reason"`
+	// Incomplete: the counts may miss files, because config.toml does not
+	// load (they were counted with the settings standing in for it) or the
+	// folder could not be scanned; --check never passes on them (UX-09).
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 type statusHarness struct {
@@ -127,11 +148,34 @@ func cmdStatus(a *app, args []string) int {
 		a.printStatus(a.out, s)
 	}
 	if *check {
-		for _, fo := range s.Folders {
-			if fo.State != "unlocked" && fo.Unencrypted.Files > 0 {
-				return exitLocked
-			}
+		return a.checkStatus(s)
+	}
+	return exitOK
+}
+
+// checkStatus is the exit code of `status --check`: 3 when a folder that
+// is not unlocked has unencrypted files; else 1 when the check could not
+// look everywhere (config.toml does not load, or a locked folder could not
+// be scanned), so that a broken file never makes the check pass (UX-09);
+// else 0.
+func (a *app) checkStatus(s statusV1) int {
+	unknown := false
+	for _, fo := range s.Folders {
+		if fo.State == "unlocked" {
+			continue
 		}
+		if fo.Unencrypted.Files > 0 {
+			return exitLocked
+		}
+		unknown = unknown || fo.Unencrypted.Incomplete
+	}
+	switch {
+	case s.configErr != nil:
+		a.say(textCheckConfig, configErrorText(s.configErr))
+		return exitError
+	case unknown:
+		a.say(textCheckUnscanned, s.plainNote)
+		return exitError
 	}
 	return exitOK
 }
@@ -142,15 +186,21 @@ func cmdStatus(a *app, args []string) int {
 func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 	s := statusV1{V: statusVersion, Folders: []statusFolder{}, Harnesses: []statusHarness{}, Attention: []ipc.Attention{}}
 	s.Vault.Factors = []string{}
-	cfg, err := a.config()
-	if err != nil {
-		return s, err
-	}
 	l, err := a.layout()
 	if err != nil {
 		return s, err
 	}
 	var local []ipc.Attention
+	cfg, cfgErr := a.config()
+	if cfgErr != nil {
+		// UX-09: status still answers. The settings confirmed last (or the
+		// defaults) stand in, with every folder whose vault records its
+		// path and, below, the agent's view; the broken file is an
+		// attention item with its line, key and reason.
+		cfg, s.standIn = a.standInConfig(l)
+		s.configErr = cfgErr
+		local = append(local, ipc.Attention{Code: doctor.CheckConfig, Detail: configErrorText(cfgErr), Fix: textConfigFix})
+	}
 
 	if fileExists(l.Base) {
 		if vs, err := a.vaults(); err == nil {
@@ -181,6 +231,14 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 		}
 		c.Close()
 	}
+	if st != nil && cfgErr != nil {
+		for _, v := range st.Vaults {
+			if v.VaultID != vault.GlobalID {
+				addStandInRoot(&cfg, v.VaultID, v.RootPath)
+			}
+		}
+	}
+	s.policy = floorPolicy(cfg, l)
 	if st != nil {
 		s.Agent.Running, s.Agent.PID, s.Agent.Version, s.Agent.ScreenWatch = true, st.PID, st.Version, st.ScreenWatch
 		if !st.Started.IsZero() {
@@ -206,9 +264,19 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 	plain := map[string]sweep.Plaintext{}
 	var units []sweep.UnitInfo
 	var wrongHome map[string]int
+	s.plainNote = textPlainNotSetUp
 	if s.Vault.Initialized {
-		if eng, err := a.engine(ctx, false); err == nil {
+		// The engine is built from config.toml, or from the stand-in
+		// settings when it does not load, so that the folders are still
+		// scanned (UX-09).
+		src := a
+		if cfgErr != nil {
+			src = a.withConfig(cfg)
+		}
+		s.plainNote = textPlainUnscanned
+		if eng, err := src.engine(ctx, false); err == nil {
 			if ps, err := eng.PlaintextSummary(ctx); err == nil {
+				s.plainScanned, s.plainNote = true, ""
 				for _, p := range ps {
 					plain[p.RootID] = p
 				}
@@ -284,6 +352,7 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 				fo.Unencrypted.ByReason[k] = v
 			}
 		}
+		fo.Unencrypted.Incomplete = !s.plainScanned || cfgErr != nil
 		if fo.State != "unlocked" && fo.Unencrypted.Files > 0 {
 			local = append(local, ipc.Attention{Code: ipc.AttnUnsealed, Folder: a.display(r.Path), Count: fo.Unencrypted.Files, Fix: "precinto doctor"})
 		}
@@ -354,6 +423,87 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 
 	s.Attention = mergeAttention(stAttention(st), local)
 	return s, nil
+}
+
+// configErrorText is a config.toml error for an attention item or a
+// finding: one line, without the error class prefix ("config.toml line 3,
+// policy.min_free: size …").
+func configErrorText(err error) string {
+	return oneLineText(strings.TrimPrefix(err.Error(), config.ErrInvalid.Error()+": "))
+}
+
+// standInConfig is what stands in for a config.toml that does not load
+// (UX-09): the settings confirmed last (state/policy.pinned), else the
+// defaults, plus every protected folder whose vault records its path
+// (vault.toml root_path), so that status, doctor and their scans still
+// see each folder. what names the settings for the user.
+func (a *app) standInConfig(l paths.Layout) (cfg config.Config, what string) {
+	cfg, what = config.Default(), textStandInDefaults
+	if pinned, ok, err := config.LoadPinned(l.PolicyPinned); err == nil && ok {
+		cfg, what = pinned.Config, textStandInPinned
+	}
+	// A pin is never validated (a forged one may list "/"): its folders
+	// pass the checks of addStandIn like every other.
+	pinnedRoots := cfg.Roots
+	cfg.Roots = nil
+	for _, r := range pinnedRoots {
+		addStandIn(&cfg, r)
+	}
+	if !fileExists(l.VaultsDir) {
+		return cfg, what
+	}
+	vs, err := a.vaults()
+	if err != nil {
+		return cfg, what
+	}
+	ids, err := vs.List()
+	if err != nil {
+		return cfg, what
+	}
+	for _, id := range ids {
+		if id == vault.GlobalID {
+			continue
+		}
+		if m, err := vs.Meta(id); err == nil {
+			addStandInRoot(&cfg, id, m.RootPath)
+		}
+	}
+	return cfg, what
+}
+
+// addStandInRoot adds the folder id at path, with the default settings,
+// to stand-in settings (addStandIn).
+func addStandInRoot(cfg *config.Config, id, path string) {
+	addStandIn(cfg, config.Root{ID: id, Path: path})
+}
+
+// addStandIn adds folder r to stand-in settings unless they already have
+// its id or its path, or r has no id or a path that is not absolute and
+// clean (or is /).
+func addStandIn(cfg *config.Config, r config.Root) {
+	if r.ID == "" {
+		return
+	}
+	if p, ok := paths.Clean(r.Path); !ok || p != r.Path || p == "/" {
+		return
+	}
+	for _, x := range cfg.Roots {
+		if x.ID == r.ID || x.Path == r.Path {
+			return
+		}
+	}
+	cfg.Roots = append(cfg.Roots, r)
+}
+
+// withConfig returns a copy of a whose config() is cfg, for an engine
+// built from settings standing in for a config.toml that does not load
+// (UX-09).
+func (a *app) withConfig(cfg config.Config) *app {
+	b := newApp(a.stdio, a.env, a.sys)
+	b.lay, b.layErr = a.layout()
+	b.layDone = true
+	b.cfg, b.cfgDone = cfg, true
+	return b
 }
 
 func stAttention(st *ipc.StatusResp) []ipc.Attention {
@@ -456,8 +606,7 @@ func (a *app) wrapperInstalled() (installed bool) {
 
 // printStatus renders the human status (SPEC §16.4).
 func (a *app) printStatus(w io.Writer, s statusV1) {
-	cfg, _ := a.config()
-	p := cfg.Policy
+	p := s.policy
 	if !s.Vault.Initialized {
 		fmt.Fprintf(w, "vault    not set up (run precinto init)\n")
 	} else {
@@ -502,9 +651,17 @@ func (a *app) printStatus(w io.Writer, s statusV1) {
 		if fo.Background > 0 {
 			fmt.Fprintf(w, "      background sessions: %d (never ended by precinto)\n", fo.Background)
 		}
-		if fo.Unencrypted.Files > 0 {
-			fmt.Fprintf(w, "      unencrypted: %d files (%s)%s\n", fo.Unencrypted.Files, ui.HumanBytes(fo.Unencrypted.Bytes), reasonList(fo.Unencrypted.ByReason))
-		} else {
+		u := fo.Unencrypted
+		switch {
+		case u.Incomplete && !s.plainScanned:
+			fmt.Fprintf(w, "      unencrypted: unknown (%s)\n", s.plainNote)
+		case u.Incomplete && u.Files > 0:
+			fmt.Fprintf(w, "      unencrypted: %d files (%s)%s, found with %s (config.toml does not load)\n", u.Files, ui.HumanBytes(u.Bytes), reasonList(u.ByReason), s.standIn)
+		case u.Incomplete:
+			fmt.Fprintf(w, "      unencrypted: none found with %s (config.toml does not load)\n", s.standIn)
+		case u.Files > 0:
+			fmt.Fprintf(w, "      unencrypted: %d files (%s)%s\n", u.Files, ui.HumanBytes(u.Bytes), reasonList(u.ByReason))
+		default:
 			fmt.Fprintln(w, "      unencrypted: none")
 		}
 	}
@@ -518,7 +675,7 @@ func (a *app) printStatus(w io.Writer, s statusV1) {
 			state += " (experimental, wrapper only)"
 		}
 		hooks := map[string]string{"ok": "hooks OK", "not-seen": "hooks not seen in its running sessions", "unknown": "hooks: no session seen"}[h.Hooks]
-		wrap := "wrapper not installed (precinto shell-init --install)"
+		wrap := "wrapper not installed (" + a.shellInitHint() + ")"
 		if h.Wrapper {
 			wrap = "wrapper installed"
 		}
@@ -550,6 +707,17 @@ func (a *app) printStatus(w io.Writer, s statusV1) {
 		}
 		fmt.Fprintln(w, line)
 	}
+}
+
+// shellInitHint is the command that installs the shell integration
+// (UX-12): shell-init needs the shell's name, taken from $SHELL when it is
+// zsh, bash or fish.
+func (a *app) shellInitHint() string {
+	switch sh := filepath.Base(a.env.Get("SHELL")); sh {
+	case shellinit.Zsh, shellinit.Bash, shellinit.Fish:
+		return "precinto shell-init " + sh + " --install"
+	}
+	return "precinto shell-init zsh|bash|fish --install"
 }
 
 // sweepAge describes the background re-seal heartbeat.
