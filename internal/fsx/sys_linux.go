@@ -15,6 +15,11 @@ import (
 // FullSync.
 const osName = "linux"
 
+// privateGroups enables the D67 user-private group exception (upg.go):
+// with umask 002 every directory a harness creates is 0775 and owned by the
+// user's private group.
+var privateGroups = true
+
 func statFrom(st *unix.Stat_t) Stat {
 	return Stat{
 		Dev:     uint64(st.Dev),

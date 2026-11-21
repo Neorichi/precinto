@@ -249,7 +249,9 @@ func validateManifest(m *Manifest, lim Limits, check func(Entry) error) error {
 			total += e.Size
 		}
 	}
-	if total > lim.MaxTotal {
+	// A budget ≤ 0 (no free space above the floor) refuses any capsule with
+	// plaintext bytes; one of empty files and directories needs none.
+	if budget := max(lim.MaxTotal, 0); total > budget {
 		return fmt.Errorf("%w: %d bytes of plaintext (budget %d)", ErrTooLarge, total, lim.MaxTotal)
 	}
 	if err := checkConflicts(m.Files, runtime.GOOS == "darwin"); err != nil {

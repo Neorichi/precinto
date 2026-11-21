@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/fsx"
@@ -169,6 +170,21 @@ func TestReadSalt(t *testing.T) {
 	if _, ok, err := capsule.ReadSalt(fifo); ok || !errors.Is(err, fsx.ErrUnsafe) {
 		t.Errorf("FIFO salt: %v %v", ok, err)
 	}
+	// The sealers' LoadSalt refuses the FIFO too, at once, and never
+	// replaces it with a fresh salt (every unit key depends on it).
+	done := make(chan error, 1)
+	go func() { _, err := capsule.LoadSalt(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, fsx.ErrUnsafe) {
+			t.Errorf("LoadSalt of a FIFO: %v, want ErrUnsafe", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("LoadSalt blocked on a FIFO")
+	}
+	if fi, err := os.Lstat(fifo); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("the FIFO was replaced: %v %v", fi, err)
+	}
 	short := filepath.Join(dir, "short.salt")
 	if err := os.WriteFile(short, []byte("short"), 0o600); err != nil {
 		t.Fatal(err)
@@ -178,5 +194,42 @@ func TestReadSalt(t *testing.T) {
 	}
 	if _, _, err := capsule.ReadSalt("relative/name.salt"); !errors.Is(err, capsule.ErrUnsafe) {
 		t.Errorf("relative path: %v", err)
+	}
+}
+
+// Limits.MaxTotal ≤ 0 refuses any capsule with plaintext bytes (CC-03),
+// and only those: empty files and directories need no budget.
+func TestExtractBudgetAtOrBelowZero(t *testing.T) {
+	k := newKeys(t)
+	extract := func(u *unit, name string, max int64) error {
+		t.Helper()
+		f, _, err := u.out.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		_, _, err = capsule.Extract(context.Background(), f, capsule.ExtractOptions{
+			FileKey: fileKey(t, u.out, name, k.vault), Staging: newStaging(t, u.root), Limits: capsule.Limits{MaxTotal: max}, Check: allowAll,
+		})
+		return err
+	}
+	full := newUnit(t)
+	full.write("a", []byte("x"))
+	if _, err := seal(t, full, k, "g000001.pcap", full.inputs("a"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	empty := newUnit(t)
+	empty.write("empty.json", nil)
+	dirs := []capsule.Entry{{Base: capsule.BaseClaudeConfig, Rel: "file-history/x", Dir: true, Mode: 0o700}}
+	if _, err := seal(t, empty, k, "g000001.pcap", empty.inputs("empty.json"), dirs, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, max := range []int64{0, -1, -1 << 40} {
+		if err := extract(full, "g000001.pcap", max); !errors.Is(err, capsule.ErrTooLarge) {
+			t.Errorf("MaxTotal %d, 1 byte of plaintext: %v, want ErrTooLarge", max, err)
+		}
+		if err := extract(empty, "g000001.pcap", max); err != nil {
+			t.Errorf("MaxTotal %d, no plaintext bytes: %v", max, err)
+		}
 	}
 }

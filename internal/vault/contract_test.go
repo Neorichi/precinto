@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/fsx"
@@ -50,6 +51,44 @@ func TestMarkAudited(t *testing.T) {
 	}
 	if _, _, err := fx.Store.Recipients("root-acme"); err != nil {
 		t.Fatalf("Recipients after MarkAudited: %v", err)
+	}
+}
+
+// A last_audit or recovery_verified_at later than now (forged, or written
+// under a skewed clock) counts as zero: the next mark replaces it even
+// though it is older.
+func TestMarksReplaceAFutureValue(t *testing.T) {
+	fx := vaulttest.New(t, mustRealTemp(t), "root-acme")
+	path := filepath.Join(fx.Store.VaultsDir, "root-acme", "vault.toml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+	forged := strings.Replace(string(b), "last_audit = 0001-01-01T00:00:00Z", "last_audit = "+future, 1)
+	forged = strings.Replace(forged, "recovery_verified_at = 0001-01-01T00:00:00Z", "recovery_verified_at = "+future, 1)
+	if forged == string(b) || strings.Count(forged, future) != 2 {
+		t.Fatalf("vault.toml layout changed:\n%s", b)
+	}
+	if err := os.WriteFile(path, []byte(forged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	if err := fx.Store.MarkAudited("root-acme", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.Store.MarkRecoveryVerified(at); err != nil {
+		t.Fatal(err)
+	}
+	v, err := fx.Store.Open("root-acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.Meta.LastAudit.Equal(at) || !v.Meta.RecoveryVerifiedAt.Equal(at) {
+		t.Fatalf("last_audit %v, recovery_verified_at %v: the future values were kept (want %v)", v.Meta.LastAudit, v.Meta.RecoveryVerifiedAt, at)
+	}
+	if _, _, err := fx.Store.Recipients("root-acme"); err != nil {
+		t.Fatalf("Recipients after the rewrite: %v", err)
 	}
 }
 
@@ -134,11 +173,36 @@ func TestBadSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, factor := range map[string]string{"passphrase": "passphrase", "recovery": "recovery"} {
-		_, err := v.Unwrap(context.Background(), factor, uiWith("AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ wrong").AsUI())
-		if !errors.Is(err, vault.ErrBadSecret) || errors.Is(err, vault.ErrWrongIdentity) || errors.Is(err, vault.ErrMACMismatch) {
-			t.Errorf("%s: wrong secret = %v, want ErrBadSecret", name, err)
+	foreign, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	isBadSecret := func(err error) bool {
+		return errors.Is(err, vault.ErrBadSecret) && !errors.Is(err, vault.ErrWrongIdentity) && !errors.Is(err, vault.ErrMACMismatch)
+	}
+	for name, c := range map[string]struct{ factor, secret string }{
+		"wrong passphrase":            {"passphrase", "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ wrong"},
+		"malformed recovery key":      {"recovery", "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ wrong"},
+		"another valid recovery key":  {"recovery", foreign.String()},
+		"the vault key, not recovery": {"recovery", fx.Identity.String()},
+	} {
+		if _, err := v.Unwrap(context.Background(), c.factor, uiWith(c.secret).AsUI()); !isBadSecret(err) {
+			t.Errorf("%s: %v, want ErrBadSecret", name, err)
 		}
+	}
+	if _, err := vault.ParseRecoveryKey(lb(t, "not a key")); !isBadSecret(err) {
+		t.Errorf("ParseRecoveryKey of garbage = %v, want ErrBadSecret", err)
+	}
+	// Create confirms the install passphrase against the global vault: a
+	// wrong one is a bad secret too, an empty answer a cancel.
+	if _, err := fx.Store.Create(context.Background(), "root-beta", "", uiWith("not the passphrase of this install").AsUI()); !isBadSecret(err) {
+		t.Errorf("Create with a wrong passphrase = %v, want ErrBadSecret", err)
+	}
+	if _, err := fx.Store.Create(context.Background(), "root-beta", "", uiWith("").AsUI()); !errors.Is(err, vault.ErrCancelled) {
+		t.Errorf("Create with an empty passphrase = %v, want ErrCancelled", err)
+	}
+	if _, err := fx.Store.Open("root-beta"); !errors.Is(err, vault.ErrNotFound) {
+		t.Errorf("a refused Create left a vault: %v", err)
 	}
 }
 

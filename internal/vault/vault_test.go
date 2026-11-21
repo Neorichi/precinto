@@ -743,8 +743,25 @@ func TestRecoveryKeyFormatParseVerify(t *testing.T) {
 	if err := vault.VerifyRecovery(key, hdr); err != nil {
 		t.Fatal(err)
 	}
-	if err := vault.VerifyRecovery(lb(t, other.String()), sealedHeader(t, id.Recipient())); !errors.Is(err, vault.ErrWrongIdentity) {
-		t.Fatalf("VerifyRecovery with another key = %v", err)
+	// A wrong recovery key is a bad secret (exit 3, CC-08), never a tamper
+	// error; so is a malformed one.
+	for name, wrong := range map[string]string{"another key": other.String(), "malformed": "AGE-SECRET-KEY-1 nonsense"} {
+		err := vault.VerifyRecovery(lb(t, wrong), sealedHeader(t, id.Recipient()))
+		if !errors.Is(err, vault.ErrBadSecret) || errors.Is(err, vault.ErrWrongIdentity) {
+			t.Fatalf("VerifyRecovery with %s = %v, want ErrBadSecret", name, err)
+		}
+	}
+	// A header whose MAC fails once the right key opened its stanza was
+	// tampered with: that is not the user's mistake.
+	hdr = sealedHeader(t, id.Recipient())
+	mac := bytes.LastIndex(hdr, []byte("--- ")) + len("--- ")
+	if hdr[mac] == 'A' { // another valid base64 character: the MAC, not the syntax, fails
+		hdr[mac] = 'B'
+	} else {
+		hdr[mac] = 'A'
+	}
+	if err := vault.VerifyRecovery(key, hdr); !errors.Is(err, vault.ErrWrongIdentity) || errors.Is(err, vault.ErrBadSecret) {
+		t.Fatalf("VerifyRecovery of a tampered header = %v, want ErrWrongIdentity", err)
 	}
 }
 

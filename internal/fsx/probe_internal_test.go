@@ -10,16 +10,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TestProbeHeldUnsupportedAndRecreated is the fsx half of TESTPLAN CODX-6:
-// a lock file unlinked and recreated during the probe, and a file system
-// without flock (ENOTSUP), are both reported as held.
+// TestProbeHeldUnsupportedAndRecreated is the fsx half of TESTPLAN CODX-6
+// (CC-06): a missing lease file was never held (false, nil), while a lock
+// file unlinked, recreated or swapped by a rename during the probe, and a
+// file system without flock (ENOTSUP), are all reported as held.
 func TestProbeHeldUnsupportedAndRecreated(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "x.lease")
+	calls := 0
+	flockFn = func(fd, how int) error { calls++; return unix.Flock(fd, how) }
+	defer func() { flockFn = unix.Flock }()
+	if held, err := ProbeHeld(p); held || err != nil || calls != 0 {
+		t.Errorf("missing lease file: held=%v err=%v (%d flock calls), want (false, nil)", held, err, calls)
+	}
 	if err := os.WriteFile(p, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { flockFn = unix.Flock }()
 
 	flockFn = func(fd, how int) error { return unix.ENOTSUP }
 	if held, err := ProbeHeld(p); !held || err == nil || Classify(err) != ClassIO {
@@ -39,6 +45,19 @@ func TestProbeHeldUnsupportedAndRecreated(t *testing.T) {
 		t.Errorf("recreated during the probe: held=%v err=%v", held, err)
 	}
 
+	// Another file renamed over the lease file (an atomic swap of inodes).
+	flockFn = func(fd, how int) error {
+		if how&unix.LOCK_UN != 0 {
+			q := p + ".other"
+			os.WriteFile(q, nil, 0o600)
+			os.Rename(q, p)
+		}
+		return unix.Flock(fd, how)
+	}
+	if held, err := ProbeHeld(p); !held || err != nil {
+		t.Errorf("swapped by a rename during the probe: held=%v err=%v", held, err)
+	}
+
 	flockFn = func(fd, how int) error {
 		if how&unix.LOCK_UN != 0 {
 			os.Remove(p)
@@ -47,6 +66,13 @@ func TestProbeHeldUnsupportedAndRecreated(t *testing.T) {
 	}
 	if held, err := ProbeHeld(p); !held || err != nil {
 		t.Errorf("unlinked during the probe: held=%v err=%v", held, err)
+	}
+
+	// Once gone, the lease file was never held (lease files are created
+	// before use and never deleted, SPEC §9.3).
+	flockFn = unix.Flock
+	if held, err := ProbeHeld(p); held || err != nil {
+		t.Errorf("missing after the probe: held=%v err=%v, want (false, nil)", held, err)
 	}
 }
 

@@ -3,13 +3,16 @@
 package fsx_test
 
 import (
+	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/fsx/failpoint"
@@ -206,6 +209,7 @@ func TestCrashChild(t *testing.T) {
 	if scenario == "" {
 		t.Skip("crash child only")
 	}
+	holdLifeline()
 	dir := os.Getenv(crashEnvDir)
 	d, err := fsx.OpenBase(dir)
 	if err != nil {
@@ -229,11 +233,36 @@ func TestCrashChild(t *testing.T) {
 	t.Fatal("crash point not reached")
 }
 
+// holdLifeline makes a crash child exit as soon as its parent test goes
+// away: stdin is a pipe whose only write end the parent holds, so EOF means
+// the parent closed it or died (TESTPLAN §1 rule 8).
+func holdLifeline() {
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(3)
+	}()
+}
+
+// runCrashChild re-executes the test binary for one scenario with a
+// lifeline on stdin and a deadline, and reaps it before returning.
 func runCrashChild(t *testing.T, scenario, dir string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCrashChild$", "-test.count=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCrashChild$", "-test.count=1")
 	cmd.Env = []string{crashEnvScenario + "=" + scenario, crashEnvDir + "=" + dir}
-	err := cmd.Run()
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lifeline.Close()
+	cmd.Stdin = life
+	err = cmd.Start()
+	life.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {
 		t.Fatalf("child %s: %v", scenario, err)

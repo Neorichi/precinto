@@ -125,7 +125,8 @@ func (d *Dir) join(rel string) string {
 }
 
 // checkDirStat enforces the rule for every directory below a base: owned by
-// the effective uid and not writable by group or others (D12).
+// the effective uid and not writable by group or others (D12), a
+// user-private group excepted (D67).
 func checkDirStat(st *unix.Stat_t, path string) error {
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return unsafeErr(path, "not a directory")
@@ -133,10 +134,23 @@ func checkDirStat(st *unix.Stat_t, path string) error {
 	if st.Uid != euid() {
 		return unsafeErr(path, fmt.Sprintf("owned by uid %d", st.Uid))
 	}
-	if st.Mode&0o022 != 0 {
+	if othersMayWrite(st) {
 		return unsafeErr(path, fmt.Sprintf("group/other-writable directory (mode %04o)", st.Mode&0o7777))
 	}
 	return nil
+}
+
+// othersMayWrite reports whether anyone but the user may write the
+// directory st: it is other-writable, or group-writable with a group that
+// is not the user's private group (D67, linux only).
+func othersMayWrite(st *unix.Stat_t) bool {
+	switch {
+	case st.Mode&0o002 != 0:
+		return true
+	case st.Mode&0o020 != 0:
+		return !groupWritableOK(st.Gid)
+	}
+	return false
 }
 
 // openComponent opens the directory name below dirfd without following a
@@ -446,8 +460,8 @@ func hazardOf(st *unix.Stat_t) Hazard {
 		return HazardNone
 	case unix.S_IFDIR:
 		switch {
-		case st.Uid != euid(), st.Mode&0o022 != 0:
-			// Another user could swap entries below it (D12).
+		case st.Uid != euid(), othersMayWrite(st):
+			// Another user could swap entries below it (D12, D67).
 			return HazardForeign
 		case isDataless(st):
 			return HazardAccess // listing it would trigger a download

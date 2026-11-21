@@ -5,6 +5,7 @@ package fsxtest_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/precinto/precinto/internal/fsx"
@@ -113,7 +114,9 @@ func TestSyncedAndUnsyncedOperations(t *testing.T) {
 		if _, ok := read(t, filepath.Join(img, rel)); ok {
 			t.Errorf("%s: the synced temporary came back", filepath.Base(img))
 		}
-		if got, ok := read(t, filepath.Join(img, "data")); !ok || (got != "first" && got != "first+second") {
+		// The synced "first", possibly extended by a (torn) prefix of the
+		// unsynced "+second".
+		if got, ok := read(t, filepath.Join(img, "data")); !ok || !strings.HasPrefix(got, "first") || !strings.HasPrefix("first+second", got) {
 			t.Errorf("%s: data = %q %v", filepath.Base(img), got, ok)
 		}
 	}
@@ -198,5 +201,119 @@ func TestImagesOutsideTheRecording(t *testing.T) {
 	}
 	if got, ok := read(t, filepath.Join(imgs[0], "keep")); !ok || got != "k" {
 		t.Fatalf("keep = %q %v", got, ok)
+	}
+}
+
+// An append that was never synced may be cut by the power loss: random
+// images keep the durable content, the whole append, or a torn prefix of
+// it, and the same test always gets the same images.
+func TestTornAppendsAndDeterminism(t *testing.T) {
+	dir := realTemp(t)
+	rec := fsxtest.Record(t)
+	d, err := fsx.OpenBase(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	f, _, err := d.CreateTemp("", "capsules.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const first, second = "first record\n", "second record, written but never synced\n"
+	f.WriteString(first)
+	if err := fsx.FullSync(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Sync(); err != nil { // the name is durable
+		t.Fatal(err)
+	}
+	f.WriteString(second)
+	f.Close()
+
+	images := rec.Images(t, dir, 24)
+	if len(images) < 3 {
+		t.Fatalf("%d images", len(images))
+	}
+	if got, _ := read(t, filepath.Join(images[0], "capsules.log")); got != first {
+		t.Errorf("strict image: %q", got)
+	}
+	if got, _ := read(t, filepath.Join(images[1], "capsules.log")); got != first+second {
+		t.Errorf("full image: %q", got)
+	}
+	torn := false
+	var contents []string
+	for _, img := range images {
+		got, ok := read(t, filepath.Join(img, "capsules.log"))
+		if !ok || !strings.HasPrefix(got, first) || !strings.HasPrefix(first+second, got) {
+			t.Fatalf("%s: %q is neither the durable content nor a prefix of the append", filepath.Base(img), got)
+		}
+		torn = torn || len(got) > len(first) && len(got) < len(first+second)
+		contents = append(contents, got)
+	}
+	if !torn {
+		t.Error("no image keeps a torn prefix of the unsynced append")
+	}
+	for i, img := range rec.Images(t, dir, 24) {
+		if got, _ := read(t, filepath.Join(img, "capsules.log")); i >= len(contents) || got != contents[i] {
+			t.Fatalf("image %d differs between two calls in one test: %q", i, got)
+		}
+	}
+}
+
+// A lock file TryLock creates is a create like any other: without a
+// directory fsync it is absent from the strict image.
+func TestLockFileCreationIsRecorded(t *testing.T) {
+	dir := realTemp(t)
+	rec := fsxtest.Record(t)
+	l, err := fsx.TryLock(filepath.Join(dir, "unit.lock"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Unlock()
+	images := rec.Images(t, dir, 2)
+	if len(images) != 2 {
+		t.Fatalf("%d images", len(images))
+	}
+	if _, ok := read(t, filepath.Join(images[0], "unit.lock")); ok {
+		t.Error("strict image: an unsynced lock file creation persisted")
+	}
+	if _, ok := read(t, filepath.Join(images[1], "unit.lock")); !ok {
+		t.Error("full image: the lock file is missing")
+	}
+}
+
+// fsx's own writers open their descriptors write-only (WriteFileAtomic,
+// fsx.AppendLine, Dir.AppendLine): their syncs are recorded all the same,
+// and what they made durable is in every image.
+func TestWriteOnlyWritersAreRecorded(t *testing.T) {
+	dir := realTemp(t)
+	if err := os.WriteFile(filepath.Join(dir, "journal.json"), []byte(`{"v":0}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := fsxtest.Record(t)
+	if err := fsx.WriteFileAtomic(filepath.Join(dir, "journal.json"), []byte(`{"v":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.AppendLine(filepath.Join(dir, "capsules.log"), []byte("entry one")); err != nil {
+		t.Fatal(err)
+	}
+	d, err := fsx.OpenBase(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.AppendLine("history.jsonl", []byte(`{"line":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	images := rec.Images(t, dir, 6)
+	if len(images) == 0 {
+		t.Fatal("no images")
+	}
+	for _, img := range images {
+		for name, want := range map[string]string{"journal.json": `{"v":1}`, "capsules.log": "entry one\n", "history.jsonl": "{\"line\":1}\n"} {
+			if got, ok := read(t, filepath.Join(img, name)); !ok || got != want {
+				t.Errorf("%s: %s = %q %v, want %q (synced and dir-synced: durable)", filepath.Base(img), name, got, ok, want)
+			}
+		}
 	}
 }

@@ -27,8 +27,14 @@ var (
 	pluginDir  string
 )
 
+// TestMain also fails the package when a helper process outlives the tests
+// (TESTPLAN §1 rule 8): every age plugin the vault code starts must have
+// been reaped, so no child of this process may remain (reapLeakedHelpers).
 func TestMain(m *testing.M) {
 	code := m.Run()
+	if leaked := reapLeakedHelpers(); leaked > 0 && code == 0 {
+		code = 1
+	}
 	if pluginDir != "" {
 		os.RemoveAll(pluginDir)
 	}

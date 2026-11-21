@@ -13,6 +13,10 @@
 // recipient. If a file named EVIL sits next to the binary it records that
 // it ran (file RAN) and fails: tests use such a copy to prove that only
 // the pinned binary ever runs.
+//
+// Lifeline (TESTPLAN §1 rule 8): stdin belongs to the plugin protocol, so
+// the plugin watches its parent instead and exits as soon as it has been
+// reparented (the test process that ran it is gone); "hang" is bounded too.
 package main
 
 import (
@@ -38,6 +42,7 @@ import (
 const p256Label = "age-encryption.org/p256tag"
 
 func main() {
+	go lifeline(os.Getppid())
 	self, _ := os.Executable()
 	dir := filepath.Dir(self)
 	if _, err := os.Stat(filepath.Join(dir, "EVIL")); err == nil {
@@ -64,6 +69,17 @@ func main() {
 		return &modeIdentity{p: p, name: name, mode: string(data), dir: dir}, nil
 	})
 	os.Exit(p.Main())
+}
+
+// lifeline exits the plugin once its parent changed (reparented to
+// launchd or init after the test process died).
+func lifeline(parent int) {
+	for {
+		time.Sleep(100 * time.Millisecond)
+		if os.Getppid() != parent {
+			os.Exit(3)
+		}
+	}
 }
 
 func recipientOf(name string) string {
@@ -110,7 +126,7 @@ func (m *modeIdentity) Unwrap(stanzas []*age.Stanza) ([]byte, error) {
 	case "error":
 		return nil, errors.New("fake plugin failure")
 	case "hang":
-		time.Sleep(time.Hour)
+		time.Sleep(2 * time.Minute) // the caller cancels long before; the lifeline covers a dead caller
 	case "envcheck":
 		if env := os.Environ(); !slices.Equal(env, []string{"PATH=" + m.dir}) {
 			return nil, fmt.Errorf("environment not limited: %d variables", len(env))

@@ -425,6 +425,10 @@ func (s *Store) confirmPassphrase(ctx context.Context, global *Vault, f Factor, 
 	if err != nil {
 		return nil, err
 	}
+	if pass.Size() == 0 { // an empty answer is a cancel, as at unwrap
+		pass.Destroy()
+		return nil, ErrCancelled
+	}
 	sid, err := age.NewScryptIdentity(view(pass.Bytes()))
 	if err != nil {
 		pass.Destroy()

@@ -30,6 +30,10 @@ const familyX25519 = "x25519"
 // zstdWindow is the encoder window; readers accept up to MaxZstdWindow.
 const zstdWindow = 8 << 20
 
+// newEphemeral generates the in-memory verify identity of one Seal (a seam
+// for tests that must reach the header check).
+var newEphemeral = age.GenerateX25519Identity
+
 // memberName is the tar member of the n-th regular entry (1-based).
 func memberName(n int) string { return fmt.Sprintf("f/%06d", n) }
 
@@ -273,7 +277,7 @@ func seal(ctx context.Context, r SealRequest) (*Sealed, error) {
 			_ = r.Out.Remove(tmp)
 		}
 	}()
-	eph, err := age.GenerateX25519Identity() // in memory only, never serialized
+	eph, err := newEphemeral() // in memory only, never serialized
 	if err != nil {
 		return nil, err
 	}

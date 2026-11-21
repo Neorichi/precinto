@@ -135,7 +135,7 @@ func (r *Recording) observe(o failpoint.FSOp) {
 			r.fail(fmt.Errorf("fstat of a synced file: %w", err))
 			return
 		}
-		data, err := r.readAt(o.File, st.Size)
+		data, err := r.readSynced(o.File, st)
 		if err != nil {
 			r.fail(err)
 			return
@@ -160,14 +160,41 @@ func (r *Recording) account(n int64) error {
 	return nil
 }
 
-func (r *Recording) readAt(f *os.File, size int64) ([]byte, error) {
-	if err := r.account(size); err != nil {
+// readSynced reads the content of the file st that f (just FullSynced)
+// refers to. Descriptors fsx opens write-only (WriteFileAtomic, both
+// AppendLines) cannot be read: the file is then reopened read-only by name
+// through fsx (never following a symlink, never blocking on a FIFO; a
+// non-mutating call, so it reports nothing back here) and must still be the
+// synced inode.
+func (r *Recording) readSynced(f *os.File, st fsx.Stat) ([]byte, error) {
+	if err := r.account(st.Size); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, size)
+	buf := make([]byte, st.Size)
 	n, err := f.ReadAt(buf, 0)
+	if err == nil || err == io.EOF {
+		return buf[:n], nil
+	}
+	path := f.Name()
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("fsxtest: read synced file %s: %w", filepath.Base(path), err)
+	}
+	d, derr := fsx.OpenBase(filepath.Clean(filepath.Dir(path)))
+	if derr != nil {
+		return nil, fmt.Errorf("fsxtest: read synced file %s: %w (reopen: %w)", filepath.Base(path), err, derr)
+	}
+	defer d.Close()
+	g, gst, gerr := d.Open(filepath.Base(path))
+	if gerr != nil {
+		return nil, fmt.Errorf("fsxtest: read synced file %s: %w (reopen: %w)", filepath.Base(path), err, gerr)
+	}
+	defer g.Close()
+	if !gst.SameFile(st) {
+		return nil, fmt.Errorf("fsxtest: synced file %s was replaced before it could be read", filepath.Base(path))
+	}
+	n, err = g.ReadAt(buf, 0)
 	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("fsxtest: read synced file: %w", err)
+		return nil, fmt.Errorf("fsxtest: read synced file %s: %w", filepath.Base(path), err)
 	}
 	return buf[:n], nil
 }
@@ -354,15 +381,20 @@ func (t tree) move(rel, dst string) {
 	}
 }
 
-// digest identifies an image's content for de-duplication.
-func (t tree) digest() string {
+// sortedKeys returns the entries' relative paths in lexical order.
+func (t tree) sortedKeys() []string {
 	keys := make([]string, 0, len(t))
 	for k := range t {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	return keys
+}
+
+// digest identifies an image's content for de-duplication.
+func (t tree) digest() string {
 	h := fnv.New128a()
-	for _, k := range keys {
+	for _, k := range t.sortedKeys() {
 		n := t[k]
 		fmt.Fprintf(h, "%s\x00%v\x00%s\x00%o\x00", k, n.dir, n.link, n.perm)
 		h.Write(n.data)
@@ -593,9 +625,14 @@ func (b *builder) image(final tree, mode int, rng *rand.Rand) tree {
 		return t
 	}
 	// File data: the last synced content, or nothing for a file created
-	// while recording and never synced; random images keep the current
-	// content half of the time.
-	for _, n := range t {
+	// while recording and never synced. Random images keep the current
+	// content half of the time; when the unsynced bytes only extend the
+	// durable content (an append, a temporary being written), they may
+	// instead keep a torn prefix of the extension, as a write cut by the
+	// power loss would. Entries are visited in sorted order so that the
+	// draws, and so the images, are deterministic per test name.
+	for _, rel := range t.sortedKeys() {
+		n := t[rel]
 		if n.dir || n.link != "" {
 			continue
 		}
@@ -612,8 +649,17 @@ func (b *builder) image(final tree, mode int, rng *rand.Rand) tree {
 		if bytes.Equal(durable, n.data) {
 			continue
 		}
-		if mode == modeStrict || rng.Intn(2) == 0 {
+		if mode == modeStrict {
 			n.data = append([]byte(nil), durable...)
+			continue
+		}
+		extra := len(n.data) - len(durable)
+		appended := extra > 1 && bytes.HasPrefix(n.data, durable)
+		switch k := rng.Intn(4); {
+		case k < 2:
+			n.data = append([]byte(nil), durable...)
+		case k == 2 && appended:
+			n.data = append([]byte(nil), n.data[:len(durable)+1+rng.Intn(extra-1)]...)
 		}
 	}
 	return t

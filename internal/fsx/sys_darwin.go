@@ -13,6 +13,11 @@ import (
 // fcntl(F_FULLFSYNC) for FullSync, O_NOFOLLOW_ANY where available.
 const osName = "darwin"
 
+// privateGroups keeps the D67 user-private group exception (upg.go) off:
+// every darwin user's primary group is the shared "staff", so a
+// group-writable directory is always unsafe here.
+var privateGroups = false
+
 func statFrom(st *unix.Stat_t) Stat {
 	return Stat{
 		Dev:     uint64(uint32(st.Dev)),

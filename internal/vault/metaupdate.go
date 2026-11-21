@@ -121,7 +121,8 @@ func (s *Store) markRecoveryVerified(at time.Time) error {
 }
 
 // checkRepinBinary requires the binary at path to be a regular file (not a
-// symlink) owned by root or the current user and writable by nobody else.
+// symlink) owned by root or the current user and writable by nobody else
+// (D75).
 func checkRepinBinary(path string) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return fmt.Errorf("vault: plugin path %q is not absolute and clean", path)
@@ -130,10 +131,15 @@ func checkRepinBinary(path string) error {
 	if err != nil {
 		return err
 	}
+	return checkRepinStat(path, st, uint32(os.Geteuid()))
+}
+
+// checkRepinStat is the D75 rule on the lstat of a plugin binary.
+func checkRepinStat(path string, st fsx.Stat, euid uint32) error {
 	switch {
 	case !st.IsRegular():
 		return fmt.Errorf("%w: plugin %s is not a regular file", fsx.ErrUnsafe, path)
-	case st.UID != 0 && int(st.UID) != os.Geteuid():
+	case st.UID != 0 && st.UID != euid:
 		return fmt.Errorf("%w: plugin %s is owned by uid %d (neither root nor you)", fsx.ErrUnsafe, path, st.UID)
 	case st.Mode&0o022 != 0:
 		return fmt.Errorf("%w: plugin %s is group- or other-writable (mode %04o)", fsx.ErrUnsafe, path, st.Mode&0o7777)

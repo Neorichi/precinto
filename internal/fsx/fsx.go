@@ -451,7 +451,7 @@ type Lock struct {
 // creating the file 0600 if needed (O_NOFOLLOW, regular files only);
 // ErrLocked if held elsewhere. Implemented in the scaffold.
 func TryLock(path string, shared bool) (*Lock, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|oNoFollow|oNonblock, 0o600)
+	f, err := openLockFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +469,27 @@ func TryLock(path string, shared bool) (*Lock, error) {
 		return nil, err
 	}
 	return &Lock{file: f}, nil
+}
+
+// openLockFile opens the lock file at path read-write, creating it 0600
+// when it is missing; a file it creates is reported to failpoint observers
+// (power-loss recording, internal/fsx/fsxtest).
+func openLockFile(path string) (*os.File, error) {
+	for i := 0; i < 3; i++ {
+		f, err := os.OpenFile(path, os.O_RDWR|oNoFollow|oNonblock, 0)
+		if !errors.Is(err, fs.ErrNotExist) {
+			return f, err
+		}
+		f, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL|oNoFollow|oNonblock, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue // created concurrently: open it without O_CREATE
+		}
+		if err == nil {
+			note(failpoint.FSCreate, path, "", true)
+		}
+		return f, err
+	}
+	return nil, fmt.Errorf("fsx: could not open lock file %s", filepath.Base(path))
 }
 
 // WaitLock blocks until the lock is acquired or ctx ends (polling with

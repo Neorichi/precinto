@@ -35,7 +35,8 @@ const (
 	maxPluginLine  = 64 << 10 // one protocol line
 	maxPluginBody  = 1 << 20  // one stanza body
 	pluginExitWait = 5 * time.Second
-	maxUIText      = 512 // plugin-supplied prompt or message, after sanitizing
+	maxUIText      = 512       // plugin-supplied prompt or message, after sanitizing
+	maxPluginBin   = 512 << 20 // a plugin binary to hash (real ones are a few MB)
 )
 
 var errPluginProtocol = errors.New("vault: age plugin protocol error")
@@ -47,7 +48,9 @@ var errPluginFailed = errors.New("vault: age plugin failed")
 var pluginB64 = base64.RawStdEncoding.Strict()
 
 // pinHash hashes the plugin binary at path, which must be a regular file
-// (not a symlink) and must not be replaced while it is read.
+// (not a symlink) of bounded size and must not be replaced or changed
+// while it is read. It is opened O_NOFOLLOW|O_NONBLOCK, so a symlink or a
+// FIFO swapped in after the lstat fails at once instead of blocking.
 func pinHash(path string) (string, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return "", fmt.Errorf("vault: plugin path %q is not absolute and clean", path)
@@ -59,7 +62,7 @@ func pinHash(path string) (string, error) {
 	if !lst.IsRegular() {
 		return "", fmt.Errorf("vault: plugin %s is not a regular file", path)
 	}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, pinOpenFlags, 0)
 	if err != nil {
 		return "", err
 	}
@@ -68,12 +71,21 @@ func pinHash(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !st.SameFile(lst) {
+	if !st.IsRegular() || !st.SameFile(lst) {
 		return "", fmt.Errorf("vault: plugin %s was replaced while being checked", path)
 	}
+	if st.Size > maxPluginBin {
+		return "", fmt.Errorf("vault: plugin %s is too large (%d bytes)", path, st.Size)
+	}
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	n, err := io.Copy(h, io.LimitReader(f, maxPluginBin+1))
+	if err != nil {
 		return "", err
+	}
+	// Content only: ctime also moves when the binary's metadata changes
+	// (an xattr set while another unwrap runs it), which alters no byte.
+	if after, err := fsx.Fstat(f); err != nil || n != st.Size || !after.SameFile(st) || after.Size != st.Size || after.MtimeNS != st.MtimeNS {
+		return "", fmt.Errorf("vault: plugin %s changed while being checked", path)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

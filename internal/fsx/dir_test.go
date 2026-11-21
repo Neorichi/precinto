@@ -165,6 +165,7 @@ func TestSwappedComponent(t *testing.T) {
 }
 
 func TestUnsafeDirectoriesBelowBase(t *testing.T) {
+	fsx.NoPrivateGroupsForTest(t) // D67 is covered by TestUserPrivateGroupDirectories
 	d, root := openBase(t)
 	writeFile(t, filepath.Join(root, "g", "file"), "x")
 	if err := os.Chmod(filepath.Join(root, "g"), 0o770); err != nil {

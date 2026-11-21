@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -230,15 +231,19 @@ func calibrateScrypt(target time.Duration) int {
 	return n
 }
 
+// errMalformedRecovery is a typed recovery key that is not one: a wrong
+// secret (ErrBadSecret, exit 3), and never any part of the input.
+var errMalformedRecovery = fmt.Errorf("%w: malformed recovery key", ErrBadSecret)
+
 func parseRecoveryKey(b *memguard.LockedBuffer) (age.Identity, error) {
 	canon, err := normalizeRecoveryKey(b)
 	if err != nil {
-		return nil, errors.New("vault: malformed recovery key")
+		return nil, errMalformedRecovery
 	}
 	defer canon.Destroy()
 	id, err := parseIdentity(canon)
 	if err != nil {
-		return nil, errors.New("vault: malformed recovery key")
+		return nil, errMalformedRecovery
 	}
 	return id, nil
 }
@@ -269,6 +274,10 @@ func formatRecoveryKey(b *memguard.LockedBuffer) (*memguard.LockedBuffer, error)
 	return out, nil
 }
 
+// verifyRecovery: a key that opens none of the header's stanzas is a wrong
+// recovery key (ErrBadSecret, exit 3, like a wrong passphrase, CC-08); a
+// header that does not parse, or whose MAC fails once the recovery stanza
+// opened, is not the user's mistake (ErrWrongIdentity, exit 5).
 func verifyRecovery(recovery *memguard.LockedBuffer, header []byte) error {
 	id, err := parseRecoveryKey(recovery)
 	if err != nil {
@@ -276,7 +285,11 @@ func verifyRecovery(recovery *memguard.LockedBuffer, header []byte) error {
 	}
 	key, err := age.DecryptHeader(header, id)
 	if err != nil {
-		return ErrWrongIdentity
+		var nomatch *age.NoIdentityMatchError
+		if errors.As(err, &nomatch) {
+			return fmt.Errorf("%w: the recovery key does not open the capsule header", ErrBadSecret)
+		}
+		return fmt.Errorf("%w: the capsule header did not authenticate", ErrWrongIdentity)
 	}
 	memguard.WipeBytes(key)
 	return nil
