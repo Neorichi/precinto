@@ -136,6 +136,9 @@ type vaultStore interface {
 	List() ([]string, error)
 	Meta(id string) (vault.Meta, error)
 	RemoveFactor(id, name string) error
+	// MarkRecoveryVerified records a successful recover --verify in every
+	// vault (vault.Store.MarkRecoveryVerified, SPEC §4.7).
+	MarkRecoveryVerified(at time.Time) error
 }
 
 // shellOps is internal/shellinit.

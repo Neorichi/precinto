@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/platform"
 )
 
@@ -25,19 +26,13 @@ func clampTTL(p config.Policy, ttl time.Duration) time.Duration {
 	return ttl
 }
 
-// killGrace implements KillGrace: max(8 s, budget + 6 s), capped at 70 s.
+// killGrace implements KillGrace with harness.KillGrace (one formula for
+// the daemon and the wrapper, SPEC §12.7).
 func killGrace(budget time.Duration) time.Duration {
 	if budget < 0 {
 		budget = 0
 	}
-	g := budget + 6*time.Second
-	if g < 8*time.Second {
-		g = 8 * time.Second
-	}
-	if g > 70*time.Second {
-		g = 70 * time.Second
-	}
-	return g
+	return harness.KillGrace(budget)
 }
 
 // The RateLimiter's unexported state (agent.go declares the type):

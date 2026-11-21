@@ -39,13 +39,14 @@ _precinto_precmd() {
   typeset -g _precinto_moved=
   local prev=${_precinto_pwd-}
   typeset -g _precinto_pwd=$PWD
-  local out line action= root= epoch= msg=
+  local out line action= root= epoch= dir= msg=
   out=$(command '/opt/precinto/bin/precinto' shell-hook --shell zsh --pwd "$PWD" --prev "$prev" --skip "${_PRECINTO_SKIP-}" $first 2>/dev/null) || return 0
   for line in "${(@f)out}"; do
     case $line in
       action=*) action=${line#action=} ;;
       root=*) root=${line#root=} ;;
       epoch=*) epoch=${line#epoch=} ;;
+      path=*) dir=${line#path=} ;;
       message=*) msg=${line#message=} ;;
     esac
   done
@@ -56,8 +57,8 @@ _precinto_precmd() {
     local key=
     read -rs -k 1 key || { print; return 0; }
     print
-    if [[ $key == $'\n' || $key == $'\r' ]]; then
-      command '/opt/precinto/bin/precinto' unlock
+    if [[ $key == $'\n' || $key == $'\r' ]] && [[ -n $dir ]]; then
+      command '/opt/precinto/bin/precinto' unlock --root "$dir"
     fi
   else
     print -r -- "$msg"

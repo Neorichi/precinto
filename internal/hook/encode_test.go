@@ -276,8 +276,10 @@ func TestFailClosedOutputs(t *testing.T) {
 			t.Errorf("unknown %s: exit %d, want ExitFailure (the shim decides)", ev, out.Exit)
 		}
 	}
+	// The static answer (decode error, deadline, panic) says C3.failed, not
+	// that the agent stopped (CC-38).
 	prompt := string(hook.FailClosed(hook.HostClaude, hook.UserPromptSubmit, folder).Stdout)
-	if !strings.Contains(prompt, ui.Format(ui.MsgAgentDown, ui.Vars{Folder: folder})) {
+	if !strings.Contains(prompt, ui.Format(ui.MsgGateFailed, ui.Vars{Folder: folder})) || strings.Contains(prompt, "isn't running") {
 		t.Errorf("prompt fail-closed text: %s", prompt)
 	}
 	var tool claudeToolDeny

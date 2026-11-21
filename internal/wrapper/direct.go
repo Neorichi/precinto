@@ -176,7 +176,7 @@ func (d *directChild) terminate(o TerminateOptions) error {
 	recent := !d.reaped || time.Since(d.exitedAt) < sessionKillWindow
 	d.sigMu.Unlock()
 	if recent {
-		killSession(d.pid)
+		killSession(d.id)
 	}
 	if !d.isExited() {
 		return errStillAlive
@@ -197,13 +197,13 @@ func (d *directChild) wait() (int, error) {
 // a terminal never sends, and stops itself on SIGTSTP like the child).
 func runPassthrough(ctx context.Context, cmd *exec.Cmd) (int, error) {
 	if cmd.Env == nil {
-		return 1, errNoEnv
+		return ExitNotStarted, errNoEnv
 	}
 	sigc := make(chan os.Signal, 4)
 	signal.Notify(sigc, forwarded...)
 	defer signal.Stop(sigc)
 	if err := cmd.Start(); err != nil {
-		return startErrorCode(err), err
+		return ExitNotStarted, err
 	}
 	done := make(chan struct{})
 	waited := make(chan error, 1)

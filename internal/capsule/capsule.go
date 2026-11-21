@@ -126,7 +126,7 @@ type Manifest struct {
 	VaultID        string    `json:"vault_id"` // vault whose recipient sealed it (D1)
 	RootIDs        []string  `json:"root_ids"` // every managed root; key release needs all of them unlocked
 	RootPath       string    `json:"root_path,omitempty"`
-	ProjectDir     string    `json:"project_dir,omitempty"`
+	ProjectDir     string    `json:"project_dir,omitempty"` // copied from harness.Unit.ProjectDir (D73)
 	Gen            uint64    `json:"gen"`
 	Parent         uint64    `json:"parent"`
 	Lineage        Lineage   `json:"lineage"`
@@ -149,9 +149,10 @@ type Input struct {
 	Snap   fsx.Stat
 	Append bool
 	Group  string
-	// Open, if set, is read instead of opening Dir/Rel: rescue of bytes
-	// appended to an already-unlinked inode (SPEC §10.3 step 7). Snap must
-	// be its current fstat.
+	// Open, if set, is read instead of opening Dir/Rel, for any input whose
+	// bytes sit in an already-unlinked inode (rescue, SPEC §10.3 step 7;
+	// extracted history lines). Snap must be its current fstat; Dir/Rel
+	// still name the entry.
 	Open *os.File
 }
 
@@ -174,13 +175,19 @@ const (
 
 // SealRequest describes one capsule to write.
 type SealRequest struct {
-	Manifest   Manifest        // Files is filled by Seal from Inputs and Dirs
-	Inputs     []Input         // regular files, in tar order
-	Dirs       []Entry         // empty directories to record
+	Manifest Manifest // Files is filled by Seal from Inputs and Dirs
+	Inputs   []Input  // regular files, in tar order
+	// Dirs are member-less entries recorded as given: empty directories
+	// (Dir=true) and, for codex-home snapshot manifests, files whose bytes
+	// live in a blob capsule (Blob set, Size/SHA256 as recorded). Seal
+	// rejects an entry that is neither (ErrFormat).
+	Dirs       []Entry
 	Recipients []age.Recipient // exactly {vault, recovery} X25519; Seal adds an ephemeral one
-	Out        *fsx.Dir        // capsule unit directory
-	Name       string          // final file name, e.g. "g000007.pcap"; committed with NoReplace
-	OnPhase    func(Phase, *Sealed) error
+	// Out is the capsule unit directory; Seal writes only Out/TmpName(Name)
+	// and commits it to Out/Name with a no-replace rename.
+	Out     *fsx.Dir
+	Name    string // final file name, e.g. "g000007.pcap"; committed with NoReplace
+	OnPhase func(Phase, *Sealed) error
 }
 
 // Sealed is a committed, verified capsule whose plaintext still exists.
@@ -220,6 +227,13 @@ func HashFile(dir *fsx.Dir, name string) (sha256 string, size int64, err error) 
 	return hashFile(dir, name)
 }
 
+// TmpName returns the temporary Seal writes in SealRequest.Out for the
+// final name: "." + name + ".tmp", created O_EXCL (Seal fails with
+// fsx.ErrExist when it is left over, and leaves it) and removed on every
+// error return. It is a pure function of the final name so that callers
+// journal it before Seal (D58a, journal.Record.Tmp).
+func TmpName(name string) string { return "." + name + ".tmp" }
+
 // OpenManifest decrypts only up to the first tar member using fileKey
 // (age.NewInjectedFileKeyIdentity) and returns the manifest.
 func OpenManifest(r io.Reader, fileKey []byte) (Manifest, error) {
@@ -228,8 +242,11 @@ func OpenManifest(r io.Reader, fileKey []byte) (Manifest, error) {
 
 // Limits bounds extraction (SPEC §5 rule 3, §11.5).
 type Limits struct {
-	MaxTotal int64 // reject if the manifest sum exceeds it (free space − floor)
-	MaxFiles int   // default MaxEntries
+	// MaxTotal rejects a manifest whose sum of file sizes exceeds it; ≤ 0
+	// refuses any non-empty capsule (ErrTooLarge). Callers always pass the
+	// real budget (free space − floor).
+	MaxTotal int64
+	MaxFiles int // default MaxEntries
 }
 
 // Staged is one file written into staging by Extract.
@@ -300,8 +317,14 @@ func UnitKey(salt []byte, parts ...string) string {
 }
 
 // LoadSalt reads <state>/name.salt, creating 32 random bytes (0600) if
-// missing.
+// missing. Sealers use it; read-only callers use ReadSalt.
 func LoadSalt(path string) ([]byte, error) { return loadSalt(path) }
+
+// ReadSalt reads state/name.salt without creating it; ok=false when it does
+// not exist (then no unit key exists yet). Read-only callers (doctor,
+// status) use it, sealers keep LoadSalt. A symlink, FIFO or other
+// non-regular file at path, or a salt of the wrong size, is an error.
+func ReadSalt(path string) (salt []byte, ok bool, err error) { return readSaltPath(path) }
 
 // RecipientsFingerprint is SHA-256 over the canonical recipient set
 // (sorted recipient strings joined by '\n', prefixed by the family) (D5).

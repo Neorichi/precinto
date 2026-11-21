@@ -3,6 +3,7 @@
 package fsx
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -175,6 +176,9 @@ func openComponent(dirfd int, name, path string, create bool) (int, error) {
 				return -1, pathErr("mkdirat", path, err)
 			}
 			created = err == nil
+			if created {
+				note(failpoint.FSMkdir, path, "", true)
+			}
 		case errors.Is(err, unix.ELOOP), errors.Is(err, unix.EMLINK):
 			return -1, unsafeErr(path, "symlink component")
 		case errors.Is(err, unix.ENOTDIR):
@@ -629,6 +633,7 @@ func (d *Dir) createTemp(dirRel, pattern string) (*os.File, string, error) {
 		if err != nil {
 			return nil, "", pathErr("openat", path, err)
 		}
+		note(failpoint.FSCreate, path, "", true)
 		if st, err := fstatFD(nfd); err == nil && st.Mode&0o777 != 0o600 {
 			if err := retry(func() error { return unix.Fchmod(nfd, 0o600) }); err != nil {
 				closeFD(nfd)
@@ -641,6 +646,105 @@ func (d *Dir) createTemp(dirRel, pattern string) (*os.File, string, error) {
 	return nil, "", fmt.Errorf("fsx: could not create a temporary in %s", d.join(dirRel))
 }
 
+func (d *Dir) appendLine(rel string, line []byte) error {
+	if l := len(line); l > 0 && line[l-1] == '\n' {
+		line = line[:l-1]
+	}
+	if len(line) > MaxLine || bytes.IndexByte(line, '\n') >= 0 {
+		return fmt.Errorf("%w: bad line for AppendLine", ErrUnsafe)
+	}
+	pfd, name, release, err := d.parent(rel, false)
+	defer release()
+	if err != nil {
+		return err
+	}
+	path := d.join(rel)
+	f, created, err := openAppendAt(pfd, name, path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if created {
+		note(failpoint.FSCreate, path, "", true)
+	}
+	if err := failpoint.Hit("fsx.write"); err != nil {
+		return pathErr("write", path, err)
+	}
+	buf := make([]byte, 0, len(line)+1)
+	buf = append(append(buf, line...), '\n')
+	n, err := f.Write(buf)
+	if err != nil {
+		return err
+	}
+	if n != len(buf) {
+		return fmt.Errorf("fsx: short append to %s (%d of %d bytes)", path, n, len(buf))
+	}
+	if err := FullSync(f); err != nil {
+		return err
+	}
+	if created {
+		return syncFD(pfd, filepath.Dir(path))
+	}
+	return nil
+}
+
+// openAppendAt opens name below pfd for appending (never following a
+// symlink, never blocking on a FIFO), creating it 0600 with O_EXCL when it
+// is missing. Only a regular file owned by the effective uid is accepted.
+func openAppendAt(pfd int, name, path string) (*os.File, bool, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if st, err := lstatAt(pfd, name); err == nil && isDataless(&st) {
+			// Opening a dataless cloud placeholder for writing would
+			// trigger a download (SPEC §17).
+			return nil, false, pathErr("open", path, fmt.Errorf("dataless cloud placeholder: %w", unix.EACCES))
+		}
+		const flags = unix.O_WRONLY | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
+		created := false
+		fd, err := openat(pfd, name, flags, 0)
+		if errors.Is(err, unix.ENOENT) {
+			if herr := failpoint.Hit("fsx.write"); herr != nil {
+				return nil, false, pathErr("openat", path, herr)
+			}
+			fd, err = openat(pfd, name, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+			if errors.Is(err, unix.EEXIST) {
+				continue // created concurrently: reopen without O_CREAT
+			}
+			created = err == nil
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, unix.ELOOP):
+				return nil, false, unsafeErr(path, "symlink")
+			case errors.Is(err, unix.ENXIO), errors.Is(err, unix.EOPNOTSUPP):
+				// A FIFO without a reader or a socket: never a regular file.
+				return nil, false, unsafeErr(path, "not a regular file")
+			}
+			return nil, false, pathErr("openat", path, err)
+		}
+		st, err := fstatFD(fd)
+		if err != nil {
+			closeFD(fd)
+			return nil, false, pathErr("fstat", path, err)
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFREG {
+			closeFD(fd)
+			return nil, false, unsafeErr(path, "not a regular file")
+		}
+		if st.Uid != euid() {
+			closeFD(fd)
+			return nil, false, unsafeErr(path, fmt.Sprintf("owned by uid %d", st.Uid))
+		}
+		if created && st.Mode&0o777 != 0o600 {
+			if err := retry(func() error { return unix.Fchmod(fd, 0o600) }); err != nil {
+				closeFD(fd)
+				return nil, false, pathErr("fchmod", path, err)
+			}
+		}
+		return os.NewFile(uintptr(fd), path), created, nil
+	}
+	return nil, false, fmt.Errorf("fsx: could not open %s for appending", path)
+}
+
 // syncFD fsyncs a directory or file descriptor (F_FULLFSYNC on darwin).
 func syncFD(fd int, path string) error {
 	if err := failpoint.Hit("fsx.fsync"); err != nil {
@@ -649,6 +753,7 @@ func syncFD(fd int, path string) error {
 	if err := fullSyncFD(fd); err != nil {
 		return pathErr("fsync", path, err)
 	}
+	note(failpoint.FSDirSync, path, "", true)
 	return nil
 }
 
@@ -682,10 +787,14 @@ func (d *Dir) renameTo(oldRel string, dst *Dir, newRel string, mode RenameMode) 
 	if err := failpoint.Hit("fsx.rename"); err != nil {
 		return pathErr("rename", opath, err)
 	}
+	note(failpoint.FSRename, opath, npath, false)
 	if mode == NoReplace {
 		err = renameNoReplace(ofd, oname, nfd, nname)
 	} else {
 		err = retry(func() error { return unix.Renameat(ofd, oname, nfd, nname) })
+	}
+	if err == nil {
+		note(failpoint.FSRename, opath, npath, true)
 	}
 	if err != nil {
 		if mode == NoReplace && (errors.Is(err, unix.EEXIST) || errors.Is(err, unix.ENOTEMPTY)) {
@@ -739,12 +848,14 @@ func (d *Dir) link(oldRel, newRel string) error {
 	if err := failpoint.Hit("fsx.link"); err != nil {
 		return pathErr("link", npath, err)
 	}
+	note(failpoint.FSLink, opath, npath, false)
 	if err := retry(func() error { return unix.Linkat(ofd, oname, nfd, nname, 0) }); err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return sentinelErr(ErrExist, "link", npath, err)
 		}
 		return pathErr("link", npath, err)
 	}
+	note(failpoint.FSLink, opath, npath, true)
 	return syncFD(nfd, filepath.Dir(npath))
 }
 
@@ -772,9 +883,11 @@ func (d *Dir) unlinkIfUnchanged(rel string, expect Stat) error {
 	if err := failpoint.Hit("fsx.unlink"); err != nil {
 		return pathErr("unlink", path, err)
 	}
+	note(failpoint.FSUnlink, path, "", false)
 	if err := retry(func() error { return unix.Unlinkat(pfd, name, 0) }); err != nil {
 		return pathErr("unlink", path, err)
 	}
+	note(failpoint.FSUnlink, path, "", true)
 	return syncFD(pfd, filepath.Dir(path))
 }
 
@@ -788,6 +901,11 @@ func (d *Dir) remove(rel string) error {
 	if err := failpoint.Hit("fsx.unlink"); err != nil {
 		return pathErr("unlink", path, err)
 	}
+	kind := failpoint.FSUnlink
+	if st, serr := lstatAt(pfd, name); serr == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR {
+		kind = failpoint.FSRmdir
+	}
+	note(kind, path, "", false)
 	err = retry(func() error { return unix.Unlinkat(pfd, name, 0) })
 	if errors.Is(err, unix.EISDIR) || errors.Is(err, unix.EPERM) {
 		if st, serr := lstatAt(pfd, name); serr == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR {
@@ -797,6 +915,7 @@ func (d *Dir) remove(rel string) error {
 	if err != nil {
 		return pathErr("unlink", path, err)
 	}
+	note(kind, path, "", true)
 	return nil
 }
 
@@ -830,9 +949,11 @@ func (d *Dir) removeEmptyDirs(rel, stopAt string) error {
 			release()
 			return pathErr("rmdir", path, err)
 		}
+		note(failpoint.FSRmdir, path, "", false)
 		err = retry(func() error { return unix.Unlinkat(pfd, parts[n-1], unix.AT_REMOVEDIR) })
 		switch {
 		case err == nil:
+			note(failpoint.FSRmdir, path, "", true)
 			serr := syncFD(pfd, filepath.Dir(path))
 			release()
 			if serr != nil {
@@ -958,9 +1079,15 @@ func removeTree(fd int, path string, depth int) error {
 		if err := failpoint.Hit("fsx.unlink"); err != nil {
 			return pathErr("unlink", p, err)
 		}
+		kind := failpoint.FSUnlink
+		if flags != 0 {
+			kind = failpoint.FSRmdir
+		}
+		note(kind, p, "", false)
 		if err := retry(func() error { return unix.Unlinkat(fd, name, flags) }); err != nil && !errors.Is(err, unix.ENOENT) {
 			return pathErr("unlink", p, err)
 		}
+		note(kind, p, "", true)
 	}
 	return nil
 }
@@ -983,6 +1110,7 @@ func mkdirOne(path string) error {
 		}
 		return pathErr("mkdir", path, err)
 	}
+	note(failpoint.FSMkdir, path, "", true)
 	return nil
 }
 
@@ -1038,9 +1166,11 @@ func removeStaging(s *Staging) error {
 	if err := failpoint.Hit("fsx.unlink"); err != nil {
 		return pathErr("rmdir", s.Path, err)
 	}
+	note(failpoint.FSRmdir, s.Path, "", false)
 	if err := retry(func() error { return unix.Unlinkat(pfd, filepath.Base(s.Path), unix.AT_REMOVEDIR) }); err != nil && !errors.Is(err, unix.ENOENT) {
 		return pathErr("rmdir", s.Path, err)
 	}
+	note(failpoint.FSRmdir, s.Path, "", true)
 	return syncFD(pfd, filepath.Dir(s.Path))
 }
 
@@ -1052,6 +1182,11 @@ func probeHeld(path string) (bool, error) {
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
 			return true, unsafeErr(path, "symlink")
+		}
+		if errors.Is(err, unix.ENOENT) {
+			// Lease and lock files are created before use and never
+			// deleted (SPEC §9.3): a missing one was never held.
+			return false, nil
 		}
 		return true, pathErr("open", path, err)
 	}

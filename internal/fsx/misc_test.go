@@ -282,8 +282,13 @@ func TestRealpathContains(t *testing.T) {
 
 func TestProbeHeld(t *testing.T) {
 	p := filepath.Join(tempDir(t), "unit.lease")
-	if held, err := fsx.ProbeHeld(p); !held || !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("missing file: held=%v err=%v (fail closed, error reported)", held, err)
+	// Lease and lock files are created before use and never deleted
+	// (SPEC §9.3): a missing one was never held.
+	if held, err := fsx.ProbeHeld(p); held || err != nil {
+		t.Errorf("missing file: held=%v err=%v, want (false, nil)", held, err)
+	}
+	if held, err := fsx.ProbeHeld(filepath.Join(p+".dir", "x.lease")); held || err != nil {
+		t.Errorf("missing parent: held=%v err=%v, want (false, nil)", held, err)
 	}
 	l, err := fsx.TryLock(p, true)
 	if err != nil {

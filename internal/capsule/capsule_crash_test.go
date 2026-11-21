@@ -36,6 +36,7 @@ func TestErrnoAtCapsulePoints(t *testing.T) {
 		point     string
 		committed bool
 	}{
+		{"capsule.streamed", false},
 		{"capsule.tmp_written", false},
 		{"capsule.verified", false},
 		{"capsule.renamed", true},
@@ -143,13 +144,20 @@ func TestCapsuleCrashChild(t *testing.T) {
 		}
 		rs = append(rs, r)
 	}
-	snap, err := base.Lstat("s.jsonl")
-	if err != nil {
-		t.Fatal(err)
+	var inputs []capsule.Input
+	for _, rel := range []string{"s.jsonl", "t.jsonl"} {
+		snap, err := base.Lstat(rel)
+		if errors.Is(err, os.ErrNotExist) && rel != "s.jsonl" {
+			continue // the second input is optional (SEAL-2 uses it)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs = append(inputs, capsule.Input{Base: capsule.BaseClaudeConfig, Dir: base, Rel: rel, Snap: snap})
 	}
 	failpoint.Set(point)
 	_, err = capsule.Seal(context.Background(), capsule.SealRequest{
-		Manifest: manifest("crash"), Inputs: []capsule.Input{{Base: capsule.BaseClaudeConfig, Dir: base, Rel: "s.jsonl", Snap: snap}},
+		Manifest: manifest("crash"), Inputs: inputs,
 		Recipients: rs, Out: out, Name: "g000001.pcap",
 	})
 	t.Fatalf("crash point %s not reached: %v", point, err)
@@ -163,17 +171,22 @@ func TestCrashDuringSeal(t *testing.T) {
 	for _, c := range []struct {
 		point string
 		want  string
+		two   bool // seal a second input (SEAL-2: kill between the inputs)
 	}{
-		{"capsule.tmp_written", ".g000001.pcap.tmp"},
-		{"capsule.verified", ".g000001.pcap.tmp"},
-		{"capsule.renamed", "g000001.pcap"},
-		{"fsx.rename", ".g000001.pcap.tmp"},
+		{"capsule.streamed:1", ".g000001.pcap.tmp", true},
+		{"capsule.tmp_written", ".g000001.pcap.tmp", false},
+		{"capsule.verified", ".g000001.pcap.tmp", false},
+		{"capsule.renamed", "g000001.pcap", false},
+		{"fsx.rename", ".g000001.pcap.tmp", false},
 	} {
 		t.Run(c.point, func(t *testing.T) {
 			u := newUnit(t)
 			k := newKeys(t)
 			content := randomBytes(t, 70000)
 			u.write("s.jsonl", content)
+			if c.two {
+				u.write("t.jsonl", randomBytes(t, 70000))
+			}
 			cmd := exec.Command(os.Args[0], "-test.run=^TestCapsuleCrashChild$", "-test.count=1")
 			cmd.Env = []string{
 				childPoint + "=" + c.point, childRoot + "=" + u.root, childOut + "=" + u.outP,

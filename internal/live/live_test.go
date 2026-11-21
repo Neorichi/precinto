@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,12 +87,12 @@ func TestStableUnitIsNotLive(t *testing.T) {
 	r := newRig(t)
 	s := live.Subject{Key: "unit-stable", Paths: []string{r.file("a.jsonl", "x\n"), filepath.Join(r.dir, "unit")}}
 	v := r.decide(s)
-	if !v.Live || !reasons(v)[live.ReasonUnstable] {
-		t.Fatalf("first observation: %+v, want live (not yet observed for the window)", v)
+	if !v.Live || len(v.Evidence) != 1 || v.Evidence[0].Reason != live.ReasonUnobserved || !v.Evidence[0].Weak {
+		t.Fatalf("first observation: %+v, want only weak ReasonUnobserved (D63)", v)
 	}
 	r.clock.Advance(quiet - time.Second)
-	if v := r.decide(s); !v.Live {
-		t.Fatalf("stable before the window elapsed: %+v", v)
+	if v := r.decide(s); !v.Live || !reasons(v)[live.ReasonUnobserved] {
+		t.Fatalf("stable before the window elapsed: %+v, want still unobserved", v)
 	}
 	r.clock.Advance(time.Second)
 	if v := r.decide(s); v.Live || v.Warm || v.Capped || len(v.Evidence) != 0 {
@@ -194,7 +195,7 @@ func TestWriterExitedSkipsTheWindow(t *testing.T) {
 	// Any other evidence brings the window back.
 	r.procs.Add(proc(600, 1))
 	s.Procs = []platform.ProcID{{PID: 600, StartUS: 1}}
-	if v := r.decide(s); !v.Live || !reasons(v)[live.ReasonLedgerProc] || !reasons(v)[live.ReasonUnstable] {
+	if v := r.decide(s); !v.Live || !reasons(v)[live.ReasonLedgerProc] || !reasons(v)[live.ReasonUnobserved] {
 		t.Fatalf("with a live ledger process: %+v", v)
 	}
 	s.Procs = nil
@@ -534,5 +535,74 @@ func TestLeaseKeysAndDirectories(t *testing.T) {
 	var nilHeld *live.Held
 	if nilHeld.Release() != nil || nilHeld.Add("k") == nil || nilHeld.Inheritable() != nil {
 		t.Fatal("nil Held misbehaves")
+	}
+}
+
+// D63 / CC-28: a sealing process decides once (ReasonUnobserved, weak),
+// waits the quiet window and decides again; unchanged files are then not
+// live, changed ones are ReasonUnstable.
+func TestUnobservedThenStableOrUnstable(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	p := r.file("a.jsonl", "x\n")
+	s := live.Subject{Key: "unit-d63", Paths: []string{p}}
+	v := r.decide(s)
+	if !v.Live || len(v.Evidence) != 1 || v.Evidence[0].Reason != live.ReasonUnobserved || !v.Evidence[0].Weak {
+		t.Fatalf("first Decide: %+v, want only weak ReasonUnobserved", v)
+	}
+	r.clock.Advance(quiet)
+	if v := r.decide(s); v.Live {
+		t.Fatalf("second Decide a quiet window later, unchanged: %+v, want not live", v)
+	}
+	// Another unit that changes between the looks is unstable.
+	q := r.file("b.jsonl", "y\n")
+	s2 := live.Subject{Key: "unit-d63-changed", Paths: []string{q}}
+	r.decide(s2)
+	f, _ := os.OpenFile(q, os.O_WRONLY|os.O_APPEND, 0)
+	f.Write([]byte("z\n"))
+	f.Close()
+	r.clock.Advance(quiet)
+	v = r.decide(s2)
+	if !v.Live || !reasons(v)[live.ReasonUnstable] || reasons(v)[live.ReasonUnobserved] {
+		t.Fatalf("changed between the looks: %+v, want ReasonUnstable", v)
+	}
+	// A nil Observer is never stable.
+	e := &live.Engine{Procs: r.procs, Clock: r.clock, LeasesDir: r.dir, Quiet: quiet}
+	if v, err := e.Decide(context.Background(), s, nil); err != nil || !v.Live || !reasons(v)[live.ReasonUnstable] {
+		t.Fatalf("nil Observer: %+v %v", v, err)
+	}
+}
+
+// CC-55: probes racing Acquire never fail it (the shared flock is taken
+// with a bounded wait while a probe holds its momentary exclusive lock).
+func TestProbesNeverFailAcquire(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	key := "raced"
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				live.Probe(dir, key)
+			}
+		}()
+	}
+	defer func() { close(stop); wg.Wait() }()
+	for i := 0; i < 100; i++ {
+		h, err := live.Acquire(dir, []string{key}, live.Lease{Proc: platform.ProcID{PID: 1000 + i, StartUS: 1}})
+		if err != nil {
+			t.Fatalf("Acquire %d failed while probes ran: %v", i, err)
+		}
+		if err := h.Release(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

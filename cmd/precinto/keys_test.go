@@ -164,6 +164,15 @@ func TestDaemonEnvAllowlist(t *testing.T) {
 	if got["PRECINTO_HOME=/p"] != paths.OverridesAllowed(e) {
 		t.Errorf("PRECINTO_HOME passed=%v, overrides allowed=%v", got["PRECINTO_HOME=/p"], paths.OverridesAllowed(e))
 	}
+	// D64: the test ancestry stop passes only in -tags testing builds.
+	stop := paths.EnvTestAncestryStop + "=123:456"
+	passed := false
+	for _, kv := range daemonEnv(e.With(paths.EnvTestAncestryStop, "123:456")) {
+		passed = passed || kv == stop
+	}
+	if passed != paths.TestingBuild() {
+		t.Errorf("%s passed=%v in a testing build=%v", stop, passed, paths.TestingBuild())
+	}
 }
 
 func TestHarnessEnvDropsPrecintoAndLoader(t *testing.T) {

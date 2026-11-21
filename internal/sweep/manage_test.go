@@ -132,11 +132,14 @@ func TestPruneAndForget(t *testing.T) {
 	}
 	rep, err := te.run().prune(ctx, PruneOptions{Unit: u.Key, DryRun: true})
 	mustNoErr(t, err)
-	if len(te.logged(u.Key)) != 5 || !strings.HasPrefix(rep.Units[len(rep.Units)-1].Detail, "dry-run") {
+	if last := rep.Units[len(rep.Units)-1]; len(te.logged(u.Key)) != 5 || last.Outcome != OutPruned || last.Files != 2 || !strings.HasPrefix(last.Detail, "dry-run") {
 		t.Fatalf("dry run deleted: %+v", rep.Units)
 	}
 	rep, err = te.run().prune(ctx, PruneOptions{Unit: u.Key})
 	mustNoErr(t, err)
+	if rep.Count(OutPruned) != 1 || rep.Count(OutSkipped) != 0 {
+		t.Fatalf("prune outcomes %+v (CC-30: OutPruned, not OutSkipped)", rep.Units)
+	}
 	gens := te.logged(u.Key)
 	if len(gens) != 3 || gens[0].Gen != 3 {
 		t.Fatalf("after prune %+v", gens)
@@ -157,7 +160,7 @@ func TestPruneAndForget(t *testing.T) {
 	r.recoverAll(ctx)
 	rep2, err := forgetWith(te, u.Key)
 	mustNoErr(t, err)
-	if len(te.logged(u.Key)) != 0 || rep2.Count(OutSkipped) != 1 {
+	if len(te.logged(u.Key)) != 0 || rep2.Count(OutForgotten) != 1 || rep2.Count(OutSkipped) != 0 {
 		t.Fatalf("forget %+v", rep2.Units)
 	}
 	if _, ok, _ := LoadReceipt(te.e, u.Key); ok {
@@ -189,7 +192,7 @@ func forgetWith(te *testEnv, unit string) (*Report, error) {
 		return nil, err
 	}
 	_ = r.deleteReceipt(unit)
-	res.Outcome = OutSkipped
+	res.Outcome, res.Files = OutForgotten, len(del) // as Forget reports it (CC-30)
 	r.add(res)
 	return r.finish(), nil
 }

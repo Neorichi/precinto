@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/precinto/precinto/internal/paths"
 )
@@ -40,7 +41,11 @@ func cloudRoots(home string) []string { return homeCloudRoots(home) }
 
 func signalProc(ProcID, syscall.Signal) error { return ErrUnsupported }
 
-func signalGroup(int, syscall.Signal) error { return ErrUnsupported }
+func signalGroup(ProcID, syscall.Signal) error { return ErrUnsupported }
+
+func startTime(id ProcID) time.Time { return time.UnixMicro(id.StartUS) }
+
+func backupExcluded(context.Context, string) (bool, bool, error) { return false, false, nil }
 
 func waitExit(context.Context, ProcID) error { return ErrUnsupported }
 

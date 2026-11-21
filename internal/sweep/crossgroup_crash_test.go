@@ -118,8 +118,8 @@ func sweepAct(e Env) { _, _ = Sweep(context.Background(), e, Options{Reason: "lo
 
 func noOpDirs(t *testing.T, h *testkit.Home) {
 	_ = filepath.Walk(h.Layout.CapsulesDir, func(p string, fi os.FileInfo, err error) error {
-		if err == nil && fi.IsDir() && isOpDir(fi.Name()) {
-			t.Errorf("operation directory left: %s", fi.Name())
+		if err == nil && fi.IsDir() && strings.HasPrefix(fi.Name(), ".op-") {
+			t.Errorf("operation directory left: %s", fi.Name()) // never since CC-01
 		}
 		return nil
 	})

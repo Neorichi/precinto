@@ -31,7 +31,10 @@ type Options struct {
 
 	// Test seams (internal/agent/agenttest sets them; nil selects the real
 	// implementation). Spawn starts `<Exe> sweep|seal|restore` workers
-	// (default platform.Spawn); Screen polls the console (default
+	// (default platform.Spawn); a worker names its folder by the absolute
+	// path: `<Exe> sweep --lock --root <abs path>`, `<Exe> restore --root
+	// <abs path> --recent N --md --history --background` (the CLI's --root
+	// takes a path only). Screen polls the console (default
 	// platform.ReadScreen); Harden runs platform.Harden and
 	// CheckLoaderEnv (agenttest passes a no-op so the go test binary is
 	// never hardened or re-executed); Pinentry runs pinentry for hook-raised
@@ -255,7 +258,7 @@ func GateFromSnapshot(s *Snapshot, p config.Policy, q GateQuery) ipc.GateResp {
 func ClampTTL(p config.Policy, ttl time.Duration) time.Duration { return clampTTL(p, ttl) }
 
 // KillGrace returns the SIGTERM→SIGKILL delay for a harness given its
-// SessionEnd budget (R20).
+// SessionEnd budget (R20): harness.KillGrace.
 func KillGrace(sessionEndBudget time.Duration) time.Duration { return killGrace(sessionEndBudget) }
 
 // RateLimiter enforces at most n unlock prompts per minute, a backoff after

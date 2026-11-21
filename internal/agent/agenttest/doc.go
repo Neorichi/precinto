@@ -3,6 +3,7 @@
 // tests of every group (docs/TESTPLAN.md).
 //
 // Owner: G2 (daemon). Imports: stdlib, internal/agent, internal/ipc,
-// internal/paths, internal/platform, internal/platform/fakeplatform.
-// Test-only; requires -tags testing (ipc.DialOptions.Insecure).
+// internal/paths, internal/platform, internal/platform/fakeplatform,
+// github.com/awnumar/memguard (the Pinentry stub). Test-only; requires -tags
+// testing (ipc.DialOptions.Insecure).
 package agenttest

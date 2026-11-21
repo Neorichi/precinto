@@ -178,6 +178,9 @@ func TestBackendSealAfterExit(t *testing.T) {
 	if o.WaitFor == nil || *o.WaitFor != child || o.Reason != "wrapper-exit" {
 		t.Fatalf("seal options %+v", o)
 	}
+	if s := e.eng.sealScope[0]; len(s.SIDs) != 1 || s.SIDs[0] != "sid1" || len(s.Procs) != 1 || s.Procs[0] != child {
+		t.Fatalf("scope %+v, want the plan's sid narrowed to the child (CC-21)", s)
+	}
 
 	e, b = testBackend(t)
 	e.eng.sealRep = &sweep.Report{Units: []sweep.UnitResult{{Outcome: sweep.OutLive}}}
@@ -242,8 +245,9 @@ func TestBackendHomeOfCodex(t *testing.T) {
 	}
 }
 
-// An empty seal scope would mean "every folder": SealAfterExit bounds it by
-// the launch's folders, and an unmanaged launch seals nothing.
+// An empty seal scope would mean "every folder": SealAfterExit narrows it to
+// the child's own sessions (Scope.Procs) and never widens it to the plan's
+// folders (CC-21, R4); an unmanaged launch seals nothing.
 func TestBackendSealScopeNeverWidens(t *testing.T) {
 	e, b := testBackend(t)
 	ctx := context.Background()
@@ -258,7 +262,7 @@ func TestBackendSealScopeNeverWidens(t *testing.T) {
 	if _, err := b.SealAfterExit(ctx, plan, child); err != nil {
 		t.Fatal(err)
 	}
-	if s := e.eng.sealScope[0]; len(s.RootIDs) != 1 || s.RootIDs[0] != "root-acme" {
-		t.Fatalf("scope %+v", s)
+	if s := e.eng.sealScope[0]; len(s.RootIDs) != 0 || len(s.SIDs) != 0 || len(s.Procs) != 1 || s.Procs[0] != child {
+		t.Fatalf("scope %+v, want only the child's sessions", s)
 	}
 }

@@ -170,17 +170,20 @@ const (
 
 // Unit is one sealable group of plaintext files.
 type Unit struct {
-	Harness      ID
-	Kind         capsule.Kind
-	Key          string // unit key (capsule.UnitKey)
-	UnitID       string // sid, slug, relpath… (private; never logged)
-	VaultID      string // sealing vault (D1, D36)
-	RootIDs      []string
-	Home         Home
-	Files        []File
-	Dirs         []File // empty directories to record
-	Hazards      []Hazard
-	Prune        []string // base-relative directories to remove when empty after sealing
+	Harness ID
+	Kind    capsule.Kind
+	Key     string // unit key (capsule.UnitKey)
+	UnitID  string // sid, slug, relpath… (private; never logged)
+	VaultID string // sealing vault (D1, D36)
+	RootIDs []string
+	Home    Home
+	Files   []File
+	Dirs    []File // empty directories to record
+	Hazards []Hazard
+	// Prune lists "<base id>:<rel>" entries (e.g. "claude_tmp:<P>/<sid>"),
+	// deepest first, of directories to remove when empty after sealing;
+	// never a base root and never projects/<P>. One format, no bare rel.
+	Prune        []string
 	Mode         GenMode
 	Procs        []platform.ProcID // ledger owners (current), for live.Subject
 	Paths        []string          // absolute files/dirs for stability and fd checks
@@ -189,6 +192,11 @@ type Unit struct {
 	LastActivity time.Time
 	Adopted      bool   // found by scanning, not by the ledger (S6)
 	Note         string // content-free scan note
+	// ProjectDir is, for claude-session units, the session's start cwd,
+	// realpath'd (the ledger start event, else the transcript's first cwd);
+	// for claude-project units the cwd the project index maps to <P> when
+	// unique, else "". Copied into capsule.Manifest.ProjectDir (D73).
+	ProjectDir string
 }
 
 // UnitRef names a unit without its files (restore requests, leases).
@@ -208,9 +216,18 @@ func (u Unit) Ref() UnitRef { return unitRef(u) }
 type Scope struct {
 	RootIDs []string // empty = every root
 	SIDs    []string // specific sessions
-	Kinds   []capsule.Kind
-	Global  bool // include global stores
-	All     bool
+	// Kinds: empty = every kind except KindGeneric, which is scanned only
+	// when listed (seal --dormant, D33).
+	Kinds  []capsule.Kind
+	Global bool // include global stores
+	// Adopt also adopts sessions found only by transcript cwd (seal
+	// --adopt, md="all" sweeps; S6).
+	Adopt bool
+	// Procs keeps only sessions whose ledger current owner is one of these
+	// processes (the wrapper's seal after exit of a fresh session); units
+	// that are not sessions are left out. Adapters without session units
+	// (codex homes, generic partitions) ignore it.
+	Procs []platform.ProcID
 }
 
 // Env is everything an adapter may read. Homes come from config and the
@@ -239,6 +256,15 @@ type TargetRules struct {
 	// Policy returns the placement of an entry.
 	Policy func(e capsule.Entry) Placement
 	Mode   GenMode
+	// Last reports entries placed after every other entry (Claude
+	// <sid>.jsonl, REST-3); nil = no ordering constraint.
+	Last func(e capsule.Entry) bool
+	// Skip names bases that exist but are unsafe now (Claude $TMP not
+	// 0700/owned, S7), with the reason: their entries are skipped and
+	// reported, never written, and the rest of the unit restores. An entry
+	// whose base is in neither Bases nor Skip still rejects the capsule
+	// (exit 5).
+	Skip map[capsule.BaseID]string
 }
 
 // LaunchMode is how the wrapper runs the child (UX14).
@@ -279,7 +305,7 @@ type Selector struct {
 	Kind       capsule.Kind
 	RootID     string
 	Keys       []string      // exact unit keys (e.g. resume by sid, computed with capsule.UnitKey)
-	ProjectDir string        // only units whose manifest project_dir equals it (-c / --continue)
+	ProjectDir string        // the realpath'd launch cwd; matches Manifest.ProjectDir exactly (-c / --continue, D73)
 	Title      string        // only units whose manifest title contains it (--resume <name>)
 	Recent     int           // newest N by last activity; 0 = every match
 	Newest     bool          // only the single newest match
@@ -299,15 +325,32 @@ type LaunchPlan struct {
 	Lease      []string   // lease keys known up front (e.g. the codex home key); restored units are added as they are placed
 	Argv       []string   // final argv (argv[0] absolute), e.g. with --settings injected (D32)
 	Env        []string   // environment additions (CODEX_HOME, CODEX_SQLITE_HOME, TMPDIR, CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0…)
-	Notices    []string   // one-line notices printed before exec
-	Confirm    string     // question to ask on the TTY before launching (e.g. claude purge, --bare), "" if none
+	// Notices are ui.MsgID values (harness packages cannot import
+	// internal/ui), printed before exec; the wrapper renders them with
+	// ui.Format and MsgVars.
+	Notices []string
+	// Confirm is a ui.MsgID asked on the TTY before launching (e.g.
+	// C7.twice, C7.purge, C9.bare, C10.consent), "" if none: yes runs Argv
+	// as planned (e.g. with --fork-session for C7.twice), no aborts the
+	// launch with ui.ErrCancelled (exit 3).
+	Confirm string
+	// MsgVars are the {placeholder} values for Notices and Confirm, keyed
+	// without braces ("sid", "pid", "folder").
+	MsgVars map[string]string
+	// QuitKeys are sent through the PTY before SIGTERM when precinto ends
+	// the session (codex: Ctrl-C twice); nil = none.
+	QuitKeys []byte
+	// KillGrace is the SIGTERM→SIGKILL grace for this harness (KillGrace).
+	KillGrace time.Duration
 	// Prepare runs after unlock and before restore (codex per-root home
 	// creation and seeding, D31).
 	Prepare func(ctx context.Context) error
 	// Finish runs after the child exited and before sealing (codex auth.json
 	// sync back, D31).
 	Finish func(ctx context.Context, exitCode int) error
-	// SealUnits are the units to seal after exit (resolved again by scanning).
+	// SealScope selects the units to seal after exit (resolved again by
+	// scanning). Adapters always set SIDs when the resume target is known;
+	// the backend adds Procs=[child].
 	SealScope Scope
 	// HookCheck says how to verify hook health (UX10): event expected and
 	// within how long after start.
@@ -351,6 +394,20 @@ type Adapter interface {
 	// Describe returns content-free metadata for a unit (title is returned
 	// only to be written inside the capsule).
 	Describe(ctx context.Context, e Env, u Unit) (title string, last time.Time, err error)
+}
+
+// KillGrace is the SIGTERM→SIGKILL grace for a harness whose SessionEnd
+// hooks take up to sessionEnd: max(8 s, sessionEnd+6 s), capped at 70 s
+// (SPEC §12.7).
+func KillGrace(sessionEnd time.Duration) time.Duration {
+	g := sessionEnd + 6*time.Second
+	if g < 8*time.Second {
+		g = 8 * time.Second
+	}
+	if g > 70*time.Second {
+		g = 70 * time.Second
+	}
+	return g
 }
 
 // Register adds an adapter (called from cmd/precinto wiring).

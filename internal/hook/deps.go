@@ -2,6 +2,7 @@ package hook
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,22 +17,25 @@ import (
 	"github.com/precinto/precinto/internal/sweep/queue"
 )
 
-// hookLayout is precinto's layout as hook mode sees it. It never honours
-// PRECINTO_HOME, PRECINTO_RUNTIME_DIR or PRECINTO_DEV, not even in builds
-// with -tags testing: hooks always run in an agent context, and Claude's
-// settings env reaches them (SPEC §6.1, D6, D56). ok is false when HOME is
-// unusable; when only the socket path is too long the files stay usable
-// and the daemon is unreachable (Socket is empty).
+// hookLayout is precinto's layout as hook mode sees it: paths.HookLayout,
+// which never honours PRECINTO_HOME, PRECINTO_RUNTIME_DIR or PRECINTO_DEV,
+// not even in builds with -tags testing (hooks always run in an agent
+// context, and Claude's settings env reaches them; SPEC §6.1, D6, D56). ok
+// is false when HOME is unusable; when only the socket path is too long the
+// files stay usable and the daemon is unreachable (Socket is empty).
 func hookLayout(env paths.Env) (paths.Layout, bool) {
-	clean := env.Without(paths.EnvHome, paths.EnvRuntimeDir, paths.EnvDev)
-	if l, err := paths.NewLayout(clean); err == nil {
+	l, err := paths.HookLayout(env)
+	if err == nil {
 		return l, true
 	}
-	base, err := paths.DefaultBase(clean)
+	if !errors.Is(err, paths.ErrSocketPath) {
+		return paths.Layout{}, false
+	}
+	base, err := paths.DefaultBase(env) // ignores overrides as well
 	if err != nil {
 		return paths.Layout{}, false
 	}
-	l, err := paths.LayoutAt(base, "/")
+	l, err = paths.LayoutAt(base, "/")
 	if err != nil {
 		return paths.Layout{}, false
 	}

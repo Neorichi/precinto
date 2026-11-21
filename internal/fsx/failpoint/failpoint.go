@@ -145,3 +145,79 @@ func Hits(name string) int {
 	defer mu.Unlock()
 	return counts[name]
 }
+
+// FSOpKind names a mutating file-system operation reported by NoteFS.
+type FSOpKind string
+
+// Reported operations (internal/fsx, failpoints builds only).
+const (
+	FSCreate  FSOpKind = "create"  // a file was created (O_EXCL, or a lock file)
+	FSMkdir   FSOpKind = "mkdir"   // a directory was created
+	FSRename  FSOpKind = "rename"  // Path renamed to Target (Target replaced if it existed)
+	FSLink    FSOpKind = "link"    // Target created as a hard link of Path
+	FSUnlink  FSOpKind = "unlink"  // a non-directory was removed
+	FSRmdir   FSOpKind = "rmdir"   // an empty directory was removed
+	FSFsync   FSOpKind = "fsync"   // File's data and size are durable (FullSync)
+	FSDirSync FSOpKind = "dirsync" // the entries of the directory Path are durable
+)
+
+// FSOp is one mutating file-system operation that internal/fsx reports in
+// failpoints builds, so that test helpers (internal/fsx/fsxtest) can build
+// power-loss images (docs/TESTPLAN.md §4). Paths are absolute. Rename,
+// link, unlink and rmdir are reported twice: with Done=false right before
+// the operation (Path and Target still hold their old state) and with
+// Done=true once it succeeded; the other kinds only with Done=true.
+type FSOp struct {
+	Kind   FSOpKind
+	Path   string
+	Target string   // rename and link: the new name
+	Done   bool     // false: about to run; true: completed
+	File   *os.File // FSFsync: the synced file (read it only with ReadAt/Stat)
+}
+
+var (
+	obsMu     sync.Mutex
+	observers map[int]func(FSOp)
+	obsNext   int
+)
+
+// ObserveFS registers fn to receive every FSOp reported by NoteFS until
+// the returned stop is called. fn runs synchronously in the reporting
+// goroutine, possibly concurrently with itself, and must not call back
+// into internal/fsx. Only valid with -tags failpoints; otherwise it panics
+// so tests cannot silently pass.
+func ObserveFS(fn func(FSOp)) (stop func()) {
+	if !enabled {
+		panic("failpoint.ObserveFS: binary built without -tags failpoints")
+	}
+	obsMu.Lock()
+	defer obsMu.Unlock()
+	if observers == nil {
+		observers = map[int]func(FSOp){}
+	}
+	id := obsNext
+	obsNext++
+	observers[id] = fn
+	return func() {
+		obsMu.Lock()
+		defer obsMu.Unlock()
+		delete(observers, id)
+	}
+}
+
+// NoteFS reports op to the observers registered with ObserveFS. It is a
+// no-op without -tags failpoints or without observers.
+func NoteFS(op FSOp) {
+	if !enabled {
+		return
+	}
+	obsMu.Lock()
+	fns := make([]func(FSOp), 0, len(observers))
+	for _, fn := range observers {
+		fns = append(fns, fn)
+	}
+	obsMu.Unlock()
+	for _, fn := range fns {
+		fn(op)
+	}
+}

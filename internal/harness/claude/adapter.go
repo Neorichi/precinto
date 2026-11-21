@@ -121,6 +121,23 @@ func (a *adapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) ([]h
 	return out, errors.Join(errs...)
 }
 
+// ownedBy applies Scope.Procs: with processes named, only sessions whose
+// ledger current owner is one of them (the wrapper's own child).
+func ownedBy(s harness.Scope, si sessionInfo) bool {
+	if len(s.Procs) == 0 {
+		return true
+	}
+	if !si.hasLog || si.ledger.CurrentProc.IsZero() {
+		return false
+	}
+	for _, p := range s.Procs {
+		if p == si.ledger.CurrentProc {
+			return true
+		}
+	}
+	return false
+}
+
 func wantKind(s harness.Scope, k capsule.Kind) bool {
 	if len(s.Kinds) == 0 {
 		return true
@@ -206,7 +223,7 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 				}
 			}
 		}
-		if !wantKind(s, capsule.KindClaudeSession) || !sidWanted(b.id) || !inScope(s, si.roots) {
+		if !wantKind(s, capsule.KindClaudeSession) || !sidWanted(b.id) || !inScope(s, si.roots) || !ownedBy(s, si) {
 			continue
 		}
 		u, err := a.unitOf(e, h, b, si.roots)
@@ -215,10 +232,11 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 		}
 		u.Procs = si.owners
 		u.Adopted = si.adopted
+		u.ProjectDir = sessionProjectDir(ctx, si, b)
 		out = append(out, u)
 	}
 	// Projects.
-	if wantKind(s, capsule.KindClaudeProject) && len(s.SIDs) == 0 {
+	if wantKind(s, capsule.KindClaudeProject) && len(s.SIDs) == 0 && len(s.Procs) == 0 {
 		for _, k := range w.order {
 			b := w.units[k]
 			if b.kind != capsule.KindClaudeProject || len(b.files)+len(b.dirs)+len(b.hazards) == 0 {
@@ -232,11 +250,12 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 			if err != nil {
 				return nil, err
 			}
+			u.ProjectDir = projectProjectDir(h, b.id, index)
 			out = append(out, u)
 		}
 	}
 	// Plans, by the slugs managed transcripts reference (D46).
-	if wantKind(s, capsule.KindClaudePlan) && len(s.SIDs) == 0 {
+	if wantKind(s, capsule.KindClaudePlan) && len(s.SIDs) == 0 && len(s.Procs) == 0 {
 		plans := assignPlans(w.plans, slugRoots)
 		slugs := make([]string, 0, len(plans))
 		for slug := range plans {
@@ -263,7 +282,7 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 		}
 	}
 	// Global stores (D36): global vault, no root.
-	if s.Global && wantKind(s, capsule.KindGlobalStore) && len(s.SIDs) == 0 {
+	if s.Global && wantKind(s, capsule.KindGlobalStore) && len(s.SIDs) == 0 && len(s.Procs) == 0 {
 		for _, k := range w.order {
 			b := w.units[k]
 			if b.kind != capsule.KindGlobalStore || len(b.files)+len(b.dirs)+len(b.hazards) == 0 {
@@ -281,7 +300,7 @@ func (a *adapter) unitsOf(ctx context.Context, e harness.Env, s harness.Scope, w
 
 // resolveSessions decides which sessions found on disk are managed and by
 // which roots: a ledger taint (sticky), else adoption — the project index
-// for the session's project directories, and, with Scope.All or when the
+// for the session's project directories, and, with Scope.Adopt or when the
 // scope names the session, the cwd keys of its transcripts (S6).
 func (a *adapter) resolveSessions(ctx context.Context, e harness.Env, s harness.Scope, h home, w *walker, index *ledger.Index) map[string]sessionInfo {
 	out := map[string]sessionInfo{}
@@ -310,7 +329,7 @@ func (a *adapter) resolveSessions(ctx context.Context, e harness.Env, s harness.
 			for _, x := range s.SIDs {
 				named = named || strings.EqualFold(x, b.id)
 			}
-			if s.All || named {
+			if s.Adopt || named {
 				for _, t := range append(append([]string{}, b.transcripts...), b.subagents...) {
 					facts, err := scanTranscript(ctx, t)
 					if err != nil {
@@ -438,6 +457,53 @@ func transcriptSlugs(ctx context.Context, files []string) []string {
 		}
 	}
 	return out
+}
+
+// sessionProjectDir is Unit.ProjectDir of a session (D73): its start cwd,
+// realpath'd — the ledger's first cwd (the start event), else the first
+// cwd its main transcript records; "" when neither is known.
+func sessionProjectDir(ctx context.Context, si sessionInfo, b *builder) string {
+	if si.hasLog {
+		for _, c := range si.ledger.Cwds {
+			if filepath.IsAbs(c) {
+				return realpath(c)
+			}
+		}
+	}
+	for _, t := range b.transcripts {
+		facts, err := scanTranscript(ctx, t)
+		if err != nil {
+			continue
+		}
+		for _, c := range facts.Cwds {
+			if filepath.IsAbs(c) {
+				return realpath(c)
+			}
+		}
+	}
+	return ""
+}
+
+// projectProjectDir is Unit.ProjectDir of a project unit (D73): the cwd
+// the project index maps to <P> when it maps exactly one, else "".
+func projectProjectDir(h home, slug string, index *ledger.Index) string {
+	if index == nil {
+		return ""
+	}
+	p, ok, err := index.Lookup(h.configDir(), slug)
+	if err != nil || !ok {
+		return ""
+	}
+	var cwds []string
+	for _, c := range p.Cwds {
+		if filepath.IsAbs(c) {
+			cwds = appendUnique(cwds, realpath(c))
+		}
+	}
+	if len(cwds) != 1 {
+		return ""
+	}
+	return cwds[0]
 }
 
 // unitOf turns a builder into a harness.Unit sealed to roots[0] (the

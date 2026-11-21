@@ -118,8 +118,10 @@ func rcFile(shell, home string) string {
 // `precinto shell-hook` (a ≤150 ms daemon query that never reads the
 // terminal) only on the first prompt and after the directory changed, and
 // remembers in _PRECINTO_SKIP the folder and lock epoch it already asked
-// about. shell-hook prints key=value lines (resultLines); only "prompt"
-// reads one key from the terminal: Enter unlocks, anything else skips.
+// about. shell-hook prints key=value lines (EnterResult.Lines) that the
+// scripts parse without eval (D69); only "prompt" reads one key from the
+// terminal: Enter runs `precinto unlock --root <path>`, anything else
+// skips. (The path is kept in a variable named dir: in zsh, path is PATH.)
 var templates = map[string]*template.Template{
 	Zsh:  template.Must(template.New(Zsh).Parse(zshScript)),
 	Bash: template.Must(template.New(Bash).Parse(bashScript)),
@@ -159,13 +161,14 @@ _precinto_precmd() {
   typeset -g _precinto_moved=
   local prev=${_precinto_pwd-}
   typeset -g _precinto_pwd=$PWD
-  local out line action= root= epoch= msg=
+  local out line action= root= epoch= dir= msg=
   out=$(command {{.Exe}} shell-hook --shell zsh --pwd "$PWD" --prev "$prev" --skip "${_PRECINTO_SKIP-}" $first 2>/dev/null) || return 0
   for line in "${(@f)out}"; do
     case $line in
       action=*) action=${line#action=} ;;
       root=*) root=${line#root=} ;;
       epoch=*) epoch=${line#epoch=} ;;
+      path=*) dir=${line#path=} ;;
       message=*) msg=${line#message=} ;;
     esac
   done
@@ -176,8 +179,8 @@ _precinto_precmd() {
     local key=
     read -rs -k 1 key || { print; return 0; }
     print
-    if [[ $key == $'\n' || $key == $'\r' ]]; then
-      command {{.Exe}} unlock
+    if [[ $key == $'\n' || $key == $'\r' ]] && [[ -n $dir ]]; then
+      command {{.Exe}} unlock --root "$dir"
     fi
   else
     print -r -- "$msg"
@@ -217,13 +220,14 @@ _precinto_prompt_command() {
   fi
   local prev=${_precinto_pwd-}
   _precinto_pwd=$PWD
-  local out line action= root= epoch= msg=
+  local out line action= root= epoch= dir= msg=
   out=$(command {{.Exe}} shell-hook --shell bash --pwd "$PWD" --prev "$prev" --skip "${_PRECINTO_SKIP-}" ${first:+"$first"} 2>/dev/null) || return $rc
   while IFS= read -r line; do
     case $line in
       action=*) action=${line#action=} ;;
       root=*) root=${line#root=} ;;
       epoch=*) epoch=${line#epoch=} ;;
+      path=*) dir=${line#path=} ;;
       message=*) msg=${line#message=} ;;
     esac
   done <<<"$out"
@@ -234,8 +238,8 @@ _precinto_prompt_command() {
     local key=
     IFS= read -r -s -n 1 key || { printf '\n'; return $rc; }
     printf '\n'
-    if [ -z "$key" ]; then
-      command {{.Exe}} unlock
+    if [ -z "$key" ] && [ -n "$dir" ]; then
+      command {{.Exe}} unlock --root "$dir"
     fi
   else
     printf '%s\n' "$msg"
@@ -279,6 +283,7 @@ function _precinto_enter --argument-names first
     set -l action ''
     set -l root ''
     set -l epoch ''
+    set -l dir ''
     set -l msg ''
     for line in $out
         switch $line
@@ -288,6 +293,8 @@ function _precinto_enter --argument-names first
                 set root (string replace -- 'root=' '' $line)
             case 'epoch=*'
                 set epoch (string replace -- 'epoch=' '' $line)
+            case 'path=*'
+                set dir (string replace -- 'path=' '' $line)
             case 'message=*'
                 set msg (string replace -- 'message=' '' $line)
         end
@@ -306,8 +313,8 @@ function _precinto_enter --argument-names first
             return 0
         end
         printf '\n'
-        if test -z "$key"
-            command {{.Exe}} unlock
+        if test -z "$key"; and test -n "$dir"
+            command {{.Exe}} unlock --root "$dir"
         end
     else
         printf '%s\n' "$msg"

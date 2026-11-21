@@ -30,11 +30,6 @@ const familyX25519 = "x25519"
 // zstdWindow is the encoder window; readers accept up to MaxZstdWindow.
 const zstdWindow = 8 << 20
 
-// tmpName returns the temporary Seal writes before committing name. It is a
-// pure function of the final name so that the caller can journal it before
-// Seal starts writing (D58, journal.Record.Tmp): "." + name + ".tmp".
-func tmpName(name string) string { return "." + name + ".tmp" }
-
 // memberName is the tar member of the n-th regular entry (1-based).
 func memberName(n int) string { return fmt.Sprintf("f/%06d", n) }
 
@@ -241,9 +236,13 @@ func seal(ctx context.Context, r SealRequest) (*Sealed, error) {
 	}
 	for _, de := range r.Dirs {
 		if !validBase(de.Base) || !validRel(de.Rel) {
-			return nil, fmt.Errorf("%w: directory %q:%q", ErrUnsafe, de.Base, de.Rel)
+			return nil, fmt.Errorf("%w: member-less entry %q:%q", ErrUnsafe, de.Base, de.Rel)
 		}
-		entries = append(entries, Entry{Base: de.Base, Rel: de.Rel, Path: de.Path, Dir: true, Mode: de.Mode & 0o7777, MtimeNS: de.MtimeNS})
+		e, err := memberless(de)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
 	}
 	if err := checkConflicts(entries, false); err != nil {
 		return nil, err
@@ -262,7 +261,7 @@ func seal(ctx context.Context, r SealRequest) (*Sealed, error) {
 	}
 
 	// Pass 2: stream magic+zstd(tar) through age into the temporary.
-	tmp := tmpName(r.Name)
+	tmp := TmpName(r.Name)
 	f, _, err := r.Out.CreateTemp("", tmp)
 	if err != nil {
 		return nil, err
@@ -333,6 +332,27 @@ func seal(ctx context.Context, r SealRequest) (*Sealed, error) {
 	return s, nil
 }
 
+// memberless records one SealRequest.Dirs entry as given: an empty
+// directory (Dir) or, for codex-home snapshot manifests, a file whose bytes
+// live in a blob capsule (Blob, with Size and SHA256 as recorded). Anything
+// else, or an entry that is both, is refused: it would carry no data.
+func memberless(de Entry) (Entry, error) {
+	switch {
+	case de.Dir && de.Blob == "" && de.Size == 0 && de.SHA256 == "":
+		return Entry{Base: de.Base, Rel: de.Rel, Path: de.Path, Dir: true, Mode: de.Mode & 0o7777, MtimeNS: de.MtimeNS}, nil
+	case !de.Dir && de.Blob != "":
+		if !isLowerHex(de.Blob, 32) || !isLowerHex(de.SHA256, 64) || de.Size < 0 {
+			return Entry{}, fmt.Errorf("%w: blob entry %q:%q needs a 32-hex unit key, a sha256 and a size", ErrFormat, de.Base, de.Rel)
+		}
+		return Entry{Base: de.Base, Rel: de.Rel, Path: de.Path, Mode: de.Mode & 0o7777, MtimeNS: de.MtimeNS,
+			Size: de.Size, SHA256: de.SHA256, Blob: de.Blob, Group: de.Group, Append: de.Append}, nil
+	case de.Dir:
+		return Entry{}, fmt.Errorf("%w: directory entry %q:%q carries file data", ErrFormat, de.Base, de.Rel)
+	default:
+		return Entry{}, fmt.Errorf("%w: entry %q:%q is neither an empty directory nor a blob file", ErrFormat, de.Base, de.Rel)
+	}
+}
+
 func writePayload(ctx context.Context, f *os.File, mj []byte, inputs []Input, entries []Entry, snaps []fsx.Stat, recipients ...age.Recipient) error {
 	bw := bufio.NewWriterSize(f, 1<<20)
 	aw, err := age.Encrypt(bw, recipients...)
@@ -358,6 +378,10 @@ func writePayload(ctx context.Context, f *os.File, mj []byte, inputs []Input, en
 			return err
 		}
 		if err := streamInput(ctx, tw, in, entries[i], snaps[i]); err != nil {
+			return err
+		}
+		// SEAL-2: a kill here leaves a partial temporary (and only that).
+		if err := failpoint.Hit("capsule.streamed"); err != nil {
 			return err
 		}
 	}

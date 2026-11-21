@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os/exec"
+	"strings"
+	"syscall"
 
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/wrapper"
@@ -64,12 +69,41 @@ func (a *app) runHarness(h harness.ID, argv []string, noPTY bool) int {
 		Policy:  cfg.Policy,
 		Backend: b,
 	})
-	if err != nil {
-		// Restore-before-launch refusals keep their class (a Codex home
-		// that diverged is exit 4, a forged capsule exit 5).
+	if code == wrapper.ExitNotStarted {
+		// The child never started (CC-42): map the reason with the API §5
+		// table. Restore-before-launch refusals keep their class (a Codex
+		// home that diverged is exit 4, a forged capsule exit 5); an
+		// executable that cannot be started keeps the shell's 127/126.
+		if err == nil {
+			err = errors.New("the harness did not start")
+		}
+		if c, ok := execFailureCode(err); ok {
+			return a.failWith("run", err, c)
+		}
 		return a.failRestore("run", err)
 	}
+	if err != nil {
+		// The child ran: its own exit code stands; the error (an
+		// after-exit step) is reported.
+		return a.failWith("run", err, code)
+	}
 	return code
+}
+
+// execFailureCode maps a failed exec of the harness to the shell's
+// convention: 127 not found, 126 not executable.
+func execFailureCode(err error) (int, bool) {
+	var pe *fs.PathError
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return 127, true
+	case errors.As(err, &pe) && strings.HasPrefix(pe.Op, "fork/exec"):
+		if errors.Is(pe.Err, fs.ErrPermission) || errors.Is(pe.Err, syscall.EACCES) {
+			return 126, true
+		}
+		return 127, true
+	}
+	return 0, false
 }
 
 func cmdResume(a *app, args []string) int {

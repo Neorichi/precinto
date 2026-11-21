@@ -89,8 +89,21 @@ func (r *run) sweepOnce(ctx context.Context, o Options) {
 		}
 		sealable = append(sealable, u)
 	}
-	r.sealAll(ctx, sealable, o, false)
-	if !unlocked[globalVault] && (len(o.Scope.RootIDs) == 0 || o.Scope.Global) {
+	// D63: every subject of this run gets its first look before the
+	// single quiet-window wait: sessions in sealAll's first pass, notes and
+	// history here.
+	rotate := !unlocked[globalVault] && (len(o.Scope.RootIDs) == 0 || o.Scope.Global)
+	primed := false
+	for _, root := range r.e.Cfg.Roots {
+		if c, ok := notes[root.ID]; ok && r.primeNotes(ctx, root, c) {
+			primed = true
+		}
+	}
+	if rotate && r.primeHistory(ctx) {
+		primed = true
+	}
+	r.sealAllPrimed(ctx, sealable, o, false, primed)
+	if rotate {
 		r.rotateHistory(ctx)
 	}
 	for _, root := range r.e.Cfg.Roots {
@@ -249,7 +262,7 @@ func (r *run) drainQueue(ctx context.Context, o Options) {
 			_ = queue.Remove(r.l.QueueDir, q.ID)
 			continue
 		}
-		scope := harness.Scope{All: true}
+		scope := harness.Scope{Adopt: true}
 		if q.SID != "" {
 			scope = harness.Scope{SIDs: []string{q.SID}}
 		}
@@ -271,6 +284,12 @@ func (r *run) drainQueue(ctx context.Context, o Options) {
 		}
 		qo := o
 		qo.Reason = q.Reason
+		if !q.WaitFor.IsZero() {
+			// The writer is gone (checked above): R20 lets the seal skip
+			// the stability window when nothing else holds the unit.
+			w := q.WaitFor
+			qo.WaitFor = &w
+		}
 		results := r.sealAll(ctx, mine, qo, false)
 		done, noSpaceSeen := true, false
 		for _, res := range results {
@@ -364,10 +383,6 @@ func (r *run) quarantine(ctx context.Context) error {
 			return nil
 		}
 		if we.Type == fsx.TypeDir {
-			if isOpDir(path.Base(rel)) {
-				moves = append(moves, rel) // a stray operation directory
-				return fs.SkipDir
-			}
 			return nil
 		}
 		if we.Type != fsx.TypeRegular || we.Hazard != fsx.HazardNone || !strings.HasSuffix(rel, capsule.FileExt) {

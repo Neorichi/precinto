@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"strconv"
 	"strings"
 
 	"github.com/precinto/precinto/internal/capsule"
@@ -139,7 +138,7 @@ func (r *run) basesOfRecord(rec *journal.Record) (map[capsule.BaseID]dirHandle, 
 	handles := map[capsule.BaseID]dirHandle{}
 	dirs := map[capsule.BaseID]string{}
 	for _, jf := range rec.Files {
-		id, abs := decodeBase(jf.Base)
+		id, abs := capsule.BaseID(jf.Base), jf.Dir
 		if _, ok := handles[id]; ok {
 			continue
 		}
@@ -155,16 +154,6 @@ func (r *run) basesOfRecord(rec *journal.Record) (map[capsule.BaseID]dirHandle, 
 		handles[id], dirs[id] = d, abs
 	}
 	return handles, dirs, nil
-}
-
-// noteValue returns the value of a "key=value" note.
-func noteValue(rec *journal.Record, key string) string {
-	for _, n := range rec.Notes {
-		if v, ok := strings.CutPrefix(n, key+"="); ok {
-			return v
-		}
-	}
-	return ""
 }
 
 // recoverSeal finishes or rolls back a seal (SPEC §10.5, D58b): the
@@ -199,8 +188,9 @@ func (r *run) recoverSeal(ctx context.Context, rec *journal.Record) *UnitResult 
 		defer capsRoot.Close()
 		defer unitDir.Close()
 	}
-	if unitDir != nil && rec.Tmp != "" && isOpDir(rec.Tmp) {
-		if err := removeOpDir(unitDir, rec.Tmp); err != nil {
+	if unitDir != nil && rec.Tmp != "" {
+		// D58b: the journaled temporary of capsule.Seal, if a crash left it.
+		if err := removeTmp(unitDir, rec.Tmp); err != nil {
 			return recoveredResult(rec, kind, OutFailed, failDetail(err))
 		}
 	}
@@ -274,10 +264,8 @@ func (r *run) recoverSeal(ctx context.Context, rec *journal.Record) *UnitResult 
 	if err := r.rewriteReceipt(rec.Unit, kind, rec.Harness, bases, rec, shas, gen, oldp, baseDirs); err != nil {
 		return recoveredResult(rec, kind, OutFailed, failDetail(err))
 	}
-	if sid, n := noteValue(rec, "ledger-sid"), noteValue(rec, "ledger-n"); sid != "" && n != "" {
-		if ln, err := strconv.ParseInt(n, 10, 64); err == nil && ln > 0 {
-			_ = r.p.ledger.Archive(rec.Harness, sid, ln)
-		}
+	if rec.LedgerSID != "" && rec.LedgerN > 0 {
+		_ = r.p.ledger.Archive(rec.Harness, rec.LedgerSID, rec.LedgerN)
 	}
 	o := OutSealed
 	detail := "recovered: seal finished"
@@ -328,7 +316,7 @@ func recordedCapsules(rec *journal.Record) []string {
 		}
 		if rec.Kind == journal.KindCodexSnapshot {
 			for _, jf := range rec.Files {
-				if id, _ := decodeBase(jf.Base); id == baseBlob {
+				if id := capsule.BaseID(jf.Base); id == baseBlob {
 					out = append(out, logPathOf(store, rec.Unit, jf.Rel))
 				}
 			}

@@ -173,11 +173,6 @@ type ports struct {
 	// tailQuiet is how long the history tail loop waits for late appends
 	// (SPEC §7.1.4 step 5: 500 ms).
 	tailQuiet time.Duration
-	// afterRename and afterLog are test seams (nil in production): they
-	// run right after a capsule's commit rename and right after its log
-	// append, where the failpoint registry has no name, so crash tests can
-	// kill the process at SEAL-6 and SEAL-7.
-	afterRename, afterLog func()
 }
 
 // prodPorts wires the real implementations.

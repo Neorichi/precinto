@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/sweep"
+	"github.com/precinto/precinto/internal/wrapper"
 )
 
 // run passes the command line verbatim to wrapper.Run with the backend,
@@ -51,16 +54,33 @@ func TestRunUnknownHarness(t *testing.T) {
 }
 
 // A codex launch whose home diverged is exit 4 (R12); a forged capsule 5.
+// The wrapper reports a launch that never started with ExitNotStarted and
+// the reason (CC-42); a child that ran keeps its own code.
 func TestRunErrorsKeepTheirClass(t *testing.T) {
 	e := newEnv(t)
-	e.wrapErr = sweep.ErrConflict
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, sweep.ErrConflict
 	if code := e.run("run", "--", "codex"); code != exitLive {
 		t.Fatalf("exit %d", code)
 	}
 	e = newEnv(t)
-	e.wrapErr = sweep.ErrNotLogged
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, sweep.ErrNotLogged
 	if code := e.run("run", "--", "claude"); code != exitVerify {
 		t.Fatalf("exit %d", code)
+	}
+	e = newEnv(t)
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, &ipc.Error{Code: ipc.CodeLocked, Msg: "precinto: ~/work/acme is locked."}
+	if code := e.run("run", "--", "claude"); code != exitLocked {
+		t.Fatalf("locked: exit %d", code)
+	}
+	e = newEnv(t)
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, &fs.PathError{Op: "fork/exec", Path: "/x/claude", Err: fs.ErrNotExist}
+	if code := e.run("run", "--", "claude"); code != 127 {
+		t.Fatalf("missing executable: exit %d", code)
+	}
+	e = newEnv(t)
+	e.wrapCode, e.wrapErr = 7, errors.New("sealing after exit failed")
+	if code := e.run("run", "--", "claude"); code != 7 {
+		t.Fatalf("a child that ran: exit %d, want its own 7", code)
 	}
 }
 
@@ -127,17 +147,29 @@ func TestAgent(t *testing.T) {
 
 func TestDoctorExitCodes(t *testing.T) {
 	e := newEnv(t)
-	e.doctorOut = []doctor.Finding{{Code: doctor.CheckDiskEncryption, Severity: doctor.OK}}
-	if code := e.run("doctor"); code != exitOK || !strings.Contains(e.stdout(), "no problems found") {
+	e.doctorOut = []doctor.Finding{{Code: doctor.CheckDiskEncryption, Severity: doctor.OK, Message: "FileVault is on"}}
+	if code := e.run("doctor"); code != exitOK || !strings.Contains(e.stdout(), "precinto doctor: 0 failed, 0 warnings, 0 notes, 1 ok") {
 		t.Fatalf("exit %d %q", code, e.stdout())
+	}
+	// Warnings do not change the exit code (SPEC §16.2).
+	e = newEnv(t)
+	e.doctorOut = []doctor.Finding{{Code: doctor.CheckBackups, Severity: doctor.Warn, Message: "Time Machine backs up x"}}
+	if code := e.run("doctor"); code != exitOK {
+		t.Fatalf("warning: exit %d", code)
 	}
 	e = newEnv(t)
 	e.doctorOut = []doctor.Finding{{Code: doctor.CheckLoaderEnv, Severity: doctor.Fail, Message: "DYLD_INSERT_LIBRARIES is set", Fix: "unset it"}}
 	if code := e.run("doctor", "--leaks"); code != exitError {
 		t.Fatalf("exit %d", code)
 	}
-	if !strings.Contains(e.stdout(), "fail  loader-env: DYLD_INSERT_LIBRARIES is set · fix: unset it") {
+	if !strings.Contains(e.stdout(), "FAIL  loader-env  DYLD_INSERT_LIBRARIES is set") || !strings.Contains(e.stdout(), "fix: unset it") {
 		t.Fatalf("stdout %q", e.stdout())
+	}
+	// --json prints the v1 document (doctor.Render).
+	e = newEnv(t)
+	e.doctorOut = []doctor.Finding{{Code: doctor.CheckLoaderEnv, Severity: doctor.Fail, Message: "DYLD_INSERT_LIBRARIES is set", Fix: "unset it"}}
+	if code := e.run("doctor", "--json"); code != exitError || !strings.Contains(e.stdout(), `"worst": "fail"`) {
+		t.Fatalf("json: exit %d %q", code, e.stdout())
 	}
 	e = newEnv(t)
 	if code := e.run("doctor", "nosuch"); code != exitUsage {

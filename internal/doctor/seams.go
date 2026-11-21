@@ -49,7 +49,8 @@ type deps struct {
 	CloudSynced      func(path string) bool
 	SpotlightIndexed func(ctx context.Context, path string) (indexed, known bool, err error)
 	// BackupExcluded reports whether Time Machine leaves path out of its
-	// backups (true as well when no backup destination is configured).
+	// backups (platform.BackupExcluded: known=false with a nil error when
+	// no backup destination is configured).
 	BackupExcluded func(ctx context.Context, path string) (excluded, known bool, err error)
 	Executable     func() (string, error)
 	// SystemBins are directories searched for harness executables after
@@ -105,7 +106,6 @@ func defaultDeps(o Options) *deps {
 	store := func() *vault.Store { return vault.OpenStore(l.VaultsDir, l.VerifiedDir, l.FactorsDir) }
 	status := onceStatus(func(ctx context.Context) (ipc.StatusResp, error) { return dialStatus(ctx, l) })
 	se := &sweepEnvOnce{o: o, status: status}
-	tm := newTimeMachine(o.Env)
 	return &deps{
 		Now:  time.Now,
 		GOOS: runtime.GOOS,
@@ -114,7 +114,7 @@ func defaultDeps(o Options) *deps {
 		DiskEncryption:   platform.DiskEncryption,
 		CloudSynced:      platform.CloudSynced,
 		SpotlightIndexed: platform.SpotlightIndexed,
-		BackupExcluded:   tm.excluded,
+		BackupExcluded:   platform.BackupExcluded,
 		Executable:       os.Executable,
 		SystemBins:       []string{"/opt/homebrew/bin", "/usr/local/bin"},
 		RunShell:         runLoginShell,

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -202,10 +204,13 @@ const MaxUnlockCap = 24 * time.Hour
 // Load parses path and validates it. A missing file yields Default().
 // Keys absent from the file keep their defaults (a [harness.<id>] table
 // without `enabled`/`min_version` keeps the built-in values); unknown keys
-// are rejected (ErrInvalid), so a typo never silently weakens policy.
-// Implemented in the scaffold.
+// are rejected (ErrInvalid), so a typo never silently weakens policy. The
+// file is opened O_RDONLY|O_NOFOLLOW|O_NONBLOCK and must be a regular file
+// owned by the user of at most MaxFileBytes; anything else (a symlink,
+// FIFO, directory, foreign or oversized file) is an error wrapping
+// fsx.ErrUnsafe, never a hang.
 func Load(path string) (Config, error) {
-	b, err := os.ReadFile(path)
+	b, err := readPolicyFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Default(), nil
 	}
@@ -443,10 +448,10 @@ func WriteRootsList(path string, c Config) error {
 }
 
 // ReadRootsList reads a roots.list file (missing file: no roots); lines
-// that are not absolute clean paths are ignored. Implemented in the
-// scaffold.
+// that are not absolute clean paths are ignored. The file is opened like
+// Load's (regular, owned by the user, ≤ MaxFileBytes, else fsx.ErrUnsafe).
 func ReadRootsList(path string) ([]string, error) {
-	b, err := os.ReadFile(path)
+	b, err := readPolicyFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -460,6 +465,43 @@ func ReadRootsList(path string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// MaxFileBytes bounds config.toml, roots.list and state/policy.pinned.
+const MaxFileBytes = 1 << 20
+
+// readPolicyFile reads one of precinto's own configuration files without
+// following a symlink or blocking on a FIFO; a missing file is
+// os.ErrNotExist (callers treat it as "none").
+func readPolicyFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: %s is a symlink", fsx.ErrUnsafe, filepath.Base(path))
+		}
+		return nil, err
+	}
+	defer f.Close()
+	st, err := fsx.Fstat(f)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case !st.IsRegular():
+		return nil, fmt.Errorf("%w: %s is not a regular file", fsx.ErrUnsafe, filepath.Base(path))
+	case int(st.UID) != os.Geteuid():
+		return nil, fmt.Errorf("%w: %s is owned by uid %d", fsx.ErrUnsafe, filepath.Base(path), st.UID)
+	case st.Size > MaxFileBytes:
+		return nil, fmt.Errorf("%w: %s is larger than %d bytes", fsx.ErrUnsafe, filepath.Base(path), MaxFileBytes)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, MaxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > MaxFileBytes {
+		return nil, fmt.Errorf("%w: %s grew past %d bytes", fsx.ErrUnsafe, filepath.Base(path), MaxFileBytes)
+	}
+	return b, nil
 }
 
 // NewRootID returns a fresh random root id (32 hex characters).
@@ -508,10 +550,11 @@ func Canonical(c Config) []byte {
 
 // LoadPinned reads state/policy.pinned (ok=false if it does not exist). It
 // does not verify MACs (the daemon does, with the vault keys); a file that
-// does not decode is an error (the daemon reports policy-tampered).
-// Implemented in the scaffold.
+// does not decode is an error (the daemon reports policy-tampered). It is
+// opened like Load's file: a FIFO or symlink planted at the path is an
+// error wrapping fsx.ErrUnsafe (policy-tampered), never a hang.
 func LoadPinned(path string) (p Pinned, ok bool, err error) {
-	b, err := os.ReadFile(path)
+	b, err := readPolicyFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Pinned{}, false, nil
 	}

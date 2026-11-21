@@ -5,6 +5,7 @@ package wrapper_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -364,6 +365,8 @@ func TestRunSubscriptionLossLocksUntilUnlocked(t *testing.T) {
 	b.srv.dropSubscriptions() // the stream closes: a daemon restart
 	r.term.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m)
 	r.term.waitFor("agent isn't running", m)
+	// The overlay names the cause (CC-38: ReasonAgent).
+	r.term.waitFor(ui.ReasonText(ui.ReasonAgent, 0), m)
 	r.term.typeKeys("o")
 	deadline := time.Now().Add(waitTimeout)
 	for len(b.srv.registrations()) < 2 && time.Now().Before(deadline) {
@@ -436,8 +439,8 @@ func TestRunLockDuringRestoreSyncAborts(t *testing.T) {
 	}
 	out := waitRun(t, res)
 	var ie *ipc.Error
-	if out.code != 3 || !errors.As(out.err, &ie) || ie.Code != ipc.CodeLocked {
-		t.Fatalf("Run = %d, %v; want 3 with ipc.CodeLocked", out.code, out.err)
+	if out.code != wrapper.ExitNotStarted || !errors.As(out.err, &ie) || ie.Code != ipc.CodeLocked || ie.ExitCode() != 3 {
+		t.Fatalf("Run = %d, %v; want ExitNotStarted with ipc.CodeLocked (exit 3)", out.code, out.err)
 	}
 	if b.called("RecordLaunch") || strings.Contains(tp.output(), "READY") {
 		t.Fatal("the child started after a lock during the restore")
@@ -556,16 +559,16 @@ func TestRunDirectModeSetsidAndEnd(t *testing.T) {
 func TestRunConfirmDeclinedRefuses(t *testing.T) {
 	bins := helpers(t)
 	plan := managedPlan(harness.ClaudeCode, bins.tui)
-	plan.Confirm = ui.Format(ui.MsgBareWarning, ui.Vars{})
+	plan.Confirm = string(ui.MsgBareWarning) // a ui.MsgID the wrapper renders (CC-20)
 	b := newFakeBackend(plan)
 	fp := &fakePrompt{yes: false}
 	defer wrapper.SetPromptUI(func() (wrapper.PromptUI, error) { return fp, nil })()
 	tp := newTerm(t, 80, 24)
 	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
-	if out.code != 3 || !errors.Is(out.err, ui.ErrCancelled) {
-		t.Fatalf("Run = %d, %v; want 3, ui.ErrCancelled", out.code, out.err)
+	if out.code != wrapper.ExitNotStarted || !errors.Is(out.err, ui.ErrCancelled) {
+		t.Fatalf("Run = %d, %v; want ExitNotStarted, ui.ErrCancelled (exit 3)", out.code, out.err)
 	}
-	if len(fp.asked) != 1 || fp.asked[0] != plan.Confirm || !fp.closed {
+	if len(fp.asked) != 1 || fp.asked[0] != ui.Format(ui.MsgBareWarning, ui.Vars{}) || !fp.closed {
 		t.Fatalf("prompt asked %q closed=%v", fp.asked, fp.closed)
 	}
 	if b.called("EnsureUnlocked") || b.called("AcquireLease") {
@@ -576,7 +579,7 @@ func TestRunConfirmDeclinedRefuses(t *testing.T) {
 func TestRunConfirmWithoutTerminalFailsClosed(t *testing.T) {
 	bins := helpers(t)
 	plan := managedPlan(harness.ClaudeCode, bins.tui)
-	plan.Confirm = ui.Format(ui.MsgBareWarning, ui.Vars{})
+	plan.Confirm = string(ui.MsgBareWarning) // a ui.MsgID the wrapper renders (CC-20)
 	b := newFakeBackend(plan)
 	tp := newTerm(t, 80, 24)
 	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
@@ -598,8 +601,9 @@ func TestRunEnsureUnlockedRelaysAndFailsClosed(t *testing.T) {
 	}
 	tp := newTerm(t, 80, 24)
 	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
-	if out.code != 3 {
-		t.Fatalf("Run = %d, %v; want 3", out.code, out.err)
+	var ce *ipc.Error
+	if out.code != wrapper.ExitNotStarted || !errors.As(out.err, &ce) || ce.ExitCode() != 3 {
+		t.Fatalf("Run = %d, %v; want ExitNotStarted with an exit-3 error", out.code, out.err)
 	}
 	if len(fp.displays) != 1 || !fp.closed {
 		t.Fatalf("relayed UI: displays=%q closed=%v", fp.displays, fp.closed)
@@ -764,21 +768,25 @@ func TestRunRefusesBadOptions(t *testing.T) {
 	if code, err := wrapper.Run(context.Background(), wrapper.Options{}); err == nil || code == 0 {
 		t.Fatalf("Run without a backend = %d, %v", code, err)
 	}
+	// The child never started: ExitNotStarted with the reason (CC-42);
+	// cmd/precinto maps the error.
 	b := newFakeBackend(harness.LaunchPlan{})
-	if code, err := wrapper.Run(context.Background(), wrapper.Options{Backend: b}); err == nil || code != 2 {
+	if code, err := wrapper.Run(context.Background(), wrapper.Options{Backend: b}); err == nil || code != wrapper.ExitNotStarted {
 		t.Fatalf("Run without argv = %d, %v", code, err)
 	}
 	b.planErr = &ipc.Error{Code: ipc.CodeBadRequest, Msg: "x"}
-	if code, err := wrapper.Run(context.Background(), wrapper.Options{Backend: b, Argv: []string{"x"}}); err == nil || code != 2 {
+	code, err := wrapper.Run(context.Background(), wrapper.Options{Backend: b, Argv: []string{"x"}})
+	var ie *ipc.Error
+	if code != wrapper.ExitNotStarted || !errors.As(err, &ie) || ie.ExitCode() != 2 {
 		t.Fatalf("Run with a failing plan = %d, %v", code, err)
 	}
-	// An executable that does not exist: 127, nothing left running.
+	// An executable that does not exist: not started, nothing left running.
 	bins := helpers(t)
 	plan := managedPlan("generic", bins.tui+"-missing")
 	b = newFakeBackend(plan)
 	tp := newTerm(t, 80, 24)
 	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
-	if out.code != 127 || out.err == nil {
+	if out.code != wrapper.ExitNotStarted || !errors.Is(out.err, fs.ErrNotExist) {
 		t.Fatalf("missing executable: %d, %v", out.code, out.err)
 	}
 	if _, released := b.lease.state(); !released {

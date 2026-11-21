@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"io"
 
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/ipc"
@@ -59,14 +60,29 @@ const (
 	CheckExposed           = ipc.AttnExposed
 	CheckUngatedSession    = ipc.AttnUngatedSession
 	CheckConflict          = ipc.AttnConflict
+	// CheckPermissions: precinto's own directories and Claude's temp folder
+	// are not private (owner, mode, symlinks; S7, D6).
+	CheckPermissions = "permissions"
+	// CheckAgentSocket: the run directory or socket is unusable or unsafe
+	// (length, owner, mode, a non-socket; D6).
+	CheckAgentSocket = "agent-socket"
+	// CheckInterrupted: journal leftovers, abandoned restore staging and
+	// history hold links of interrupted operations (D12, D58).
+	CheckInterrupted = "interrupted"
+	// CheckPluginPin: a pinned plugin binary no longer matches its SHA-256;
+	// fix: precinto factor repin NAME (D75).
+	CheckPluginPin = "plugin-pin"
+	// CheckExperimentalVersion: an installed harness version outside an
+	// experimental inventory's verified_versions (SPEC §7.3).
+	CheckExperimentalVersion = "experimental-version"
 )
 
 // Finding is one result.
 type Finding struct {
-	Code     string
-	Severity Severity
-	Message  string // one line, content-free
-	Fix      string // command or setting that fixes it
+	Code     string   `json:"code"`
+	Severity Severity `json:"severity"`
+	Message  string   `json:"message"`       // one line, content-free
+	Fix      string   `json:"fix,omitempty"` // command or setting that fixes it
 }
 
 // Options configures Run.
@@ -84,3 +100,19 @@ func Run(ctx context.Context, o Options) ([]Finding, error) { return run(ctx, o,
 
 // Codes lists every check code in display order.
 func Codes() []string { return codes() }
+
+// Render writes fs for `precinto doctor`: one line per finding
+// ("FAIL  code  message", the fix on the next line) and a summary line, or
+// with asJSON the v1 document {"v":1,"worst":sev,"findings":[{"code",
+// "severity","message","fix"}]}. Both sanitize every text again (a finding
+// may come from the agent).
+func Render(w io.Writer, fs []Finding, asJSON bool) error {
+	if asJSON {
+		return writeJSON(w, fs)
+	}
+	return writeHuman(w, fs)
+}
+
+// Worst returns the most severe severity among fs (OK when empty). The CLI
+// exits 1 when it is Fail, 0 otherwise (SPEC §16.2; 2 is usage).
+func Worst(fs []Finding) Severity { return worst(fs) }

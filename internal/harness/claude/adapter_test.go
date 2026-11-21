@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -301,7 +302,7 @@ func TestScanAdoptionAndUnmanagedSessions(t *testing.T) {
 	if _, ok := find(f.scan(harness.Scope{}), capsule.KindClaudeSession, sid2); ok {
 		t.Fatal("a session without ledger or index entry was returned without adoption")
 	}
-	units := f.scan(harness.Scope{All: true})
+	units := f.scan(harness.Scope{Adopt: true})
 	u, ok := find(units, capsule.KindClaudeSession, sid2)
 	if !ok || !u.Adopted || u.VaultID != "root-acme" || len(u.Procs) != 0 {
 		t.Fatalf("adoption by transcript cwd: %v %+v", ok, u.Ref())
@@ -333,7 +334,7 @@ func TestScanAdoptionAndUnmanagedSessions(t *testing.T) {
 	f.taint(sid1, procP.ID)
 	f.session(sid1, f.h.Root, nil)
 	f.e.Cfg.Roots = nil
-	if units := f.scan(harness.Scope{All: true}); len(units) != 0 {
+	if units := f.scan(harness.Scope{Adopt: true}); len(units) != 0 {
 		t.Fatalf("units without any protected root: %d", len(units))
 	}
 }
@@ -389,7 +390,7 @@ func evidence(t *testing.T, f *fx, u harness.Unit) map[live.Reason][]live.Eviden
 
 func sessionUnit(t *testing.T, f *fx, sid string) harness.Unit {
 	t.Helper()
-	u, ok := find(f.scan(harness.Scope{All: true}), capsule.KindClaudeSession, sid)
+	u, ok := find(f.scan(harness.Scope{Adopt: true}), capsule.KindClaudeSession, sid)
 	if !ok {
 		t.Fatalf("no unit for %s", sid)
 	}
@@ -819,6 +820,10 @@ func TestPlanLaunch(t *testing.T) {
 	if plan.HookCheck.Event != "SessionStart" || plan.HookCheck.Within != 10*time.Second {
 		t.Errorf("hook check %+v", plan.HookCheck)
 	}
+	// CC-24: Claude exits on SIGTERM; its SessionEnd budget is 1.5 s.
+	if plan.KillGrace != harness.KillGrace(1500*time.Millisecond) || len(plan.QuitKeys) != 0 {
+		t.Errorf("termination %v %q", plan.KillGrace, plan.QuitKeys)
+	}
 	if len(plan.Sync) != 1 || plan.Sync[0].Kind != capsule.KindClaudeProject || plan.Sync[0].ProjectDir != f.h.Root {
 		t.Errorf("sync %+v", plan.Sync)
 	}
@@ -844,6 +849,10 @@ func TestPlanLaunch(t *testing.T) {
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "-r", sid1})
 	if plan.Confirm != "C7.twice" || !plan.Resume.Fork || plan.Argv[len(plan.Argv)-1] != "--fork-session" {
 		t.Errorf("twice: %+v", plan)
+	}
+	// CC-20: the wrapper renders C7.twice with these values.
+	if plan.MsgVars["sid"] != sid1 || plan.MsgVars["pid"] != "900" {
+		t.Errorf("twice vars: %v", plan.MsgVars)
 	}
 	// The user's own --settings wins; --bare asks first.
 	plan, _ = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "--settings", "{}", "--bare"})
@@ -965,5 +974,138 @@ func TestSharedTmpAndCacheBelongToOneHome(t *testing.T) {
 	s3, ok := find(units, capsule.KindClaudeSession, sid3)
 	if !ok || s3.Home.ID == f.homeID {
 		t.Fatalf("a tmp-only session goes to the home its ledger names: %v %+v", ok, s3.Ref())
+	}
+}
+
+// CC-21: Scope.Procs keeps only the sessions whose ledger current owner is
+// one of the named processes (the wrapper's seal after exit of its child).
+func TestScanProcsSelectsTheChildsSession(t *testing.T) {
+	f := newFx(t)
+	child := platform.ProcID{PID: 5151, StartUS: 1_700_000_000_000_001}
+	other := platform.ProcID{PID: 5252, StartUS: 1_700_000_000_000_002}
+	f.taint(sid1, child)
+	f.session(sid1, f.h.Root, nil)
+	f.taint(sid2, other)
+	f.session(sid2, f.h.Root, nil)
+	units := f.scan(harness.Scope{RootIDs: []string{"root-acme"}, Procs: []platform.ProcID{child}})
+	if _, ok := find(units, capsule.KindClaudeSession, sid1); !ok {
+		t.Fatal("the child's session was not selected")
+	}
+	if _, ok := find(units, capsule.KindClaudeSession, sid2); ok {
+		t.Fatal("another process's session was selected")
+	}
+	for _, u := range units {
+		if u.Kind != capsule.KindClaudeSession {
+			t.Fatalf("Scope.Procs returned a %s unit", u.Kind)
+		}
+	}
+	// A reused pid with another start time owns nothing.
+	reused := child
+	reused.StartUS++
+	if units := f.scan(harness.Scope{Procs: []platform.ProcID{reused}}); len(units) != 0 {
+		t.Fatalf("reused pid selected %d units", len(units))
+	}
+}
+
+// D73, CC-23: Unit.ProjectDir of a session is its realpath'd start cwd —
+// the ledger's start event first, else the transcript's first cwd — and
+// PlanLaunch's selectors carry the realpath'd launch cwd, so `-c` matches
+// the manifest exactly (a symlinked cwd too); a session started in a
+// subdirectory is a different project dir.
+func TestUnitProjectDirIsTheStartCwd(t *testing.T) {
+	f := newFx(t)
+	real := realPath(t, f.h.Root)
+	sub := filepath.Join(f.h.Root, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.taint(sid1, platform.ProcID{}) // ledger start cwd = the root
+	f.session(sid1, f.h.Root, nil)
+	f.session(sid2, sub, nil) // no ledger: adopted from the transcript cwd
+	units := f.scan(harness.Scope{Adopt: true})
+	u1, ok := find(units, capsule.KindClaudeSession, sid1)
+	if !ok {
+		t.Fatal("no unit for the tainted session")
+	}
+	if u1.ProjectDir != real {
+		t.Errorf("ledger session ProjectDir = %q, want %q", u1.ProjectDir, real)
+	}
+	u2, ok := find(units, capsule.KindClaudeSession, sid2)
+	if !ok {
+		t.Fatal("no unit for the adopted session")
+	}
+	if want := realPath(t, sub); u2.ProjectDir != want {
+		t.Errorf("transcript session ProjectDir = %q, want %q", u2.ProjectDir, want)
+	}
+
+	// A launch through a symlink to the folder selects by the realpath.
+	bin := filepath.Join(f.h.Dir, "bin", "claude")
+	write(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.e.Cfg.Harness["claude-code"]
+	hc.Bin = bin
+	f.e.Cfg.Harness["claude-code"] = hc
+	link := filepath.Join(t.TempDir(), "acme-link")
+	if err := os.Symlink(f.h.Root, link); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := f.a.PlanLaunch(context.Background(), f.e, link, []string{"claude", "-c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, sel := range append(append([]harness.Selector{}, plan.Sync...), plan.Background...) {
+		if sel.Kind == capsule.KindClaudeSession && sel.ProjectDir != "" {
+			found = true
+			if sel.ProjectDir != real {
+				t.Errorf("selector ProjectDir = %q, want %q", sel.ProjectDir, real)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no session selector with a project dir: sync %+v background %+v", plan.Sync, plan.Background)
+	}
+}
+
+func realPath(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// SPEC §7.1.5, CC-38: when the user passed --settings, PlanLaunch adds none
+// of precinto's and plans the C9.settings notice; otherwise no notice.
+func TestPlanLaunchOwnSettingsNotice(t *testing.T) {
+	f := newFx(t)
+	bin := filepath.Join(f.h.Dir, "bin", "claude")
+	write(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hc := f.e.Cfg.Harness["claude-code"]
+	hc.Bin = bin
+	f.e.Cfg.Harness["claude-code"] = hc
+	ctx := context.Background()
+	plan, err := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude", "--settings", "mine.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(plan.Notices, "C9.settings") {
+		t.Errorf("notices %v, want C9.settings", plan.Notices)
+	}
+	if n := slices.Index(plan.Argv, "--settings"); n < 0 || plan.Argv[n+1] != "mine.json" || slices.Contains(plan.Argv[n+2:], "--settings") {
+		t.Errorf("argv %q: precinto's settings were added to the user's", plan.Argv)
+	}
+	plan, err = f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Notices, "C9.settings") {
+		t.Errorf("notice without --settings: %v", plan.Notices)
 	}
 }

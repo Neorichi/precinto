@@ -151,3 +151,15 @@ func (k *Keyring) withIdentity(id string, fn func(age.Identity, *memguard.Locked
 	}
 	return fn(ident, b)
 }
+
+func (k *Keyring) withIdentityBuffer(id string, fn func(*memguard.LockedBuffer) error) error {
+	if fn == nil {
+		return errors.New("vault: WithIdentityBuffer needs a function")
+	}
+	b, err := k.open(id)
+	if err != nil {
+		return err
+	}
+	defer b.Destroy()
+	return fn(b)
+}

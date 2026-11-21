@@ -190,15 +190,3 @@ func exitStatus(ps *os.ProcessState) int {
 	}
 	return 1
 }
-
-// startErrorCode maps an exec failure to the shell's convention.
-func startErrorCode(err error) int {
-	var pe *os.PathError
-	switch {
-	case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
-		return 127
-	case errors.As(err, &pe) && errors.Is(pe.Err, syscall.EACCES), errors.Is(err, os.ErrPermission):
-		return 126
-	}
-	return 1
-}

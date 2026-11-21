@@ -104,3 +104,37 @@ func TestScriptedUI(t *testing.T) {
 		t.Fatal("LockedBuffer")
 	}
 }
+
+// TamperRecipient trips the D5 checks the way a one-shot writer would.
+func TestTamperRecipient(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		fx := vaulttest.New(t, dir, "root-acme")
+		got := fx.TamperRecipient(t, "root-acme", recovery)
+		v, err := fx.Store.Open("root-acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		field := v.Meta.Recipient
+		if recovery {
+			field = v.Meta.RecoveryRecipient
+		}
+		if field != got || got == fx.Identity.Recipient().String() || got == fx.Recovery.Recipient().String() {
+			t.Fatalf("recovery=%v: field %s, returned %s", recovery, field, got)
+		}
+		for _, fct := range v.Meta.Factors {
+			if fct.Recipient == got {
+				t.Fatal("a factor recipient was edited")
+			}
+		}
+		if _, _, err := fx.Store.Recipients("root-acme"); !errors.Is(err, vault.ErrRecipientsChanged) {
+			t.Errorf("recovery=%v: Recipients = %v, want ErrRecipientsChanged", recovery, err)
+		}
+		if err := fx.Store.Verify(v, vaulttest.LockedBuffer(t, fx.Identity.String())); err == nil {
+			t.Errorf("recovery=%v: Verify accepted a tampered vault", recovery)
+		}
+	}
+}

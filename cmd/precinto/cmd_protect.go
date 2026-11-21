@@ -90,7 +90,7 @@ func cmdProtect(a *app, args []string) int {
 	if done, err := vs.Initialized(); err != nil {
 		return a.fail("protect", err)
 	} else if !done {
-		a.say(textNotInitialized)
+		a.line(ui.MsgNotInitialized, ui.Vars{})
 		return exitError
 	}
 	ctx := context.Background()

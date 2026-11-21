@@ -182,15 +182,31 @@ func (r *run) pruneUnit(unit string, keepLast int, o PruneOptions) UnitResult {
 		res.Outcome, res.Detail = OutSkipped, "nothing to prune"
 		return res
 	}
+	res.Files, res.Bytes = len(del), capsuleBytes(entries, del)
 	if o.DryRun {
-		res.Outcome, res.Detail = OutSkipped, fmt.Sprintf("dry-run: would delete %d capsule(s)", len(del))
+		res.Outcome, res.Detail = OutPruned, fmt.Sprintf("dry-run: would delete %d capsule(s)", len(del))
 		return res
 	}
 	if err := r.deleteCapsules(unit, newest.Harness, del, delGens); err != nil {
 		return failed(res, err)
 	}
-	res.Outcome, res.Detail = OutSkipped, fmt.Sprintf("pruned: %d capsule(s) deleted", len(del))
+	res.Outcome, res.Detail = OutPruned, fmt.Sprintf("%d capsule(s) deleted", len(del))
 	return res
+}
+
+// capsuleBytes sums the logged sizes of the capsules at paths.
+func capsuleBytes(entries []capslog.Entry, paths []string) int64 {
+	want := map[string]bool{}
+	for _, p := range paths {
+		want[p] = true
+	}
+	var n int64
+	for _, en := range entries {
+		if want[en.Path] {
+			n += en.Size
+		}
+	}
+	return n
 }
 
 // unreferencedBlobs lists blob capsules no kept snapshot (nor the receipt)
@@ -378,7 +394,7 @@ func Forget(ctx context.Context, e Env, unit string) (*Report, error) {
 	}
 	_ = r.deleteReceipt(unit)
 	_ = removeFile(r.refsPath(unit))
-	res.Outcome, res.Detail = OutSkipped, fmt.Sprintf("forgotten: %d capsule(s) deleted", len(del))
+	res.Outcome, res.Detail, res.Files = OutForgotten, fmt.Sprintf("%d capsule(s) deleted", len(del)), len(del)
 	r.add(res)
 	return r.finish(), nil
 }
@@ -785,7 +801,7 @@ func (r *run) plaintextSummary(ctx context.Context) ([]Plaintext, error) {
 		if ad == nil {
 			continue
 		}
-		units, err := ad.Scan(ctx, r.e.Harness, harness.Scope{All: true})
+		units, err := ad.Scan(ctx, r.e.Harness, harness.Scope{Adopt: true})
 		if err != nil {
 			continue
 		}

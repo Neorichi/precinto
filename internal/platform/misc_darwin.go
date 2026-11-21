@@ -4,9 +4,11 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -71,4 +73,59 @@ func cloudRoots(home string) []string {
 		}
 	}
 	return append(out, homeCloudRoots(home)...)
+}
+
+// startTime: darwin's p_starttime is wall-clock µs already.
+func startTime(id ProcID) time.Time { return time.UnixMicro(id.StartUS) }
+
+// tmutilPath is Time Machine's command-line tool.
+const tmutilPath = "/usr/bin/tmutil"
+
+// tmDest caches whether a Time Machine destination is configured, so that
+// a doctor run asks once for several directories.
+var tmDest struct {
+	sync.Mutex
+	at         time.Time
+	configured bool
+}
+
+// backupExcluded asks Time Machine whether path is excluded from backups
+// (read-only: destinationinfo, then isexcluded).
+func backupExcluded(ctx context.Context, path string) (excluded, known bool, err error) {
+	if !filepath.IsAbs(path) {
+		return false, false, fmt.Errorf("platform: backup query: path must be absolute")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tmDest.Lock()
+	fresh := !tmDest.at.IsZero() && time.Since(tmDest.at) < 30*time.Second
+	configured := tmDest.configured
+	tmDest.Unlock()
+	if !fresh {
+		out, _, err := runTool(ctx, 10*time.Second, tmutilPath, "destinationinfo")
+		c, ok := parseTMDestinations(string(out))
+		if !ok {
+			if err == nil {
+				err = errors.New("unreadable output")
+			}
+			return false, false, fmt.Errorf("platform: tmutil destinationinfo: %w", err)
+		}
+		configured = c
+		tmDest.Lock()
+		tmDest.at, tmDest.configured = time.Now(), c
+		tmDest.Unlock()
+	}
+	if !configured {
+		return false, false, nil // nothing is backed up
+	}
+	out, _, err := runTool(ctx, 10*time.Second, tmutilPath, "isexcluded", path)
+	ex, ok := parseTMExcluded(string(out))
+	if !ok {
+		if err == nil {
+			err = errors.New("unreadable output")
+		}
+		return false, false, fmt.Errorf("platform: tmutil isexcluded: %w", err)
+	}
+	return ex, true, nil
 }

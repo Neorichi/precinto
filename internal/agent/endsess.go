@@ -152,7 +152,7 @@ func (d *daemon) scanUngated(ctx context.Context) {
 		if hooked {
 			continue // a hook event or registration announced it
 		}
-		if started := time.UnixMicro(p.ID.StartUS); now.wall.Sub(started) < hookPresenceWindow {
+		if started := platform.StartTime(p.ID); !started.IsZero() && now.wall.Sub(started) < hookPresenceWindow {
 			continue // give its hooks time to announce it
 		}
 		cwd, err := d.procs.Cwd(p.ID)
@@ -214,8 +214,8 @@ func (d *daemon) interactiveClaude(p platform.ProcInfo, e claude.RegistryEntry, 
 	// The entry belongs to this incarnation: the process started no later
 	// than startedAt + 2 s (E2), so a stale file of a reused pid never
 	// qualifies.
-	start := time.UnixMicro(p.ID.StartUS)
-	if e.StartedAt.IsZero() || start.After(e.StartedAt.Add(registryStartSlack)) {
+	start := platform.StartTime(p.ID) // wall clock, comparable with startedAt (D66)
+	if e.StartedAt.IsZero() || start.IsZero() || start.After(e.StartedAt.Add(registryStartSlack)) {
 		return false
 	}
 	for _, h := range homes {

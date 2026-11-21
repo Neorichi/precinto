@@ -80,7 +80,10 @@ func (r *Report) Count(o Outcome) int {
 	return n
 }
 
-// Err summarizes failures as one error (nil if none).
+// Err summarizes failures as one error (nil if none). Live, warm and
+// leased units are failures (ErrLive, exit 4) only for an explicit Seal of
+// named units (their Detail carries the live code); sweeps report them as
+// outcomes and exit 0.
 func (r *Report) Err() error {
 	if r == nil {
 		return nil

@@ -66,7 +66,7 @@
   },
   "want": {
     "exit": 0,
-    "stdout": "{\"decision\":\"block\",\"reason\":\"precinto: the precinto agent isn't running, so ~/work/acme stays locked. Run precinto unlock in a terminal.\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"suppressOriginalPrompt\":true}}",
+    "stdout": "{\"decision\":\"block\",\"reason\":\"precinto: precinto could not check ~/work/acme, so it stays locked. Run precinto unlock in a terminal, then precinto doctor if this repeats.\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"suppressOriginalPrompt\":true}}",
     "stderr": ""
   }
 }

@@ -194,3 +194,29 @@ func TestToolOutputParsers(t *testing.T) {
 		t.Error("garbage count")
 	}
 }
+
+// Fixtures of `tmutil destinationinfo` and `tmutil isexcluded` (CC-46).
+func TestTimeMachineParsers(t *testing.T) {
+	for out, want := range map[string][2]bool{
+		"tmutil: No destinations configured.\n": {false, true},
+		"====================================================\nName          : Backups\nKind          : Local\nMount Point   : /Volumes/Backups\nID            : 0000\n": {true, true},
+		"":          {false, false},
+		"garbage\n": {false, false},
+	} {
+		c, ok := parseTMDestinations(out)
+		if c != want[0] || ok != want[1] {
+			t.Errorf("parseTMDestinations(%q) = %v %v, want %v", out, c, ok, want)
+		}
+	}
+	for out, want := range map[string][2]bool{
+		"[Excluded]    /Users/u/.claude\n": {true, true},
+		"[Included]    /Users/u/.claude\n": {false, true},
+		"":                                 {false, false},
+		"[Excluded] a\n[Included] b\n":     {false, false},
+	} {
+		ex, ok := parseTMExcluded(out)
+		if ex != want[0] || ok != want[1] {
+			t.Errorf("parseTMExcluded(%q) = %v %v, want %v", out, ex, ok, want)
+		}
+	}
+}

@@ -8,6 +8,8 @@ package live_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,30 +77,86 @@ func TestCrossLedgerProcessOfThisTestIsLive(t *testing.T) {
 	}
 }
 
-// CODX-6 (G3 + G1): live.Probe and fsx.ProbeHeld agree on lease files.
-func TestCrossLeaseProbeAgreesWithFsx(t *testing.T) {
-	dir := t.TempDir()
-	h, err := live.Acquire(dir, []string{"agree"}, live.Lease{Proc: platform.Self()})
+// leaseChildDir names the lease directory of the holder child process.
+const leaseChildDir = "PRECINTO_LIVE_LEASE_CHILD_DIR"
+
+// TestCrossLeaseHolderChild runs only inside a re-executed test binary: it
+// holds a lease on "holder" until its stdin (the lifeline) reaches EOF.
+func TestCrossLeaseHolderChild(t *testing.T) {
+	dir := os.Getenv(leaseChildDir)
+	if dir == "" {
+		t.Skip("lease holder child only")
+	}
+	h, err := live.Acquire(dir, []string{"holder"}, live.Lease{Proc: platform.Self(), Root: "root-acme"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "agree.lease")
-	held, err := fsx.ProbeHeld(path)
-	if err != nil || !held {
-		t.Fatalf("fsx.ProbeHeld on a held lease: %v %v", held, err)
-	}
-	if lheld, _, _ := live.Probe(dir, "agree"); !lheld {
-		t.Fatal("live.Probe on a held lease")
-	}
-	if err := h.Release(); err != nil {
+	os.Stdout.WriteString("ready\n")
+	io.Copy(io.Discard, os.Stdin) // the parent closes it, or dies
+	h.Release()
+}
+
+// CODX-6 (G3 + G1): a lease held by another process through a real flock
+// is held for live.Probe (which is fsx.ProbeHeld on the lease file) and
+// for fsx.ProbeHeld itself, with the holder's description; once the
+// holder exits the lease is free and the file stays.
+func TestCrossLeaseHeldByAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCrossLeaseHolderChild$", "-test.count=1")
+	cmd.Env = []string{leaseChildDir + "=" + dir}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
 		t.Fatal(err)
 	}
-	held, err = fsx.ProbeHeld(path)
-	if err != nil || held {
-		t.Fatalf("fsx.ProbeHeld after release: %v %v", held, err)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if lheld, _, _ := live.Probe(dir, "agree"); lheld {
-		t.Fatal("live.Probe after release")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stdin.Close()
+		done := make(chan struct{})
+		go func() { cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill() // our own child only
+			<-done
+		}
+	})
+	ready := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 6)
+		_, err := io.ReadFull(stdout, buf)
+		if err == nil && string(buf) != "ready\n" {
+			err = errors.New("unexpected output from the holder")
+		}
+		ready <- err
+	}()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("holder: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the lease holder did not start")
+	}
+	path := filepath.Join(dir, "holder.lease")
+	if held, err := fsx.ProbeHeld(path); !held || err != nil {
+		t.Fatalf("fsx.ProbeHeld on a lease held by another process: %v %v", held, err)
+	}
+	held, leases, err := live.Probe(dir, "holder")
+	if !held || err != nil || len(leases) != 1 || leases[0].Proc.PID != cmd.Process.Pid || leases[0].Root != "root-acme" {
+		t.Fatalf("live.Probe = %v %+v %v, want held by pid %d", held, leases, err, cmd.Process.Pid)
+	}
+	stdin.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("holder exited with %v", err)
+	}
+	if held, leases, err := live.Probe(dir, "holder"); held || leases != nil || err != nil {
+		t.Fatalf("after the holder exited: %v %+v %v", held, leases, err)
 	}
 	if _, err := os.Lstat(path); err != nil {
 		t.Fatalf("lease files are never deleted: %v", err)

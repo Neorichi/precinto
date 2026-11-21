@@ -135,6 +135,10 @@ func TestBackups(t *testing.T) {
 	}
 	f.d.BackupExcluded = func(context.Context, string) (bool, bool, error) { return false, false, errors.New("tmutil failed") }
 	want(t, f.run(), doctor.CheckBackups, doctor.Info, "could not tell")
+	// No backup destination (platform.BackupExcluded: known=false, no
+	// error): nothing is backed up.
+	f.d.BackupExcluded = func(context.Context, string) (bool, bool, error) { return false, false, nil }
+	want(t, f.run(), doctor.CheckBackups, doctor.OK, "Time Machine does not back up")
 	f.d.GOOS = "linux"
 	none(t, f.run(), doctor.CheckBackups)
 }

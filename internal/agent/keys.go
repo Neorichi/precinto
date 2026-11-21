@@ -157,6 +157,8 @@ func (d *daemon) presenceFor(ctx context.Context, cs *connState, cands []keyCand
 			ok[id] = ""
 		case errors.Is(err, vault.ErrCancelled):
 			ok[id] = ipc.CodeCancelled
+		case errors.Is(err, vault.ErrBadSecret):
+			ok[id] = ipc.CodeBadSecret
 		default:
 			ok[id] = ipc.CodeAgentContext
 		}

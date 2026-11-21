@@ -17,11 +17,11 @@ import (
 	"github.com/precinto/precinto/internal/paths"
 )
 
-// serviceLabel is the LaunchAgent label (SPEC §13.1: it runs only
-// `precinto sweep --quiet`, every 10 minutes, at background priority, and
-// never holds keys).
+// serviceLabel is the LaunchAgent label, paths.ServiceLabel (SPEC §13.1:
+// it runs only `precinto sweep --quiet`, every 10 minutes, at background
+// priority, and never holds keys).
 const (
-	serviceLabel    = "com.github.precinto.sweep"
+	serviceLabel    = paths.ServiceLabel
 	serviceInterval = 600 // seconds
 	launchctlPath   = "/bin/launchctl"
 )

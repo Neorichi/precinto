@@ -7,12 +7,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 )
 
 // Agent, background-sweep and permission checks (SPEC §6.1, §10.1, §13;
@@ -33,12 +33,31 @@ const (
 func checkServiceRunning(e *env) []Finding {
 	var out []Finding
 	out = append(out, e.agentFindings()...)
-	out = append(out, e.socketFindings()...)
-	out = append(out, e.permissionFindings()...)
 	out = append(out, e.sweepFindings()...)
 	out = append(out, e.lockFindings()...)
 	if len(out) == 0 {
 		out = append(out, ok(CheckServiceRunning, "precinto's agent, background sealing and data folder look healthy"))
+	}
+	return out
+}
+
+// checkAgentSocket checks the run directory and the socket (D6).
+func checkAgentSocket(e *env) []Finding {
+	out := e.part(CheckAgentSocket, e.socketFindings)
+	if len(out) == 0 {
+		out = append(out, ok(CheckAgentSocket, "precinto's socket folder and socket are private"))
+	}
+	return out
+}
+
+// checkPermissions checks that precinto's own directories and Claude's
+// temp folder are private (S7, D6).
+func checkPermissions(e *env) []Finding {
+	var out []Finding
+	out = append(out, e.part(CheckPermissions, e.permissionFindings)...)
+	out = append(out, e.part(CheckPermissions, e.claudeTmpPermissions)...)
+	if len(out) == 0 {
+		out = append(out, ok(CheckPermissions, "precinto's folders and Claude's temp folder are private"))
 	}
 	return out
 }
@@ -68,24 +87,24 @@ func (e *env) socketFindings() []Finding {
 	l := e.o.Layout
 	var out []Finding
 	if len(l.Socket) >= paths.MaxSocketPath {
-		out = append(out, fail(CheckServiceRunning, fmt.Sprintf("precinto's socket path is %d bytes long; the limit is %d", len(l.Socket), paths.MaxSocketPath-1), ""))
+		out = append(out, fail(CheckAgentSocket, fmt.Sprintf("precinto's socket path is %d bytes long; the limit is %d", len(l.Socket), paths.MaxSocketPath-1), ""))
 	}
 	if p := dirProblem(l.RunDir, e.d.EUID); p.text != "" {
-		out = append(out, fail(CheckServiceRunning, "precinto's socket folder "+e.show(l.RunDir)+" "+p.text+": the agent and its clients refuse it (D6)", p.fix(e, l.RunDir, true)))
+		out = append(out, fail(CheckAgentSocket, "precinto's socket folder "+e.show(l.RunDir)+" "+p.text+": the agent and its clients refuse it (D6)", p.fix(e, l.RunDir, true)))
 	}
 	st, err := fsx.Lstat(l.Socket)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
-		out = append(out, warn(CheckServiceRunning, "could not check precinto's socket "+e.show(l.Socket)+" ("+errClass(err)+")", ""))
+		out = append(out, warn(CheckAgentSocket, "could not check precinto's socket "+e.show(l.Socket)+" ("+errClass(err)+")", ""))
 	case st.Mode&0o170000 != 0o140000:
-		out = append(out, fail(CheckServiceRunning, e.show(l.Socket)+" is not a socket: the agent cannot start", "precinto agent --restart"))
+		out = append(out, fail(CheckAgentSocket, e.show(l.Socket)+" is not a socket: the agent cannot start", "precinto agent --restart"))
 	case int64(st.UID) != int64(e.d.EUID):
-		out = append(out, fail(CheckServiceRunning, fmt.Sprintf("precinto's socket %s belongs to another user (uid %d)", e.show(l.Socket), st.UID), "precinto agent --restart"))
+		out = append(out, fail(CheckAgentSocket, fmt.Sprintf("precinto's socket %s belongs to another user (uid %d)", e.show(l.Socket), st.UID), "precinto agent --restart"))
 	case st.Mode&0o077 != 0:
-		out = append(out, fail(CheckServiceRunning, fmt.Sprintf("precinto's socket %s can be used by other users (mode %04o)", e.show(l.Socket), st.Mode&0o7777), "precinto agent --restart"))
+		out = append(out, fail(CheckAgentSocket, fmt.Sprintf("precinto's socket %s can be used by other users (mode %04o)", e.show(l.Socket), st.Mode&0o7777), "precinto agent --restart"))
 	case e.daemon() == nil && errors.Is(e.statusErr, ipc.ErrNoDaemon):
-		out = append(out, info(CheckServiceRunning, "a stale agent socket is left at "+e.show(l.Socket)+"; the next agent start replaces it", ""))
+		out = append(out, info(CheckAgentSocket, "a stale agent socket is left at "+e.show(l.Socket)+"; the next agent start replaces it", ""))
 	}
 	return out
 }
@@ -162,9 +181,9 @@ func (e *env) permissionFindings() []Finding {
 		}
 		msg := "precinto's " + what + " " + e.show(path) + " " + p.text
 		if p.severe {
-			out = append(out, fail(CheckServiceRunning, msg+": precinto refuses to use it, or another user could change it", p.fix(e, path, dir)))
+			out = append(out, fail(CheckPermissions, msg+": precinto refuses to use it, or another user could change it", p.fix(e, path, dir)))
 		} else {
-			out = append(out, warn(CheckServiceRunning, msg, p.fix(e, path, dir)))
+			out = append(out, warn(CheckPermissions, msg, p.fix(e, path, dir)))
 		}
 	}
 	for _, d := range precintoDirs(l) {
@@ -193,8 +212,9 @@ func (e *env) permissionFindings() []Finding {
 	return out
 }
 
-// launchAgentInstalled reports whether a LaunchAgent of precinto exists
-// (darwin `precinto service install`, SPEC §13.1).
+// launchAgentInstalled reports whether precinto's LaunchAgent exists
+// (darwin `precinto service install`, SPEC §13.1): exactly
+// ~/Library/LaunchAgents/<paths.ServiceLabel>.plist (CC-37).
 func (e *env) launchAgentInstalled() bool {
 	if e.d.GOOS != "darwin" || e.home == "" {
 		return false
@@ -204,8 +224,7 @@ func (e *env) launchAgentInstalled() bool {
 		return false
 	}
 	for _, en := range es {
-		n := strings.ToLower(en.Name())
-		if strings.Contains(n, "precinto") && strings.HasSuffix(n, ".plist") {
+		if en.Name() == paths.ServiceLabel+".plist" {
 			return true
 		}
 	}
@@ -276,7 +295,11 @@ func (e *env) lockFindings() []Finding {
 		if filepath.Clean(h.Path) != lock || h.Proc.ID.StartUS <= 0 {
 			continue
 		}
-		held := e.now.Sub(time.UnixMicro(h.Proc.ID.StartUS))
+		started := platform.StartTime(h.Proc.ID)
+		if started.IsZero() {
+			continue
+		}
+		held := e.now.Sub(started)
 		if held > stuckLock {
 			out = append(out, warn(CheckServiceRunning, fmt.Sprintf("the sweep lock has been held for %s by pid %d: background sealing waits for it", ago(held), h.Proc.ID.PID),
 				fmt.Sprintf("check whether process %d (a precinto sweep) is stuck", h.Proc.ID.PID)))

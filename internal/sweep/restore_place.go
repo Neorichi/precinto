@@ -328,7 +328,7 @@ func (r *run) stageAndPlace(ctx context.Context, st stagingHandle, plan *restore
 			}
 			snap = s
 		}
-		rec.Files = append(rec.Files, journal.File{Base: encodeBase(pf.Base, plan.Bases[pf.Base]), Rel: pf.Rel, Snap: snap})
+		rec.Files = append(rec.Files, journal.File{Base: string(pf.Base), Dir: plan.Bases[pf.Base], Rel: pf.Rel, Snap: snap})
 	}
 	if err := r.jr.Advance(rec, journal.PhaseStaged); err != nil {
 		return placeOutcome{err: err}
@@ -357,7 +357,7 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 	pc := &placeCtx{r: r, plan: plan, rec: rec, stagings: stagings, bases: bases}
 	ref := harness.UnitRef{Harness: harness.ID(plan.Harness), Kind: plan.Kind, Key: plan.Unit, VaultID: plan.VaultID, RootIDs: plan.RootIDs}
 	rules := harness.TargetRules{Bases: plan.Bases}
-	pc.live = func() bool { return r.restoreLive(ctx, ad, ref, rules) }
+	pc.live = func() bool { isLive, _ := r.restoreLive(ctx, ad, ref, "", rules); return isLive }
 	if plan.Quarantine != "" {
 		if err := ensurePrivateDir(plan.Quarantine); err == nil {
 			if q, err := r.p.fs.OpenBase(plan.Quarantine); err == nil {

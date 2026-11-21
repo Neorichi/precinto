@@ -428,7 +428,7 @@ func (s *Store) confirmPassphrase(ctx context.Context, global *Vault, f Factor, 
 	sid, err := age.NewScryptIdentity(view(pass.Bytes()))
 	if err != nil {
 		pass.Destroy()
-		return nil, errWrongSecret
+		return nil, ErrBadSecret
 	}
 	sid.SetMaxWorkFactor(f.ScryptLogN)
 	r, err := age.Decrypt(bytes.NewReader(ct), sid)
@@ -579,18 +579,22 @@ func (s *Store) repair(v *Vault, o RepairOptions) (RepairResult, error) {
 		return RepairResult{}, errors.New("vault: the recovery key equals the vault key")
 	}
 	now := nowFunc(o.Now)
-	res := RepairResult{
-		RecipientChanged: recipient != v.Meta.Recipient,
-		RecoveryChanged:  recovery != v.Meta.RecoveryRecipient,
-		LastAudit:        v.Meta.LastAudit,
-	}
-	m := v.Meta
-	m.Family, m.Recipient, m.RecoveryRecipient = Family, recipient, recovery
-	if m.RecipientsMAC, err = macWith(o.Identity, InfoRecipients, canonicalSet(m.Family, m.Recipient, m.RecoveryRecipient)); err != nil {
+	mac, err := macWith(o.Identity, InfoRecipients, canonicalSet(Family, recipient, recovery))
+	if err != nil {
 		return RepairResult{}, err
 	}
-	m.LastAudit = now
-	if err := writeMeta(v.Dir, m); err != nil {
+	var res RepairResult
+	m, err := updateMetaAt(v.Dir, func(m *Meta) (bool, error) {
+		res = RepairResult{
+			RecipientChanged: recipient != m.Recipient,
+			RecoveryChanged:  recovery != m.RecoveryRecipient,
+			LastAudit:        m.LastAudit,
+		}
+		m.Family, m.Recipient, m.RecoveryRecipient, m.RecipientsMAC = Family, recipient, recovery, mac
+		m.LastAudit = now
+		return true, nil
+	})
+	if err != nil {
 		return RepairResult{}, err
 	}
 	if err := s.writeVerified(m, now); err != nil {

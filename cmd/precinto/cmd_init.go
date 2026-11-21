@@ -128,7 +128,7 @@ func cmdInit(a *app, args []string) int {
 		return exitLocked
 	}
 	if !a.sys.interactive() {
-		a.say(textNeedTerminal, "precinto init")
+		a.line(ui.MsgNeedTerminal, ui.Vars{Command: "precinto init"})
 		return exitLocked
 	}
 	t, err := a.needTerminal("init")
@@ -199,7 +199,7 @@ func cmdInit(a *app, args []string) int {
 			abandon()
 			return a.fail("init", err)
 		}
-		a.say(textRecoveryWritten, a.display(out.Name()))
+		a.line(ui.MsgRecoveryWritten, ui.Vars{File: a.display(out.Name())})
 	}
 	if out == nil || *showRecovery {
 		if err := a.showRecovery(t, recovery); err != nil {
@@ -207,7 +207,7 @@ func cmdInit(a *app, args []string) int {
 		}
 	}
 	if a.sys.goos == "darwin" {
-		if yes, err := t.YesNo(textServiceOffer, true); err == nil && yes {
+		if yes, err := t.YesNo(ui.Format(ui.MsgServiceOffer, ui.Vars{}), true); err == nil && yes {
 			if code := a.serviceInstall(); code != exitOK {
 				return code
 			}
@@ -222,7 +222,7 @@ func cmdInit(a *app, args []string) int {
 // buffer (Init returns it once), so a cancelled type-back offers to show
 // it again instead of losing it.
 func (a *app) showRecovery(t terminal, recovery *memguard.LockedBuffer) error {
-	header := []string{textRecoveryHeader1, textRecoveryHeader2}
+	header := strings.Split(ui.Format(ui.MsgRecoveryHeader, ui.Vars{}), "\n")
 	for {
 		err := t.ShowSecretScreen(header, recovery, 4)
 		if err == nil {
@@ -231,9 +231,9 @@ func (a *app) showRecovery(t terminal, recovery *memguard.LockedBuffer) error {
 		if !errors.Is(err, ui.ErrCancelled) {
 			return err
 		}
-		again, yerr := t.YesNo(textRecoveryAgain, true)
+		again, yerr := t.YesNo(ui.Format(ui.MsgRecoveryAgain, ui.Vars{}), true)
 		if yerr != nil || !again {
-			a.say(textRecoveryLost)
+			a.line(ui.MsgRecoveryLost, ui.Vars{})
 			return err
 		}
 	}
@@ -355,7 +355,7 @@ func parseSEKeygen(out []byte) (recipient, stub string) {
 // shows it on the alternate screen.
 func (a *app) choosePassphrase(t terminal) (*memguard.LockedBuffer, error) {
 	for i := 0; i < 3; i++ {
-		p, err := t.Secret(textPassphraseNew)
+		p, err := t.Secret(ui.Format(ui.MsgPassphraseNew, ui.Vars{}))
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +367,7 @@ func (a *app) choosePassphrase(t terminal) (*memguard.LockedBuffer, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := t.ShowSecretScreen([]string{textPassphraseGen}, g, 4); err != nil {
+			if err := t.ShowSecretScreen([]string{ui.Format(ui.MsgPassphraseGen, ui.Vars{})}, g, 4); err != nil {
 				g.Destroy()
 				return nil, err
 			}
@@ -375,10 +375,10 @@ func (a *app) choosePassphrase(t terminal) (*memguard.LockedBuffer, error) {
 		}
 		if p.Size() < 12 || vault.EstimateBits(p) < 80 {
 			p.Destroy()
-			a.say(textPassphraseWeak)
+			a.line(ui.MsgPassphraseWeak, ui.Vars{})
 			continue
 		}
-		q, err := t.Secret(textPassphraseAgain)
+		q, err := t.Secret(ui.Format(ui.MsgPassphraseAgain, ui.Vars{}))
 		if err != nil {
 			p.Destroy()
 			return nil, err
@@ -389,7 +389,7 @@ func (a *app) choosePassphrase(t terminal) (*memguard.LockedBuffer, error) {
 		}
 		if !same {
 			p.Destroy()
-			a.say(textPassphraseDiff)
+			a.line(ui.MsgPassphraseDiff, ui.Vars{})
 			continue
 		}
 		return p, nil
@@ -535,7 +535,7 @@ func (a *app) factorList(vs vaultStore) int {
 	m, err := vs.Meta(vault.GlobalID)
 	if err != nil {
 		if errors.Is(err, vault.ErrNotFound) {
-			a.say(textNotInitialized)
+			a.line(ui.MsgNotInitialized, ui.Vars{})
 			return exitError
 		}
 		return a.fail("factor", err)
@@ -719,7 +719,7 @@ func (a *app) readRecoveryKey(keyFile string) (*memguard.LockedBuffer, terminal,
 		return b, nil, err
 	}
 	if t, err := a.sys.openTTY(); err == nil {
-		b, err := t.Secret(textRecoveryPrompt)
+		b, err := t.Secret(ui.Format(ui.MsgRecoveryPrompt, ui.Vars{}))
 		return b, t, err
 	}
 	b, err := readSecret(a.in)
@@ -758,7 +758,7 @@ func (a *app) recoverVerify(ctx context.Context, key *memguard.LockedBuffer) int
 	m, err := vs.Meta(vault.GlobalID)
 	if err != nil {
 		if errors.Is(err, vault.ErrNotFound) {
-			a.say(textNotInitialized)
+			a.line(ui.MsgNotInitialized, ui.Vars{})
 			return exitError
 		}
 		return a.fail("recover", err)
@@ -778,8 +778,12 @@ func (a *app) recoverVerify(ctx context.Context, key *memguard.LockedBuffer) int
 			}
 		}
 	}
+	// Recorded in every vault.toml, so status stops saying "never tested"
+	// (CC-07).
+	if err := vs.MarkRecoveryVerified(a.now()); err != nil {
+		return a.fail("recover", err)
+	}
 	a.sayOut(textRecoveryOK)
-	a.say(textRecordGap)
 	return exitOK
 }
 

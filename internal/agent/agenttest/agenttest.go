@@ -2,11 +2,14 @@ package agenttest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/agent"
 	"github.com/precinto/precinto/internal/ipc"
@@ -34,11 +37,16 @@ type Agent struct {
 // fake clock, but a test that advances it sees the effect within a few ms.
 const tick = 10 * time.Millisecond
 
+// errNoPinentry is the agenttest pinentry: it never runs a program.
+var errNoPinentry = errors.New("agenttest: pinentry is not available in tests")
+
 // Start runs agent.Run on l in a goroutine and waits until it listens. It
 // sets every agent.Options seam: Harden is a no-op (the go test binary is
 // never hardened), Spawn records worker argv without executing anything
 // (see Spawned), Screen returns the state set with SetScreen (unlocked,
-// HID idle unknown by default), and Pinentry fails with vault.ErrNoUI.
+// HID idle unknown by default), and Pinentry is a stub that always fails,
+// so no pinentry program can run from a test whatever process table is
+// used (the daemon reports vault.ErrNoUI, ipc.CodeNoUI).
 func Start(t testing.TB, l paths.Layout, clock *fakeplatform.Clock, procs *fakeplatform.Procs) *Agent {
 	t.Helper()
 	if clock == nil {
@@ -67,9 +75,9 @@ func Start(t testing.TB, l paths.Layout, clock *fakeplatform.Clock, procs *fakep
 		Spawn:    a.spawn,
 		Screen:   a.readScreen,
 		Harden:   func() error { return nil },
-		// Pinentry stays nil: on a fake process table the daemon's default
-		// never runs a pinentry program and fails with vault.ErrNoUI (this
-		// package may not import memguard to declare a replacement).
+		Pinentry: func(context.Context, string, string) (*memguard.LockedBuffer, error) {
+			return nil, errNoPinentry
+		},
 	}
 	go func() { a.done <- agent.Run(ctx, o) }()
 	t.Cleanup(a.Stop)
@@ -100,7 +108,49 @@ func (a *Agent) dial() (*ipc.Client, error) {
 	return ipc.Dial(ctx, ipc.DialOptions{Layout: a.Layout, Client: "test", Timeout: 5 * time.Second, Insecure: true})
 }
 
-// Dial returns a client connected to the agent.
+// Client is a non-fatal dial for fake backends and other goroutines: it
+// never calls t.Fatalf, so it is safe after the test ended (it then fails
+// with an error). The caller closes the client.
+func (a *Agent) Client(ctx context.Context) (*ipc.Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return ipc.Dial(ctx, ipc.DialOptions{Layout: a.Layout, Client: "test", Timeout: 5 * time.Second, Insecure: true})
+}
+
+// UnlockForTest unlocks rootIDs with the recovery factor, answering the
+// relayed secret prompt with recoveryKey (test-only; vaulttest
+// Fixture.Recovery.String()). It fails the test on any error, so call it
+// from the test goroutine.
+func (a *Agent) UnlockForTest(t testing.TB, rootIDs []string, recoveryKey string) {
+	t.Helper()
+	c, err := a.Client(context.Background())
+	if err != nil {
+		t.Fatalf("agenttest: dial: %v", err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req := ipc.UnlockReq{RootIDs: rootIDs, Factor: "recovery", TTY: true, Deadline: a.Clock.Now().Add(time.Minute)}
+	if _, err := c.Unlock(ctx, req, recoveryAnswer{key: recoveryKey}); err != nil {
+		t.Fatalf("agenttest: unlock %v: %v", rootIDs, err)
+	}
+}
+
+// recoveryAnswer answers the relayed prompts of a recovery unlock.
+type recoveryAnswer struct{ key string }
+
+func (recoveryAnswer) Display(string) error { return nil }
+func (r recoveryAnswer) Secret(string) (*memguard.LockedBuffer, error) {
+	return memguard.NewBufferFromBytes([]byte(r.key)), nil
+}
+func (recoveryAnswer) Confirm(string, string, string) (bool, error) { return true, nil }
+
+// Dial returns a client connected to the agent. It calls t.Fatalf on
+// failure, so call it from the test goroutine only; other goroutines (fake
+// backends) use Client.
 func (a *Agent) Dial(t testing.TB) *ipc.Client {
 	t.Helper()
 	c, err := a.dial()
@@ -112,7 +162,9 @@ func (a *Agent) Dial(t testing.TB) *ipc.Client {
 }
 
 // Spawned returns the argv of every worker the agent asked to spawn, in
-// order (`<Exe> sweep --lock --root …`, `<Exe> restore --background …`).
+// order. Workers name the folder by its absolute path (--root takes a path
+// only): `<Exe> sweep --lock --root <abs path>`, `<Exe> restore --root <abs
+// path> --recent N --md --history --background`.
 func (a *Agent) Spawned() [][]string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

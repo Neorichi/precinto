@@ -44,10 +44,6 @@ func minLogN() int {
 	return minScryptLogN
 }
 
-// errWrongSecret is a wrong passphrase or recovery key: treated like a
-// cancelled prompt (exit 3, rate-limited by the daemon, D27).
-var errWrongSecret = fmt.Errorf("%w: incorrect passphrase or recovery key", ErrCancelled)
-
 // errNoPresence: a plugin factor without a known presence policy (S10).
 var errNoPresence = errors.New("vault: plugin factor without a known presence policy (pass --no-presence-ack to accept it)")
 
@@ -149,19 +145,30 @@ func planPlugin(spec FactorSpec, now time.Time) (*factorPlan, error) {
 		// factor must be backed by its plugin's key (S10).
 		return nil, fmt.Errorf("vault: recipient is not a %s plugin or tag recipient", stubName)
 	}
-	policy := spec.SEAccessControl
+	var policy string
 	if spec.Kind == FactorSE {
+		if spec.PresencePolicy != "" {
+			return nil, errors.New("vault: the se factor takes SEAccessControl, not a plugin presence policy")
+		}
+		policy = spec.SEAccessControl
 		if policy == "" {
 			policy = defaultSEAccess
 		}
 		if !seAccessAllowed[policy] {
 			return nil, fmt.Errorf("vault: Secure Enclave access control %q refused (biometry-only and none are not allowed, D3)", policy)
 		}
-	} else if !knownPresence[policy] {
-		if !spec.NoPresenceAck {
-			return nil, errNoPresence
+	} else {
+		if spec.SEAccessControl != "" {
+			return nil, errors.New("vault: plugin factors take a presence policy, not a Secure Enclave access control")
 		}
-		if policy == "" {
+		policy = spec.PresencePolicy
+		switch {
+		case knownPresence[policy]:
+		case policy != "":
+			return nil, fmt.Errorf("vault: unknown presence policy %q (touch-always, touch-cached, pin-always, pin-once or tpm-pin)", policy)
+		case !spec.NoPresenceAck:
+			return nil, errNoPresence
+		default:
 			policy = presenceAcked
 		}
 	}
@@ -380,7 +387,7 @@ func unwrapFile(ctx context.Context, dir string, f Factor, ui UI) (*memguard.Loc
 		}
 		sid, err := age.NewScryptIdentity(view(pass.Bytes()))
 		if err != nil {
-			return nil, errWrongSecret
+			return nil, ErrBadSecret
 		}
 		sid.SetMaxWorkFactor(f.ScryptLogN)
 		id = sid
@@ -392,7 +399,7 @@ func unwrapFile(ctx context.Context, dir string, f Factor, ui UI) (*memguard.Loc
 		defer key.Destroy()
 		rid, err := ParseRecoveryKey(key)
 		if err != nil {
-			return nil, errWrongSecret
+			return nil, ErrBadSecret
 		}
 		id = rid
 	default:
@@ -425,7 +432,7 @@ func unwrapError(ctx context.Context, err error, kind FactorKind) error {
 	var nomatch *age.NoIdentityMatchError
 	if errors.As(err, &nomatch) {
 		if kind == FactorPassphrase || kind == FactorRecovery {
-			return errWrongSecret
+			return ErrBadSecret
 		}
 		return fmt.Errorf("%w: the %s factor did not open the identity file", ErrWrongIdentity, kind)
 	}
@@ -456,12 +463,22 @@ func (v *Vault) addFactor(ctx context.Context, identity *memguard.LockedBuffer, 
 	if err != nil {
 		return err
 	}
-	if err := writeVaultFile(v.Dir, identityFileName(plan.factor.Name), ct); err != nil {
-		return err
-	}
-	m := v.Meta
-	m.Factors = append(append([]Factor(nil), v.Meta.Factors...), plan.factor)
-	if err := writeMeta(v.Dir, m); err != nil {
+	m, err := updateMetaAt(v.Dir, func(m *Meta) (bool, error) {
+		for _, f := range m.Factors {
+			if f.Name == plan.factor.Name {
+				return false, fmt.Errorf("vault: factor %q already enrolled: %w", plan.factor.Name, fs.ErrExist)
+			}
+		}
+		if m.Recipient != v.Meta.Recipient {
+			return false, ErrWrongIdentity // vault.toml was rewritten meanwhile
+		}
+		if err := writeVaultFile(v.Dir, identityFileName(plan.factor.Name), ct); err != nil {
+			return false, err
+		}
+		m.Factors = append(append([]Factor(nil), m.Factors...), plan.factor)
+		return true, nil
+	})
+	if err != nil {
 		return err
 	}
 	v.Meta = m
@@ -482,25 +499,28 @@ func (v *Vault) checkIdentity(identity *memguard.LockedBuffer) error {
 }
 
 func (v *Vault) removeFactor(name string) error {
-	f, i, ok := v.factor(name)
-	if !ok {
-		return fmt.Errorf("%w: factor %q", ErrNotFound, name)
-	}
-	if f.Kind == FactorRecovery {
-		return fmt.Errorf("%w: the recovery factor is never removed", ErrLastFactor)
-	}
-	others := 0
-	for _, g := range v.Meta.Factors {
-		if g.Kind != FactorRecovery && g.Name != name {
-			others++
+	m, err := updateMetaAt(v.Dir, func(m *Meta) (bool, error) {
+		cur := &Vault{Dir: v.Dir, Meta: *m}
+		f, i, ok := cur.factor(name)
+		if !ok {
+			return false, fmt.Errorf("%w: factor %q", ErrNotFound, name)
 		}
-	}
-	if others == 0 {
-		return ErrLastFactor
-	}
-	m := v.Meta
-	m.Factors = append(append([]Factor(nil), v.Meta.Factors[:i]...), v.Meta.Factors[i+1:]...)
-	if err := writeMeta(v.Dir, m); err != nil {
+		if f.Kind == FactorRecovery {
+			return false, fmt.Errorf("%w: the recovery factor is never removed", ErrLastFactor)
+		}
+		others := 0
+		for _, g := range m.Factors {
+			if g.Kind != FactorRecovery && g.Name != name {
+				others++
+			}
+		}
+		if others == 0 {
+			return false, ErrLastFactor
+		}
+		m.Factors = append(append([]Factor(nil), m.Factors[:i]...), m.Factors[i+1:]...)
+		return true, nil
+	})
+	if err != nil {
 		return err
 	}
 	v.Meta = m

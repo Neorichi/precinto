@@ -75,13 +75,17 @@ func (p *prober) registry() ([]RegistryEntry, error) {
 // startedAt + 2 s (else the pid was reused); without startedAt the file
 // must have been written after the process started (LIVE-5).
 func registryMatches(r RegistryEntry, info platform.ProcInfo) bool {
+	start := platform.StartTime(info.ID) // wall clock, comparable with the registry (D66)
+	if start.IsZero() {
+		return true // unknown start: the pid is alive, so the entry may be its own (fail live)
+	}
 	if !r.StartedAt.IsZero() {
-		return info.ID.StartUS <= r.StartedAt.UnixMicro()+registryStartSlackUS
+		return start.UnixMicro() <= r.StartedAt.UnixMicro()+registryStartSlackUS
 	}
 	if r.Mtime.IsZero() {
 		return true
 	}
-	return r.Mtime.UnixMicro() >= info.ID.StartUS
+	return r.Mtime.UnixMicro() >= start.UnixMicro()
 }
 
 // liveSessions returns the session ids of this home that a live process

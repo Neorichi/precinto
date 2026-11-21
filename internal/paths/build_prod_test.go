@@ -26,3 +26,11 @@ func TestProductionBuild(t *testing.T) {
 		t.Fatal("production build honours PRECINTO_DEV in an agent context")
 	}
 }
+
+// Production builds never read PRECINTO_TEST_ANCESTRY_STOP (D64, SEC-33).
+func TestProductionIgnoresAncestryStop(t *testing.T) {
+	e := paths.FromMap(map[string]string{"HOME": "/u", paths.EnvTestAncestryStop: "123:456"})
+	if v, ok := paths.TestAncestryStop(e); ok || v != "" {
+		t.Fatalf("TestAncestryStop = %q %v in a production build", v, ok)
+	}
+}

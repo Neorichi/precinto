@@ -79,7 +79,7 @@ func TestFrameLimits(t *testing.T) {
 func TestExitCodes(t *testing.T) {
 	for code, want := range map[ipc.Code]int{
 		ipc.CodeLocked: 3, ipc.CodeUnauthorized: 3, ipc.CodeAgentContext: 3, ipc.CodeCancelled: 3,
-		ipc.CodeNoUI: 3, ipc.CodeRateLimited: 3, ipc.CodeLive: 4, ipc.CodeVerify: 5, ipc.CodeNotLogged: 5,
+		ipc.CodeNoUI: 3, ipc.CodeRateLimited: 3, ipc.CodeBadSecret: 3, ipc.CodeLive: 4, ipc.CodeVerify: 5, ipc.CodeNotLogged: 5,
 		ipc.CodeBadRequest: 2, ipc.CodeVersion: 1, ipc.CodeInternal: 1, "other": 1,
 	} {
 		e := &ipc.Error{Code: code, Msg: "m"}

@@ -25,12 +25,14 @@ import (
 	"github.com/precinto/precinto/internal/harness/claude/claudetest"
 	"github.com/precinto/precinto/internal/harness/codex/codextest"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/sweep/queue"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 // snapshot records every entry below the given roots: type and mode,
@@ -138,7 +140,7 @@ func TestReadOnly(t *testing.T) {
 		ln.(*net.UnixListener).SetUnlinkOnClose(false)
 		ln.Close()
 	}
-	writeFile(t, filepath.Join(h.HomeDir, "Library", "LaunchAgents", "dev.precinto.sweep.plist"), "<plist/>", 0o644)
+	writeFile(t, filepath.Join(h.HomeDir, "Library", "LaunchAgents", paths.ServiceLabel+".plist"), "<plist/>", 0o644)
 	mkdir(t, filepath.Join(h.HomeDir, "Library", "Saved Application State", "com.googlecode.iterm2.savedState"), 0o700)
 	mkdir(t, filepath.Join(h.HomeDir, ".tmux", "resurrect"), 0o700)
 	writeFile(t, filepath.Join(h.Dir, "tmp", "codex-hook_outputs", "o.txt"), marker, 0o600)
@@ -181,6 +183,14 @@ func TestReadOnly(t *testing.T) {
 		return sweep.Receipt{Files: []sweep.ReceiptFile{{Base: capsule.BaseCodexHome, Rel: "x"}}}, true, nil
 	}
 	f.d.CodexHooksTrusted = func(string) (bool, bool, error) { return false, true, nil }
+	// A pinned plugin whose binary changed since (plugin-pin, D75).
+	plug := writeFile(t, filepath.Join(h.Dir, "bin", "age-plugin-yubikey"), "#!/bin/sh\nexit 0\n", 0o700)
+	f.d.OpenVault = func(id string) (*vault.Vault, error) {
+		return &vault.Vault{Meta: vault.Meta{ID: id, Factors: []vault.Factor{
+			{Name: "yubikey", Kind: vault.FactorPlugin, PluginPath: plug, PluginSHA256: strings.Repeat("0", 64)},
+			{Name: "passphrase", Kind: vault.FactorPassphrase, ScryptLogN: 10},
+		}}}, nil
+	}
 	f.d.CleanupPeriodDays = func(string) (int, error) { return 1, nil }
 	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) { return ipc.StatusResp{}, ipc.ErrNoDaemon }
 
@@ -216,7 +226,9 @@ func TestReadOnly(t *testing.T) {
 		seen[x.Code] = true
 	}
 	for _, c := range doctor.Codes() {
-		if !seen[c] && c != doctor.CheckHoldCapped {
+		// hold-capped comes only from the agent; experimental-version has
+		// no version probe yet (it never runs a harness).
+		if !seen[c] && c != doctor.CheckHoldCapped && c != doctor.CheckExperimentalVersion {
 			t.Errorf("no finding of %s in the canary run", c)
 		}
 	}

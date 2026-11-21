@@ -27,9 +27,6 @@ func HardenedRuntime(path string) (hardened, signed, known bool, err error) {
 	return hardenedRuntime(path)
 }
 
-// SessionMetaCwd exposes the rollout first-line reader.
-func SessionMetaCwd(path string) (string, bool) { return sessionMetaCwd(path) }
-
 // VersionInRange parses v and reports whether it satisfies range r.
 func VersionInRange(v, r string) (in, ok bool) {
 	pv, okV := parseVersion(v)
@@ -70,12 +67,9 @@ func ShellArg(home, p string) string { return shellArg(home, p) }
 // OneLine exposes the message sanitizer.
 func OneLine(s string) string { return oneLine(s) }
 
-// WriteHuman and WriteJSON expose the renderers.
-func WriteHuman(w io.Writer, fs []Finding) error { return writeHuman(w, fs) }
-func WriteJSON(w io.Writer, fs []Finding) error  { return writeJSON(w, fs) }
-
-// Worst exposes the severity summary.
-func Worst(fs []Finding) Severity { return worst(fs) }
+// WriteHuman and WriteJSON are Render's two forms.
+func WriteHuman(w io.Writer, fs []Finding) error { return Render(w, fs, false) }
+func WriteJSON(w io.Writer, fs []Finding) error  { return Render(w, fs, true) }
 
 // RunLoginShell exposes the real `$SHELL -lc true` runner.
 var RunLoginShell = runLoginShell

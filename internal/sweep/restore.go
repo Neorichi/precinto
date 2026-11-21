@@ -597,22 +597,25 @@ func entryCheck(rules harness.TargetRules) func(capsule.Entry) error {
 // restoreLive reports process-based liveness of a unit about to be
 // restored or merged into (I13: never merge into a live unit). Leases are
 // not evidence here: the restoring wrapper holds them itself.
-func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.UnitRef, rules harness.TargetRules) bool {
+func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.UnitRef, unitID string, rules harness.TargetRules) (bool, []live.Evidence) {
 	if ad == nil {
-		return false
+		return false, nil
 	}
-	u := harness.Unit{Harness: ref.Harness, Kind: ref.Kind, Key: ref.Key, VaultID: ref.VaultID, RootIDs: ref.RootIDs,
+	// unitID is the authenticated manifest's (the sid of a session): the
+	// adapter's probe looks the session up by it; "" when unknown.
+	u := harness.Unit{Harness: ref.Harness, Kind: ref.Kind, Key: ref.Key, UnitID: unitID, VaultID: ref.VaultID, RootIDs: ref.RootIDs,
 		Home: harness.Home{Harness: ref.Harness, ID: ref.HomeID, Bases: rules.Bases}}
 	ev, err := ad.Probe(ctx, r.e.Harness, u)
 	if err != nil {
-		return true
+		return true, ev
 	}
+	var held []live.Evidence
 	for _, e := range ev {
 		if e.Reason != live.ReasonLease {
-			return true
+			held = append(held, e)
 		}
 	}
-	return false
+	return len(held) > 0, held
 }
 
 // firstBase returns a deterministic target base directory.
@@ -667,8 +670,9 @@ func (r *run) restoreUnit(ctx, actx context.Context, p *restoreUnitPlan, kg *key
 	if p.ref.Kind == capsule.KindMarkdown {
 		return r.restoreNote(ctx, actx, p, auth, mans[0], kg, req, aborted)
 	}
-	if r.restoreLive(ctx, auth.ad, auth.ref, auth.rules) {
-		return liveResult(res, live.Verdict{Live: true}, true, "unit live at restore")
+	if isLive, ev := r.restoreLive(ctx, auth.ad, auth.ref, mans[0].UnitID, auth.rules); isLive {
+		res = liveResult(res, live.Verdict{Live: true, Evidence: ev}, true, "unit live at restore")
+		return res
 	}
 	if isSnapshotKind(p.ref.Kind) {
 		return r.restoreSnapshot(ctx, actx, p, auth, mans[0], kg, keys, req, purpose, aborted)

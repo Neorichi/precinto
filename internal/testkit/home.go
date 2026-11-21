@@ -13,6 +13,7 @@ import (
 
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 )
 
@@ -105,6 +106,10 @@ func newHome(t testing.TB) *Home {
 		"XDG_CACHE_HOME":         xdg("cache"),
 		"XDG_CONFIG_HOME":        xdg("config"),
 		paths.EnvXDGRuntimeDir:   xdgRuntime,
+		// D64: a -tags testing binary run by this test ends its harness
+		// ancestry walk at the test process, so suites started from inside
+		// an agent session still exercise the human paths below it.
+		paths.EnvTestAncestryStop: platform.Self().String(),
 	})
 	l, err := paths.LayoutAt(h.Base, h.RunDir)
 	if err != nil {

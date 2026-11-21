@@ -128,7 +128,7 @@ func TestScanOnlyWhenDormantAndPartitions(t *testing.T) {
 	f.write("config.json", "not content")
 	os.Symlink("/etc/hosts", filepath.Join(f.home, "sessions", "ws-a", "link"))
 	ctx := context.Background()
-	for _, s := range []harness.Scope{{}, {All: true}, {Global: true}, {Kinds: []capsule.Kind{capsule.KindClaudeSession}}} {
+	for _, s := range []harness.Scope{{}, {Adopt: true}, {Global: true}, {Kinds: []capsule.Kind{capsule.KindClaudeSession}}} {
 		if units, err := f.a.Scan(ctx, f.e, s); err != nil || len(units) != 0 {
 			t.Fatalf("scope %+v: %d units, %v (only seal --dormant scans experimental harnesses)", s, len(units), err)
 		}

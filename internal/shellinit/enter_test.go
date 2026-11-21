@@ -57,7 +57,8 @@ func status(states map[string]string) shellinit.StatusFunc {
 func TestOnEnterTransitions(t *testing.T) {
 	l := defaultLayout(t)
 	epoch := uint64(lockedSince.Unix())
-	prompt := ui.Format(ui.MsgEnterPrompt, ui.Vars{Folder: "~/work/acme"})
+	// No factor list from the daemon: the plain prompt (CC-40).
+	prompt := ui.Format(ui.MsgEnterPromptPlain, ui.Vars{Folder: "~/work/acme"})
 	cases := []struct {
 		name   string
 		req    shellinit.EnterRequest
@@ -66,24 +67,24 @@ func TestOnEnterTransitions(t *testing.T) {
 	}{
 		{"outside every folder", shellinit.EnterRequest{PWD: "/u/play", PrevPWD: acme}, map[string]string{"root-acme": "locked"}, shellinit.EnterResult{}},
 		{"outside to inside", shellinit.EnterRequest{PWD: acme + "/src", PrevPWD: "/u/play"}, map[string]string{"root-acme": "locked"},
-			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
+			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
 		{"first prompt of a shell started inside", shellinit.EnterRequest{PWD: acme, PrevPWD: acme, FirstRun: true}, map[string]string{"root-acme": "locked"},
-			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
+			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
 		{"moving inside the folder", shellinit.EnterRequest{PWD: acme + "/src", PrevPWD: acme}, map[string]string{"root-acme": "locked"}, shellinit.EnterResult{}},
 		{"a sibling sharing the prefix is outside", shellinit.EnterRequest{PWD: acme + "/src", PrevPWD: "/u/work/acme-old"}, map[string]string{"root-acme": "locked"},
-			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
+			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
 		{"unlocked", shellinit.EnterRequest{PWD: acme, PrevPWD: "/u"}, map[string]string{"root-acme": "unlocked"}, shellinit.EnterResult{}},
 		{"skip remembered for this lock epoch", shellinit.EnterRequest{PWD: acme, PrevPWD: "/u", SkipKey: "root-acme:" + strconv.FormatUint(epoch, 10)}, map[string]string{"root-acme": "locked"},
-			shellinit.EnterResult{RootID: "root-acme", Folder: "~/work/acme", Epoch: epoch}},
+			shellinit.EnterResult{RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: epoch}},
 		{"skip of an older epoch asks again", shellinit.EnterRequest{PWD: acme, PrevPWD: "/u", SkipKey: "root-acme:1"}, map[string]string{"root-acme": "locked"},
-			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
+			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: epoch, Message: prompt}},
 		{"another terminal is unlocking", shellinit.EnterRequest{PWD: acme, PrevPWD: "/u"}, map[string]string{"root-acme": "unlocking"},
-			shellinit.EnterResult{Action: shellinit.EnterBusy, RootID: "root-acme", Folder: "~/work/acme", Epoch: epoch, Message: ui.Format(ui.MsgEnterElsewhere, ui.Vars{Folder: "~/work/acme"})}},
+			shellinit.EnterResult{Action: shellinit.EnterBusy, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Epoch: epoch, Message: ui.Format(ui.MsgEnterElsewhere, ui.Vars{Folder: "~/work/acme"})}},
 		{"deepest folder, its own notify mode", shellinit.EnterRequest{PWD: beta + "/x", PrevPWD: acme}, map[string]string{"root-acme": "locked", "root-beta": "locked"},
-			shellinit.EnterResult{Action: shellinit.EnterNotify, RootID: "root-beta", Folder: "~/work/acme/beta", Epoch: epoch, Message: ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: "~/work/acme/beta"})}},
+			shellinit.EnterResult{Action: shellinit.EnterNotify, RootID: "root-beta", Path: beta, Folder: "~/work/acme/beta", Epoch: epoch, Message: ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: "~/work/acme/beta"})}},
 		{"on_enter off", shellinit.EnterRequest{PWD: "/u/work/quiet", PrevPWD: "/u"}, map[string]string{"root-off": "locked"}, shellinit.EnterResult{}},
 		{"vault unknown to a running daemon: locked", shellinit.EnterRequest{PWD: acme, PrevPWD: "/u"}, map[string]string{},
-			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Folder: "~/work/acme", Message: prompt}},
+			shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: acme, Folder: "~/work/acme", Message: prompt}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -162,12 +163,44 @@ func TestOnEnterFolderDisplay(t *testing.T) {
 }
 
 func TestResultLines(t *testing.T) {
-	if got := shellinit.ResultLines(shellinit.EnterResult{RootID: "root-acme"}); got != "" {
+	if got := (shellinit.EnterResult{RootID: "root-acme"}).Lines(); got != "" {
 		t.Errorf("nothing to do printed %q", got)
 	}
-	got := shellinit.ResultLines(shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Folder: "~/a\nb", Epoch: 7, Message: "m\x1b[2J\tx"})
-	want := "action=prompt\nroot=root-acme\nepoch=7\nfolder=~/a b\nmessage=m[2J x\n"
+	got := shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: "/u/a\nb", Folder: "~/a\nb", Epoch: 7, Message: "m\x1b[2J\tx"}.Lines()
+	want := "action=prompt\nroot=root-acme\nepoch=7\npath=/u/a b\nfolder=~/a b\nmessage=m[2J x\n"
 	if got != want {
-		t.Errorf("ResultLines = %q, want %q", got, want)
+		t.Errorf("Lines = %q, want %q", got, want)
+	}
+	// A hostile folder name stays one value of one line: quotes, $(…),
+	// backticks and spaces are data for the scripts, never code (D69).
+	hostile := `/u/it's "$(touch /tmp/x)" ` + "`id`" + ` dir`
+	got = shellinit.EnterResult{Action: shellinit.EnterNotify, RootID: "root-x", Path: hostile + "\nmessage=forged", Folder: hostile, Message: "m"}.Lines()
+	want = "action=notify\nroot=root-x\nepoch=0\npath=" + hostile + " message=forged\nfolder=" + hostile + "\nmessage=m\n"
+	if got != want || strings.Count(got, "\n") != 6 {
+		t.Errorf("hostile Lines = %q, want %q", got, want)
+	}
+}
+
+// C1.prompt names the folder's first usable factor; the Mac password only
+// with a GUI (never on linux or over SSH); a caller's HOME shortens the
+// folder (CC-31, CC-40).
+func TestOnEnterPromptFactorAndHome(t *testing.T) {
+	l, err := paths.LayoutAt("/custom/base", "/tmp/pt-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := func(ctx context.Context) (ipc.StatusResp, error) {
+		return ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "locked", Since: lockedSince, Factors: []string{"se", "passphrase"}}}}, nil
+	}
+	defer shellinit.SetStatus(st, false)()
+	for gui, factor := range map[bool]string{true: "Mac password", false: "precinto passphrase"} {
+		got, err := shellinit.OnEnter(t.Context(), enterConfig(config.OnEnterPrompt), l, shellinit.EnterRequest{PWD: acme, PrevPWD: "/u", Home: "/u", GUI: gui})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ui.Format(ui.MsgEnterPrompt, ui.Vars{Folder: "~/work/acme", Factor: factor})
+		if got.Message != want || got.Folder != "~/work/acme" || got.Path != acme {
+			t.Errorf("gui=%v: %+v, want message %q", gui, got, want)
+		}
 	}
 }

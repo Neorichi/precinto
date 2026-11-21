@@ -93,7 +93,8 @@ func (te *testEnv) unitDirEntries(key string) []string {
 }
 
 // SEAL-2 / SEAL-3: a crash while the temporary is written or before it is
-// verified leaves an operation directory; recovery removes it.
+// verified leaves the journaled temporary (capsule.TmpName); recovery
+// removes it.
 func TestRecoverRemovesAnInterruptedTemporary(t *testing.T) {
 	t.Parallel()
 	te := newTestEnv(t)
@@ -102,7 +103,7 @@ func TestRecoverRemovesAnInterruptedTemporary(t *testing.T) {
 	orig := te.original(u)
 	te.codec.midTmp = crash
 	simulateCrash(t, func() { te.run().sealOne(context.Background(), u, Options{}, true) })
-	if ents := te.unitDirEntries(u.Key); len(ents) != 1 || !isOpDir(ents[0]) {
+	if ents := te.unitDirEntries(u.Key); len(ents) != 1 || ents[0] != capsule.TmpName("g000001.pcap") {
 		t.Fatalf("crash state: %v", ents)
 	}
 	te.codec.midTmp = nil
@@ -125,12 +126,12 @@ func TestRecoverDeletesAnUnloggedCapsule(t *testing.T) {
 	te.writeSession(sid1, "", nil)
 	u := te.scanSession(sid1)
 	orig := te.original(u)
-	te.p.afterRename = crash
+	te.codec.afterRename = crash
 	simulateCrash(t, func() { te.run().sealOne(context.Background(), u, Options{}, true) })
 	if ents := te.unitDirEntries(u.Key); len(ents) != 1 || ents[0] != "g000001.pcap" {
 		t.Fatalf("crash state: %v", ents)
 	}
-	te.p.afterRename = nil
+	te.codec.afterRename = nil
 	rep := te.checkRecovered()
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSkipped {
 		t.Fatalf("recovery %+v", res)
@@ -142,25 +143,6 @@ func TestRecoverDeletesAnUnloggedCapsule(t *testing.T) {
 	rep, _ = te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Gen != 2 {
 		t.Fatalf("number reused: %+v", res)
-	}
-}
-
-// SEAL-7: a crash after the log append, before committed is journaled.
-func TestRecoverContinuesALoggedCapsuleAsCommitted(t *testing.T) {
-	t.Parallel()
-	te := newTestEnv(t)
-	te.writeSession(sid1, "", nil)
-	u := te.scanSession(sid1)
-	te.p.afterLog = crash
-	simulateCrash(t, func() { te.run().sealOne(context.Background(), u, Options{}, true) })
-	te.p.afterLog = nil
-	rep := te.checkRecovered()
-	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
-		t.Fatalf("recovery %+v", res)
-	}
-	te.plaintextGone(u)
-	if n := len(te.logged(u.Key)); n != 1 {
-		t.Fatalf("%d log entries, want exactly one", n)
 	}
 }
 

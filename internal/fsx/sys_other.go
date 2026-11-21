@@ -49,6 +49,7 @@ func removeStaging(s *Staging) error                           { return errUnsup
 func probeHeld(path string) (bool, error)                      { return true, errUnsupported }
 func space(path string) (avail, total uint64, err error)       { return 0, 0, errUnsupported }
 func classifyErrno(err error) Class                            { return ClassOther }
+func (d *Dir) appendLine(rel string, line []byte) error        { return errUnsupported }
 func (d *Dir) createTemp(dirRel, pattern string) (*os.File, string, error) {
 	return nil, "", errUnsupported
 }

@@ -46,7 +46,7 @@ func (a *app) refuseAgent(r refusal) error {
 func (a *app) needTerminal(name string) (terminal, error) {
 	t, err := a.sys.openTTY()
 	if err != nil {
-		a.say(textNeedTerminal, "precinto "+name)
+		a.line(ui.MsgNeedTerminal, ui.Vars{Command: "precinto " + name})
 		return nil, refusedError{reason: "no terminal"}
 	}
 	return t, nil

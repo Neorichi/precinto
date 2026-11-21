@@ -115,6 +115,8 @@ func (v storeAdapter) Init(ctx context.Context, o vault.InitOptions) (*memguard.
 
 func (v storeAdapter) List() ([]string, error) { return v.s.List() }
 
+func (v storeAdapter) MarkRecoveryVerified(at time.Time) error { return v.s.MarkRecoveryVerified(at) }
+
 func (v storeAdapter) Meta(id string) (vault.Meta, error) {
 	vv, err := v.s.Open(id)
 	if err != nil {
@@ -194,6 +196,11 @@ func daemonEnv(e paths.Env) []string {
 				out = append(out, k+"="+v)
 			}
 		}
+	}
+	// D64: only a -tags testing build reads (and so passes on) the test
+	// ancestry stop; TestAncestryStop is ("", false) in every other build.
+	if v, ok := paths.TestAncestryStop(e); ok {
+		out = append(out, paths.EnvTestAncestryStop+"="+v)
 	}
 	return out
 }

@@ -18,9 +18,8 @@ import (
 // (each invocation decides, and the host lets a deny win), so a duplicate
 // can never turn a block into an allow.
 const (
-	dedupeDirName = "hookdedupe" // under state/: one empty file per event, named by a hash
-	dedupeTTL     = 10 * time.Minute
-	dedupeScan    = 256 // markers examined per prune
+	dedupeTTL  = 10 * time.Minute
+	dedupeScan = 256 // markers examined per prune
 )
 
 // duplicate reports whether the same non-gate event already ran. The key is
@@ -31,7 +30,7 @@ func duplicate(d Deps, p Payload) bool {
 	if p.Host != HostCursor && p.Host != HostCopilot {
 		return false
 	}
-	if d.Layout.StateDir == "" || p.SID == "" {
+	if d.Layout.HookDedupeDir == "" || p.SID == "" {
 		return false
 	}
 	key := strings.Join([]string{
@@ -40,7 +39,7 @@ func duplicate(d Deps, p Payload) bool {
 		strings.Join(p.Paths, "\x1e"), strings.Join(p.AddedDirs, "\x1e"),
 	}, "\x1f")
 	sum := sha256.Sum256([]byte(key))
-	dir := filepath.Join(d.Layout.StateDir, dedupeDirName)
+	dir := d.Layout.HookDedupeDir // one empty file per event, named by a hash
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return false
 	}

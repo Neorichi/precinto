@@ -50,7 +50,6 @@ func killGroup(int, syscall.Signal) error           { return errUnsupported }
 func stopSelf() error                               { return errUnsupported }
 func setSession(*exec.Cmd, bool)                    {}
 func ttyName(int) string                            { return "" }
-func startErrorCode(error) int                      { return 1 }
 func exitStatus(ps *os.ProcessState) int            { return exitCodeOr(ps) }
 func exitCodeOr(ps *os.ProcessState) int {
 	if ps == nil || ps.ExitCode() < 0 {

@@ -155,38 +155,32 @@ func failClosed(host Host, ev Event, folder string) Output {
 		}
 		return Output{Exit: ExitOK}
 	}
-	return encode(host, ev, failDecision(ev, folder))
+	return encode(host, ev, failDecision(ev, folder, false))
 }
 
 // failDecision is the block/deny of a gate event in a managed session when
-// precinto cannot decide (daemon unreachable or failing, decode error,
-// deadline, panic), and the locked-folder notice of SessionStart. The
-// usual cause is a stopped agent (it exits when idle while every folder is
-// locked), so the prompt text is C3.agentdown.
-func failDecision(ev Event, folder string) Decision {
+// precinto cannot decide, and the locked-folder notice of SessionStart.
+// down reports an unreachable or untrusted daemon (ipc.ErrNoDaemon,
+// ipc.ErrUntrustedServer): the agent stopped (it exits when idle while
+// every folder is locked), so the prompt text is C3.agentdown. Every other
+// cause (decode error, deadline, panic, a failing gate query, an unknown
+// verdict) is C3.failed (CC-38, HOOKS-IO §2.4).
+func failDecision(ev Event, folder string, down bool) Decision {
 	v := ui.Vars{Folder: displayFolder(folder)}
 	switch ev {
 	case UserPromptSubmit:
-		return Decision{Verdict: ipc.VerdictBlock, UserMessage: ui.Format(ui.MsgAgentDown, v)}
+		if down {
+			return Decision{Verdict: ipc.VerdictBlock, UserMessage: ui.Format(ui.MsgAgentDown, v)}
+		}
+		return Decision{Verdict: ipc.VerdictBlock, UserMessage: ui.Format(ui.MsgGateFailed, v)}
 	case PreToolUse, PermissionRequest:
-		return Decision{Verdict: ipc.VerdictDeny, UserMessage: lockedLine(v.Folder), ModelMessage: ui.Format(ui.MsgToolDenied, v)}
+		return Decision{Verdict: ipc.VerdictDeny, UserMessage: ui.Format(ui.MsgToolStop, v), ModelMessage: ui.Format(ui.MsgToolDenied, v)}
 	case PreCompact:
 		return Decision{Verdict: ipc.VerdictBlock, UserMessage: ui.Format(ui.MsgCompactPaused, v)}
 	case SessionStart:
 		return Decision{Verdict: ipc.VerdictAllow, Context: ui.Format(ui.MsgStartLockedModel, v)}
 	}
 	return Decision{Verdict: ipc.VerdictAllow}
-}
-
-// lockedLine is the PreToolUse stopReason "precinto: <folder> is locked"
-// (HOOKS-IO §2.4). The catalog has no message of exactly that text, so it
-// is the first sentence of C3.start.user, whose text starts with it.
-func lockedLine(folder string) string {
-	s := ui.Format(ui.MsgStartLockedUser, ui.Vars{Folder: folder})
-	if i := strings.Index(s, ". "); i >= 0 {
-		return s[:i]
-	}
-	return strings.TrimSuffix(s, ".")
 }
 
 // displayFolder keeps message texts well formed when no folder is known.

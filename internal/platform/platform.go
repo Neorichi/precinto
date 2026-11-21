@@ -21,15 +21,27 @@ var (
 )
 
 // ProcID is one process incarnation as measured by precinto: pid plus the
-// kernel start time in microseconds since the Unix epoch (darwin
-// kp_proc.p_starttime; linux boot time + /proc/<pid>/stat starttime, with
-// BootID guarding reboots). ProcIDs are compared by equality only; never
-// computed as now−elapsed and never taken from a harness (R9, S14).
+// kernel start time, with BootID guarding reboots on linux. ProcIDs are
+// compared by equality only; never computed as now−elapsed and never taken
+// from a harness (R9, S14). Use StartTime to compare a start with a wall
+// clock time (D66).
 type ProcID struct {
-	PID     int    `json:"pid"`
+	PID int `json:"pid"`
+	// StartUS is the kernel start time in µs: wall time on darwin
+	// (p_starttime), µs since boot on linux (/proc/<pid>/stat field 22 ×
+	// 10^6/CLK_TCK), so a wall-clock step never changes a measured
+	// identity; compared by equality only.
 	StartUS int64  `json:"start_us"`
 	BootID  string `json:"boot_id,omitempty"` // linux only
 }
+
+// StartTime returns the wall-clock start of id for comparisons with
+// harness timestamps (D18 registry startedAt, hook windows): darwin's
+// StartUS as is; on linux the current btime is added to a ProcID measured
+// on this boot (one with a BootID; a ProcID without one, such as a test
+// fake, is taken as wall time). It is the zero time when btime cannot be
+// read. See D66.
+func StartTime(id ProcID) time.Time { return startTime(id) }
 
 // IsZero reports whether id is unset. Implemented in the scaffold.
 func (id ProcID) IsZero() bool { return id.PID == 0 && id.StartUS == 0 && id.BootID == "" }
@@ -165,13 +177,16 @@ type Holder struct {
 // changed (S14).
 func Signal(id ProcID, sig syscall.Signal) error { return signalProc(id, sig) }
 
-// SignalGroup sends sig to every remaining process whose session id is sid.
-// Only for sessions precinto created itself — the wrapper's PTY child or a
+// SignalGroup signals the remaining processes whose session id is
+// leader.PID. It refuses (ErrNotSame) when a process with that pid exists
+// with another start time (the session id was reused), refuses sid ≤ 1 and
+// the caller's own session, and never signals the caller. Only for
+// sessions precinto created itself — the wrapper's PTY child or a
 // direct-mode child started with Setsid, both session leaders — never for
 // an unwrapped harness, whose session is the user's terminal session (its
-// login shell and every other job of that tab) (R11, D57). Callers pass the
-// child's pid, which is the session id.
-func SignalGroup(sid int, sig syscall.Signal) error { return signalGroup(sid, sig) }
+// login shell and every other job of that tab) (R11, D57). Members are
+// re-verified one by one like Signal.
+func SignalGroup(leader ProcID, sig syscall.Signal) error { return signalGroup(leader, sig) }
 
 // WaitExit blocks until id has exited (zombie counts as exited) or ctx ends;
 // darwin kqueue EVFILT_PROC/NOTE_EXIT, linux pidfd poll, fallback polling.
@@ -293,6 +308,15 @@ func DiskEncryption(ctx context.Context) (on, known bool, err error) {
 // addexclusion`, no root needed); no-op on linux.
 func ExcludeFromBackup(ctx context.Context, path string) error {
 	return excludeFromBackup(ctx, path)
+}
+
+// BackupExcluded is a read-only Time Machine query: `tmutil
+// destinationinfo`, then `tmutil isexcluded path`, with an explicit minimal
+// environment and a 10 s timeout per run. known=false off darwin or when
+// no backup destination is configured (nothing is backed up; err is nil
+// then), or when the answer could not be read (err says why).
+func BackupExcluded(ctx context.Context, path string) (excluded, known bool, err error) {
+	return backupExcluded(ctx, path)
 }
 
 // CloudSynced reports whether path is inside a known cloud-synced location

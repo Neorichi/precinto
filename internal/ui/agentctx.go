@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -37,6 +38,27 @@ type agentProbe struct {
 	ctty    func() bool              // whether the process has a controlling terminal
 }
 
+// ancestryStop is the process at which the harness-ancestry walk ends in a
+// -tags testing build (paths.TestAncestryStop, D64); ok is false in every
+// other build and when the variable is unset or malformed.
+func ancestryStop(e paths.Env) (platform.ProcID, bool) {
+	v, ok := paths.TestAncestryStop(e)
+	if !ok {
+		return platform.ProcID{}, false
+	}
+	id, err := platform.ParseProcID(v)
+	if err != nil {
+		return platform.ProcID{}, false
+	}
+	return id, true
+}
+
+// sameIncarnation compares a measured ProcID with the D64 stop; the boot
+// id counts only when both carry one (a parsed "PID:START" names this boot).
+func sameIncarnation(a, b platform.ProcID) bool {
+	return a.PID == b.PID && a.StartUS == b.StartUS && (a.BootID == "" || b.BootID == "" || a.BootID == b.BootID)
+}
+
 // agentContext implements AgentContext. Checks run from the cheapest to the
 // most expensive and the first evidence found is returned. Whatever cannot
 // be determined counts as an agent context (fail closed).
@@ -50,7 +72,8 @@ func agentContext(e paths.Env, t platform.ProcTable, p agentProbe) (bool, string
 			return true, noun + strings.Join(m, ", ")
 		}
 	}
-	if found, evidence := harnessAncestor(t, p.pid); found {
+	stop, haveStop := ancestryStop(e)
+	if found, evidence := harnessAncestor(t, p.pid, stop, haveStop); found {
 		return true, evidence
 	}
 	if p.ctty == nil || !p.ctty() {
@@ -59,22 +82,41 @@ func agentContext(e paths.Env, t platform.ProcTable, p agentProbe) (bool, string
 	return false, ""
 }
 
-// harnessAncestor looks for a known harness among the ancestors of pid.
-func harnessAncestor(t platform.ProcTable, pid int) (bool, string) {
+// harnessAncestor looks for a known harness among the ancestors of pid,
+// walking PPIDs. An ancestor that has exited (platform.ErrNoProcess) ends
+// the walk: its children were reparented, which the no-controlling-terminal
+// rule covers. Any other lookup failure (EPERM, an unreadable process
+// table) is an agent context: ancestry that cannot be read proves nothing
+// (fail closed). With a D64 stop, the walk ends at that process: it and
+// its ancestors are ignored, everything below it is checked.
+func harnessAncestor(t platform.ProcTable, pid int, stop platform.ProcID, haveStop bool) (bool, string) {
 	if t == nil {
 		return true, "process ancestry unavailable"
 	}
-	anc, err := platform.Ancestors(t, pid, maxAncestors)
+	p, err := t.Lookup(pid)
 	if err != nil {
 		return true, "process ancestry unavailable"
 	}
-	for _, a := range anc {
-		if name, ok := harnessName(a); ok {
-			return true, fmt.Sprintf("ancestor process %s (pid %d)", name, a.ID.PID)
+	seen := map[int]bool{pid: true}
+	for n := 0; p.PPID > 1 && !seen[p.PPID]; n++ {
+		if n == maxAncestors {
+			return true, "process ancestry too deep"
 		}
-	}
-	if len(anc) == maxAncestors && anc[len(anc)-1].PPID > 1 {
-		return true, "process ancestry too deep"
+		seen[p.PPID] = true
+		q, err := t.Lookup(p.PPID)
+		if errors.Is(err, platform.ErrNoProcess) {
+			return false, "" // an exited ancestor ends the walk
+		}
+		if err != nil {
+			return true, "process ancestry unavailable"
+		}
+		if haveStop && sameIncarnation(q.ID, stop) {
+			return false, "" // D64: the test process and everything above it
+		}
+		if name, ok := harnessName(q); ok {
+			return true, fmt.Sprintf("ancestor process %s (pid %d)", name, q.ID.PID)
+		}
+		p = q
 	}
 	return false, ""
 }

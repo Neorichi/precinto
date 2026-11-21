@@ -198,10 +198,23 @@ func (d *Dir) Walk(rel string, fn func(WalkEntry) error) error {
 
 // CreateTemp creates a new 0600 file in the directory dirRel (created 0700
 // if missing) with O_CREAT|O_EXCL|O_NOFOLLOW and returns it with its name
-// relative to d.
+// relative to d. The last '*' of pattern is replaced by a random string; a
+// pattern without '*' is the exact name, created O_EXCL (ErrExist if it
+// exists). Unlike os.CreateTemp, a pattern without '*' gets no suffix.
 func (d *Dir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 	return d.createTemp(dirRel, pattern)
 }
+
+// AppendLine appends line, plus "\n" if it lacks one, with one
+// O_WRONLY|O_APPEND|O_NOFOLLOW write to the regular file rel opened
+// component by component below d (created 0600 with O_EXCL when absent;
+// the parent directory is then fsynced), then FullSyncs it; refuses
+// non-regular files (a FIFO is refused without blocking) and files not
+// owned by the user (ErrUnsafe). line must hold no other '\n' and be at
+// most MaxLine bytes; an empty line appends only the newline (used to end
+// a torn last line). Parent directories are never created (failpoints
+// "fsx.write", "fsx.fsync").
+func (d *Dir) AppendLine(rel string, line []byte) error { return d.appendLine(rel, line) }
 
 // Rename renames oldRel to newRel (both relative to d) and fsyncs the
 // affected directories.
@@ -255,7 +268,11 @@ func FullSync(f *os.File) error {
 	if err := failpoint.Hit("fsx.fsync"); err != nil {
 		return err
 	}
-	return fullSync(f)
+	if err := fullSync(f); err != nil {
+		return err
+	}
+	noteSync(f)
+	return nil
 }
 
 // SyncDir fsyncs the directory at path. Implemented in the scaffold
@@ -269,7 +286,11 @@ func SyncDir(path string) error {
 		return err
 	}
 	defer d.Close()
-	return fullSync(d)
+	if err := fullSync(d); err != nil {
+		return err
+	}
+	note(failpoint.FSDirSync, path, "", true)
+	return nil
 }
 
 // MaxLine bounds AppendLine (one write(2) of at most this many bytes plus
@@ -294,6 +315,7 @@ func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		var err error
 		f, err = os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|oNoFollow, perm&0o700)
 		if err == nil {
+			note(failpoint.FSCreate, tmp, "", true)
 			break
 		}
 		if !errors.Is(err, fs.ErrExist) || i >= 100 {
@@ -322,10 +344,12 @@ func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		os.Remove(tmp)
 		return err
 	}
+	note(failpoint.FSRename, tmp, path, false)
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
 	}
+	note(failpoint.FSRename, tmp, path, true)
 	return SyncDir(filepath.Clean(dir))
 }
 
@@ -344,6 +368,9 @@ func AppendLine(path string, line []byte) error {
 		return err
 	}
 	defer f.Close()
+	if created {
+		note(failpoint.FSCreate, path, "", true)
+	}
 	if err := failpoint.Hit("fsx.write"); err != nil {
 		return err
 	}
@@ -485,11 +512,13 @@ func (l *Lock) File() *os.File { return l.file }
 
 // ProbeHeld reports whether another process holds any flock on path. It
 // tries LOCK_EX|LOCK_NB and releases immediately, then verifies that the
-// path still names the probed inode; any error, an unsupported file system
-// or an inode mismatch reports held=true (R17). Use it only on precinto's
-// own lock and lease files: harness writer locks (Codex
-// thread-writer-locks) are checked with platform.ProcTable.OpenFilesUnder,
-// never by flocking them (HA17).
+// path still names the probed inode. A missing file is not held: (false,
+// nil) — lease files are created before use and never deleted (SPEC §9.3).
+// Any other error, an unsupported file system, or an inode swap during the
+// probe reports held=true (R17). It is the one probe implementation for
+// leases (live.Probe uses it). Use it only on precinto's own lock and lease
+// files: harness writer locks (Codex thread-writer-locks) are checked with
+// platform.ProcTable.OpenFilesUnder, never by flocking them (HA17).
 func ProbeHeld(path string) (held bool, err error) { return probeHeld(path) }
 
 // Space reports available and total bytes of the file system holding path.

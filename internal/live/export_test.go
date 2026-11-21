@@ -2,13 +2,12 @@ package live
 
 import "github.com/precinto/precinto/internal/fsx"
 
-// SetProbeHook runs f between Probe's lock and its inode check (CODX-6:
-// the lock file is unlinked and recreated during the probe). Tests that use
-// it must not run in parallel.
-func SetProbeHook(f func(path string)) (restore func()) {
-	old := probeHook
-	probeHook = f
-	return func() { probeHook = old }
+// SetProbeHeld replaces how lease files are probed (fsx.ProbeHeld): ENOTSUP
+// and swapped-file answers. Tests that use it must not run in parallel.
+func SetProbeHeld(f func(path string) (bool, error)) (restore func()) {
+	old := probeHeld
+	probeHeld = f
+	return func() { probeHeld = old }
 }
 
 // SetTryLock replaces how lease files are locked (ENOTSUP and other

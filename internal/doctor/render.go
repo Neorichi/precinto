@@ -7,10 +7,9 @@ import (
 	"strings"
 )
 
-// Rendering of findings for `precinto doctor`: a human listing and a JSON
-// document. They are unexported until the contract exports them (change
-// request: doctor.Render(w, findings, json)); the CLI can mirror them
-// meanwhile. Both sanitize again: a finding may come from the agent.
+// Rendering of findings for `precinto doctor` (Render, Worst): a human
+// listing and a JSON document. Both sanitize again: a finding may come from
+// the agent.
 
 // severityRank orders severities from the worst.
 var severityRank = map[Severity]int{Fail: 0, Warn: 1, Info: 2, OK: 3}

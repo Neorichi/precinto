@@ -143,13 +143,16 @@ func (e *Engine) decide(ctx context.Context, s Subject, extra []Evidence) (Verdi
 					stable = false
 					add(Evidence{Reason: ReasonFutureTime, Path: l.future, Detail: "mtime in the future", Weak: true})
 				}
-				if !l.stable {
+				switch {
+				case l.stable:
+				case l.first || l.pending:
+					// Not yet seen unchanged across a full window: the
+					// caller waits Quiet once and decides again (D63).
 					stable = false
-					detail := "files changed within the quiet window"
-					if l.first {
-						detail = "not yet observed for the quiet window"
-					}
-					add(Evidence{Reason: ReasonUnstable, Detail: detail, Weak: l.first || l.timesOnly})
+					add(Evidence{Reason: ReasonUnobserved, Detail: "not yet observed for the quiet window", Weak: true})
+				default:
+					stable = false
+					add(Evidence{Reason: ReasonUnstable, Detail: "files changed within the quiet window", Weak: l.timesOnly})
 				}
 			}
 		}

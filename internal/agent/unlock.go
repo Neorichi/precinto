@@ -319,7 +319,9 @@ func (d *daemon) unlockOne(ctx context.Context, cs *connState, reqID uint64, r i
 		return d.unlockErr(id, err)
 	}
 	err := d.unwrapAndGrant(ctx, cs, reqID, r, id)
-	if errors.Is(err, vault.ErrCancelled) {
+	if errors.Is(err, vault.ErrCancelled) || errors.Is(err, vault.ErrBadSecret) {
+		// A wrong secret counts toward the prompt rate limit like a
+		// cancel (D27), never as a tamper alert.
 		d.limiter.cancelled(id, r.FromHook)
 	}
 	d.limiter.finish(id, fl, err)
@@ -398,6 +400,8 @@ func (d *daemon) unlockErr(id string, err error) *ipc.Error {
 	switch {
 	case errors.As(err, &rl):
 		return &ipc.Error{Code: ipc.CodeRateLimited, Msg: "precinto: too many unlock prompts for " + folder + "; try again in " + strconv.Itoa(int(rl.wait.Round(time.Second)/time.Second)) + " s"}
+	case errors.Is(err, vault.ErrBadSecret):
+		return &ipc.Error{Code: ipc.CodeBadSecret, Msg: ui.Format(ui.MsgUnlockBadSecret, ui.Vars{Folder: folder})}
 	case errors.Is(err, vault.ErrCancelled), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return &ipc.Error{Code: ipc.CodeCancelled, Msg: ui.Format(ui.MsgUnlockCancelled, ui.Vars{Folder: folder})}
 	case errors.Is(err, vault.ErrNoUI):

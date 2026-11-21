@@ -159,6 +159,29 @@ func loadSalt(path string) ([]byte, error) {
 	return nil, fmt.Errorf("capsule: could not load %s", path)
 }
 
+// readSaltPath implements ReadSalt: never creates anything.
+func readSaltPath(path string) ([]byte, bool, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, false, fmt.Errorf("%w: salt path %q", ErrUnsafe, path)
+	}
+	d, err := fsx.OpenBase(filepath.Dir(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer d.Close()
+	salt, err := readSalt(d, filepath.Base(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return salt, true, nil
+}
+
 // readSalt reads exactly saltSize bytes; any other size is corruption and is
 // never repaired silently, since every unit key depends on the salt.
 func readSalt(d *fsx.Dir, name string) ([]byte, error) {

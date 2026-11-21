@@ -80,9 +80,11 @@ func sysBootID() string {
 }
 
 // bootTimeUS returns the boot time in µs since the epoch (/proc/stat
-// btime). It is read on every measurement, so every precinto process
-// computes the same start time at a given moment; a wall-clock step can
-// shift btime by a second (documented residual; BootID guards reboots).
+// btime). Identities never use it (StartUS is µs since boot, D66): a
+// wall-clock step moves btime by up to a second, which would make one
+// process measured before and after look like two. Only StartTime adds it.
+var bootTimeFn = bootTimeUS
+
 func bootTimeUS() (int64, error) {
 	b, err := readSmall("/proc/stat")
 	if err != nil {
@@ -171,9 +173,24 @@ func readStat(pid int) (procStat, error) {
 	return parseStat(b)
 }
 
-func idFrom(pid int, s procStat, btime int64) ProcID {
+// idFrom builds the identity of pid: its start in µs since boot (stat
+// field 22 in clock ticks), never shifted by wall-clock steps (D66).
+func idFrom(pid int, s procStat) ProcID {
 	bootInit()
-	return ProcID{PID: pid, StartUS: btime + s.startTick*1_000_000/boot.clock, BootID: boot.id}
+	return ProcID{PID: pid, StartUS: s.startTick * 1_000_000 / boot.clock, BootID: boot.id}
+}
+
+// startTime implements StartTime: a ProcID of this boot gets the current
+// btime added; one without a BootID (not measured on linux) is wall time.
+func startTime(id ProcID) time.Time {
+	if id.BootID == "" {
+		return time.UnixMicro(id.StartUS)
+	}
+	bt, err := bootTimeFn()
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMicro(bt + id.StartUS)
 }
 
 func sysIdentifyState(pid int) (ProcID, ProcState, error) {
@@ -181,11 +198,7 @@ func sysIdentifyState(pid int) (ProcID, ProcState, error) {
 	if err != nil {
 		return ProcID{}, StateUnknown, err
 	}
-	bt, err := bootTimeUS()
-	if err != nil {
-		return ProcID{}, StateUnknown, err
-	}
-	return idFrom(pid, s, bt), linuxState(s.state), nil
+	return idFrom(pid, s), linuxState(s.state), nil
 }
 
 // statusUID reads the effective uid from /proc/<pid>/status (readable even
@@ -223,13 +236,13 @@ func ttyName(nr int64) string {
 	return ttyByDev(unix.Mkdev(uint32(major), uint32(minor)))
 }
 
-func lookupWith(pid int, btime int64) (ProcInfo, error) {
+func lookupWith(pid int) (ProcInfo, error) {
 	s, err := readStat(pid)
 	if err != nil {
 		return ProcInfo{}, err
 	}
 	info := ProcInfo{
-		ID:    idFrom(pid, s, btime),
+		ID:    idFrom(pid, s),
 		PPID:  s.ppid,
 		PGID:  s.pgrp,
 		SID:   s.session,
@@ -257,18 +270,10 @@ func lookupWith(pid int, btime int64) (ProcInfo, error) {
 }
 
 func sysLookup(pid int) (ProcInfo, error) {
-	bt, err := bootTimeUS()
-	if err != nil {
-		return ProcInfo{}, err
-	}
-	return lookupWith(pid, bt)
+	return lookupWith(pid)
 }
 
 func sysList() ([]ProcInfo, error) {
-	bt, err := bootTimeUS()
-	if err != nil {
-		return nil, err
-	}
 	ents, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, fmt.Errorf("platform: list processes: %w", err)
@@ -280,7 +285,7 @@ func sysList() ([]ProcInfo, error) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		info, err := lookupWith(pid, bt)
+		info, err := lookupWith(pid)
 		if err != nil || info.UID != uid {
 			continue // exited while listing, or another user's
 		}

@@ -27,7 +27,7 @@ func testPluginSpec(t *testing.T, path, mode string) vault.FactorSpec {
 	t.Helper()
 	return vault.FactorSpec{
 		Kind: vault.FactorPlugin, Recipient: vault.KeygenForTest(t, path),
-		IdentityStub: plugin.EncodeIdentity("test", []byte(mode)), PluginPath: path, SEAccessControl: "touch-always",
+		IdentityStub: plugin.EncodeIdentity("test", []byte(mode)), PluginPath: path, PresencePolicy: "touch-always",
 	}
 }
 
@@ -139,7 +139,7 @@ func TestPluginPresencePolicy(t *testing.T) {
 	path := vault.InstallPluginForTest(t, "test")
 	s, _ := newStore(t)
 	spec := testPluginSpec(t, path, "ok")
-	spec.SEAccessControl = ""
+	spec.PresencePolicy = ""
 	if _, err := s.Init(context.Background(), vault.InitOptions{Factors: []vault.FactorSpec{spec}}); err == nil {
 		t.Fatal("plugin factor without a known presence policy accepted (S10)")
 	}

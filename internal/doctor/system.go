@@ -184,6 +184,8 @@ func checkBackups(e *env) []Finding {
 		excluded, known, err := e.d.BackupExcluded(ctx, d)
 		cancel()
 		switch {
+		case err == nil && !known:
+			checked++ // no backup destination: nothing is backed up
 		case err != nil || !known:
 			out = append(out, info(CheckBackups, "could not tell whether Time Machine backs up "+e.show(d), ""))
 		case !excluded:

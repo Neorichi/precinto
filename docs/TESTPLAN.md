@@ -12,7 +12,8 @@ Normative for every group. Maps tests to invariants (SPEC §18) and decisions (`
 5. **External test packages** (`package foo_test`) by default; internal tests only for unexported helpers.
 6. **Unit tests must not need build tags.** They construct layouts with `paths.LayoutAt`. Tags: `testing` (binary honours `PRECINTO_HOME`/`PRECINTO_RUNTIME_DIR`; `ipc.DialOptions.Insecure` allowed), `failpoints` (crash and errno injection).
 7. **Helper programs** (scripted TUI child, fake harness executables, fake daemons) are `main` packages under the owner's `testdata/` directory (skipped by `internal/archtest`), built by the test with `go build`; new non-test packages need a lead contract change.
-8. **Scaffold-implemented helpers** (`paths` Env/Layout/Within/Tilde/LookPath, `config` Load/Save/Validate/RootFor/roots.list/Pinned, `ui.Format`, `fsx` Lstat/AppendLine/WriteFileAtomic/TryLock, `fsx/failpoint`, `capsule.UnitKey`/`GenName`, `platform.Ancestors`/`Descendants`, `harness.UnitKeyFor`, `ledger.Taint`, `sweep.MarkerText`) ship with their tests; owners extend them, never weaken them.
+8. **Helpers never outlive their test.** Helper processes carry a lifeline (an inherited pipe or stdin) and exit when the test process goes away; every test kills and reaps every process it starts, including their sessions and descendants, and a package fails when a helper outlives it.
+9. **Scaffold-implemented helpers** (`paths` Env/Layout/Within/Tilde/LookPath, `config` Load/Save/Validate/RootFor/roots.list/Pinned, `ui.Format`, `fsx` Lstat/AppendLine/WriteFileAtomic/TryLock, `fsx/failpoint`, `capsule.UnitKey`/`GenName`, `platform.Ancestors`/`Descendants`, `harness.UnitKeyFor`, `ledger.Taint`, `sweep.MarkerText`) ship with their tests; owners extend them, never weaken them.
 
 ## 2. Fake HOME conventions (`testkit.NewHome`)
 ```
@@ -29,6 +30,8 @@ Normative for every group. Maps tests to invariants (SPEC §18) and decisions (`
 ```
 - Per-root Codex homes live under `base/homes/codex/<root-id>/`, created by the code under test.
 - `testkit.Home.Env` carries all variables; `Setenv(t)` applies them for tests that exec the binary. Binaries for integration tests come from `testkit.BuildBinary(t, "testing")` (or `"testing","failpoints"`).
+- `testkit.Home.Env` also sets `PRECINTO_TEST_ANCESTRY_STOP` to the test process (`PID:START`, D64): in `-tags testing` builds the agent-context ancestry walk of `ui.AgentContext` and of the daemon's peer checks stops there, so suites run from inside a Claude Code or Codex session can `init` and unlock; env markers and the no-controlling-terminal rule still apply, and production builds never read it (SEC-33).
+- Tests that run `precinto hook` give it a `testkit.ShortTempDir` `HOME`: hook mode ignores `PRECINTO_*` in every build (`paths.HookLayout`, D56), so its base and run directory come from `HOME` alone.
 - Crash tests that run the binary set `PRECINTO_CRASHPOINT`; `cmd/precinto` reads it through `internal/paths` (`paths.EnvCrashpoint`) and calls `failpoint.Set` before dispatching, in `-tags failpoints` builds only. In-process tests call `failpoint.Set`/`Reset` directly.
 - **Hooks never take a binary from the environment** (D56): to make a real harness run the testing build, E2E tests give the harness a throwaway `HOME` (plus `XDG_DATA_HOME` on linux) whose `<base>/bin/precinto` links to `testkit.BuildBinary(t, "testing")`, or load a test-only plugin directory with a generated shim. `PRECINTO_BIN`/`PRECINTO_DEV` must have no effect (SEC-12, SEC-31).
 - Tests that need the daemon use `agenttest.Start` (in-process: fake clock and process table, no hardening, workers recorded by `Spawned` instead of executed, console state from `SetScreen`) or the built binary's `agent --foreground` with `PRECINTO_RUNTIME_DIR`.
@@ -49,7 +52,7 @@ Normative for every group. Maps tests to invariants (SPEC §18) and decisions (`
 | Architecture | `internal/archtest` | G7 (contract changes: lead only) | `go test ./...` |
 
 ## 4. Crash-injection matrix
-Tooling (G1): failpoints in every mutating `fsx` call plus phase points in callers, from the registry below; `PRECINTO_CRASHPOINT=<name>[:<n>]` SIGKILLs the process at the n-th hit; `<name>=errno:<E>[:<n>]` injects ENOSPC/EACCES/EPERM/EIO. Power-loss mode (G1 helper, G4 tests): record operations, rebuild images keeping only data and renames covered by the last FullSync of each file/directory plus random subsets of later operations, run recovery on each image.
+Tooling (G1): failpoints in every mutating `fsx` call plus phase points in callers, from the registry below; `PRECINTO_CRASHPOINT=<name>[:<n>]` SIGKILLs the process at the n-th hit; `<name>=errno:<E>[:<n>]` injects ENOSPC/EACCES/EPERM/EIO. Power-loss mode (G1 helper `internal/fsx/fsxtest`, `-tags failpoints`; G4 tests): `fsxtest.Record` records operations through `failpoint.ObserveFS`, `Recording.Images` rebuilds images keeping only data and renames covered by the last FullSync of each file/directory plus random dependency-closed subsets of later operations, and the test runs recovery on each image.
 
 **Failpoint registry** (lead-owned: a name is added here before it is used, and each name is hit in exactly one place, so `:<n>` hit counts are meaningful):
 
@@ -57,9 +60,11 @@ Tooling (G1): failpoints in every mutating `fsx` call plus phase points in calle
 |---|---|---|
 | `fsx.write`, `fsx.fsync`, `fsx.rename`, `fsx.unlink`, `fsx.readdir`, `fsx.link` | `internal/fsx` (G1) | before every mutating syscall of that kind |
 | `capsule.tmp_written`, `capsule.verified`, `capsule.renamed` | `capsule.Seal` (G1) | right after each milestone inside Seal (never a `seal.*` name) |
+| `capsule.streamed:<n>` | `capsule.Seal` (G1) | in pass 2, after the n-th input is streamed into the temporary |
 | `seal.prepared`, `seal.tmp_written`, `seal.committed`, `seal.unlinking:<n>`, `seal.rescue`, `seal.receipt` | `internal/sweep` (G4) | right after the journal milestone of the same name (including from sweep's own `OnPhase` callback) |
+| `seal.logged` | `internal/sweep` (G4) | right after the capsule-log append, before `committed` is journaled (there is no `seal.renamed`: the only commit rename is Seal's own, `capsule.renamed`) |
 | `restore.staged`, `restore.placing:<n>`, `restore.receipt` | `internal/sweep` (G4) | right after each restore milestone / placed file |
-| `history.held`, `history.sealed`, `history.renamed`, `history.tail:<n>` | `internal/sweep` (G4) | after each history milestone; `history.tail` between the tail append and the offset save |
+| `history.held`, `history.sealed`, `history.renamed`, `history.tail:<n>` | `internal/sweep` (G4) | after each history milestone; `history.renamed` between the rename of `history.jsonl` and the `rewritten` milestone (HIST-3); `history.tail` between the tail append and the offset save |
 | `codex.blob:<n>`, `codex.manifest` | `internal/sweep` (G4) | after each blob commit / before the manifest rename |
 | `journal.save` | `internal/sweep/journal` (G4) | before each record write |
 
@@ -70,12 +75,12 @@ Checks after recovery + one sweep, for every row: **O1** no loss (every byte ver
 | ID | Fault | Expected | Owner | Invariants / decisions |
 |---|---|---|---|---|
 | SEAL-1 | SIGKILL after `prepared` | temporary removed; plaintext intact; next sweep seals | G4 | I3 I9 D13 |
-| SEAL-2 | SIGKILL at 50 % of the temporary write | as SEAL-1 | G4 | I9 |
+| SEAL-2 | SIGKILL at 50 % of the temporary write (`capsule.streamed:<n>` at the middle input of a ≥ 2-input unit) | as SEAL-1 | G4 | I9 |
 | SEAL-3 | power loss after tmp fsync, before verify | as SEAL-1 | G4 | I9 |
 | SEAL-4 | one byte flipped in the temporary | exit 5; temporary deleted; plaintext intact | G1 (capsule) + G4 | I3 D13 |
 | SEAL-5 | appender writes between hash and copy pass | abort as live (exit 4); no generation | G1 + G4 | I1 D13 |
-| SEAL-6 | SIGKILL or power loss after the no-replace rename, before the capsule-log append | recovery deletes the unlogged `g<N>.pcap` named by the journal (O7: never quarantined); plaintext intact; the next seal uses a new number (gap allowed) | G4 | I9 I14 D9 D58 |
-| SEAL-7 | SIGKILL after the log append, before `committed` is journaled | recovery finds the capsule logged and continues as committed; exactly one log entry | G4 | I9 D58 |
+| SEAL-6 | SIGKILL (`capsule.renamed`) or power loss after the no-replace rename, before the capsule-log append | recovery deletes the unlogged `g<N>.pcap` named by the journal (O7: never quarantined); plaintext intact; the next seal uses a new number (gap allowed) | G4 | I9 I14 D9 D58 |
+| SEAL-7 | SIGKILL (`seal.logged`; also `seal.logged=errno:EIO`) after the log append, before `committed` is journaled | recovery finds the capsule logged and continues as committed; exactly one log entry | G4 | I9 D58 |
 | SEAL-8 | SIGKILL after `committed`, before the first unlink | recovery requires the capsule to exist and be logged, then unlinks only identity-matching files | G4 | I3 I9 D58 |
 | SEAL-9 | SIGKILL after k of N unlinks | recovery completes; the N−k survivors never form a generation that hides the others (lineage partial) | G4 | I11 I12 D42 |
 | SEAL-10 | append between lstat and unlink | tail captured by the rescue generation; O3 holds | G4 | I3 |
@@ -122,7 +127,7 @@ Checks after recovery + one sweep, for every row: **O1** no loss (every byte ver
 | CONC-1 | 10 SessionEnd sealers, 3 sweeps, a lock at once | each unit sealed once; no deadlock; ≤ 2 large seals in parallel | G4 | R19 |
 | CONC-2 | two daemons autostarted at once | exactly one serves; no split grants | G2 | D6 |
 | CONC-3 | prune while a seal runs | never deletes generations newer than its inputs or referenced by a receipt | G4 | D9 D15 |
-| PERF-1 | 4 GB unit, SIGKILL at 50 % | as SEAL-2; unchanged re-seal writes 0 bytes | G4 | D10 |
+| PERF-1 | 4 GB unit, SIGKILL at 50 % (PERF rows run only with `PRECINTO_PERF=1`) | as SEAL-2; unchanged re-seal writes 0 bytes | G4 | D10 |
 | PERF-2 | restore 20 × 1 GB with space for 12 | newest restored atomically up to the floor; rest reported | G4 | D38 |
 | PERF-3 | Codex 578 MB rollout + 2.9 GB thread_history | peak extra disk ≤ changed blobs + one staging unit; times recorded | G4 | D31 |
 
@@ -133,13 +138,13 @@ Checks after recovery + one sweep, for every row: **O1** no loss (every byte ver
 | SEC-2 | Manifest authority table: kind/root/unit-key mismatch; a `unit_id` that does not hash to the logged unit key, for every kind (`harness.UnitKeyFor`); targets `projects/<otherP>/memory`, `session-env/<other sid>`, `~/.zshrc`, `<root>/.claude/settings.local.json`, `<root>/.GIT/hooks` (case-insensitive APFS), NFD `.git`, non-clean paths, `dir:true` outside bases | exit 5, zero writes (canary snapshot) | G4 (+ G3 target rules) | I8 D8 |
 | SEC-3 | Marker pointing at another note's unit, at `a.sh`, or outside the root | rejected | G4 | D16 |
 | SEC-4 | Bombs: 1 MiB → 20 GiB, PAX path, symlink/hardlink/sparse typeflags, size mismatch, 1e6 entries | rejected with bounded memory and disk | G1 | §5 |
-| SEC-5 | Manifest mode 04777 | restored 0600 | G1 + G4 | I8 |
+| SEC-5 | Manifest modes 04777 and 04666 | 04777 → restored 0700, 04666 → 0600 (owner bits only; setuid/setgid/sticky dropped) | G1 + G4 | I8 |
 | SEC-6 | Parent directory flipped to a symlink 10k times during seal and restore | canary never written or deleted | G1 | I8 D12 |
 | SEC-7 | Unit with a symlinked dir to a canary, a FIFO, a socket, nlink=2 file | canary intact, no hang, hard-linked file kept, hazards reported | G1 + G4 | I3 I10 |
 | SEC-8 | Inode swap with same size/mtime between hash and unlink; append in the grace window | plaintext not deleted; appended bytes preserved | G1 + G4 | I3 |
 | SEC-9 | Recovery recipient swapped in `vault.toml` while locked | sealer tripwire exit 5 and `vault-tampered` naming `vault repair`; with the tripwire bypassed, next unlock reports MAC mismatch and lists affected capsules | G1 + G2 | I16 D5 |
 | SEC-10 | Recipient loader returns an empty or wrong list | header check fails, exit 5, plaintext kept | G1 | I16 D5 |
-| SEC-11 | Socket squat: kill the daemon, bind another binary at `agent.sock` | `unlock` aborts before sending anything; hook gate for a protected root blocks | G2 + G5 | D6 I5 |
+| SEC-11 | Socket squat: kill the daemon, bind another binary at `agent.sock`; linux variant: a squatter with another `comm`, and one that does not hold `run/agent.lock` | `unlock` aborts before sending anything; hook gate for a protected root blocks; on linux the squatter is refused before any byte is sent (best effort, D65) | G2 + G5 | D6 D65 I5 |
 | SEC-12 | Env hijack (production build): `PRECINTO_HOME`, `PRECINTO_RUNTIME_DIR` with an agent marker, `PRECINTO_BIN`/`PRECINTO_DEV` in a hook's environment, fake `age-plugin-se` first on PATH, `DYLD_INSERT_LIBRARIES` | ignored or refused; the shim runs `<base>/bin/precinto`; every plugin (age-plugin-se included) runs only from its pinned path | G7 (paths) + G5 (shim) + G1 + G2 | D6 D56 |
 | SEC-13 | E2E fail-closed (Claude): unlock dialog never completes; hook SIGKILLed; binary removed | prompt blocked inside a root (marker absent from model output), allowed outside (shim `roots.list` rule) | G5 | I5 D22 D56 |
 | SEC-14 | E2E idle: `/loop` every 60 s with no keystrokes or HID input | lock at `idle_soft`; busy cap enforced | G2 + G5 | D23 D26 D37 |
@@ -148,7 +153,7 @@ Checks after recovery + one sweep, for every row: **O1** no loss (every byte ver
 | SEC-17 | E2E blocked prompt: marker prompt while locked | marker absent from precinto logs/ledger; status counts pending history lines | G5 + G7 | I7 §19 |
 | SEC-18 | Managed by touch: session started outside the root with `--add-dir <root>` writes `<root>/x.md` | session sealed at exit; with hooks disabled the note is still sealed (transcript-derived) | G3 + G4 + G5 | S6 §14.3 |
 | SEC-19 | Process identity: `--wait-pid` with mismatched START; `register` of a non-harness pid; `gate` with a forged pid; `lock --end --force` | proceeds / rejected / pid re-measured / that process never signalled | G2 | §9.1 S14 |
-| SEC-20 | Liveness spoof: fake `sessions/<pid>.json` with a live pid and correct start | holds live; after `hold_cap` status shows `hold-capped` | G3 + G2 | §9.5 |
+| SEC-20 | Liveness spoof: fake `sessions/<pid>.json` with a live pid and correct start | holds live; in a locked folder status and doctor show `hold-capped` | G3 + G2 + G7 | §9.5 D63 |
 | SEC-21 | Recovery: `init` with `CLAUDECODE=1` or non-TTY stdout; `recover --key-file` plaintext; `recover --verify` | refuses; requires `--insecure-key-file`; succeeds | G7 + G1 | D7 |
 | SEC-22 | Hygiene after a full E2E run with markers in prompts, file contents and assistant output | 0 hits in `<base>` (excluding capsules), logs, ledgers, `testdata/` | G7 | I7 S13 |
 | SEC-23 | Policy tamper while locked: `idle_soft="0"` and a root removed in `config.toml`, then the daemon exits on idle and restarts; a forged `policy.pinned` with a bad MAC | the daemon keeps the pinned policy across the restart until a TTY-confirmed unlock; the forged file raises `policy-tampered` and the defaults join the strictest merge | G2 + G7 | D48 D55 |
@@ -159,8 +164,9 @@ Checks after recovery + one sweep, for every row: **O1** no loss (every byte ver
 | SEC-28 | Destructive commands: `prune --diverged`, `forget`, `unprotect` with `CLAUDECODE=1`, with a harness ancestor, without a controlling terminal, and on a TTY without the typed word | refused (exit 3) / refused / refused / nothing deleted | G7 | D59 S8 |
 | SEC-29 | Ungated unwrapped sessions at lock (fake process table, cwd in the locked root, no hook events): an interactive Claude (readable registry, entrypoint cli), a background Claude (job record), a Codex, a Claude with an unreadable registry; the user's login shell shares the interactive Claude's Unix session | only the interactive Claude and its PPID descendants are signalled, ProcID-verified; the others are reported `ungated-session`; the login shell is never signalled | G2 | D52 D57 R11 |
 | SEC-30 | Kill scope of the wrapper: PTY child and direct-mode (`--no-pty`) child ended by `lock --end` | `SignalGroup` reaches only the child's own session (Setsid); the wrapper's parent shell and sibling jobs survive | G6 + G2 | D57 |
-| SEC-31 | Claude settings `env` injection: `<root>/.claude/settings.local.json` with `env: {PRECINTO_DEV: "1", PRECINTO_BIN: <fake>, PRECINTO_HOME: <fake>}` | the shim and the hook ignore every `PRECINTO_*` key; `doctor` reports `claude-settings-env` | G5 + G7 | D56 S2 |
+| SEC-31 | Claude settings `env` injection: `<root>/.claude/settings.local.json` with `env: {PRECINTO_DEV: "1", PRECINTO_BIN: <fake>, PRECINTO_HOME: <fake>, PRECINTO_TEST_ANCESTRY_STOP: <pid:start>}` | the shim and the hook ignore every `PRECINTO_*` key; `doctor` reports `claude-settings-env` | G5 + G7 | D56 D64 S2 |
 | SEC-32 | Host markers missing: every gate event inside a root with `CLAUDE_PID` unset and the daemon unreachable; Codex SessionStart/SessionEnd without `turn_id` | fail closed in the label's format; Codex SessionEnd still enqueues its seal | G5 | D56 I5 |
+| SEC-33 | Test ancestry stop (`test/integration`, crossgroup): a production build with `PRECINTO_TEST_ANCESTRY_STOP` set, under a fake `claude` ancestor, runs `init` and `unlock --root <other>`; a testing build with the stop set above and below the fake ancestor; markers or no controlling terminal with the stop set; a production daemon asked for keys/unlock/vault ops by a testing-build peer (Insecure dial); a testing client dialing a production daemon | refused (C12.agent / B.refuse); honoured only above the named process (the fake ancestor below it still refuses); still refused; refused; `ErrUntrustedServer`. The main flow passes when the suite runs inside Claude Code | G7 + G2 | D64 D6 D59 |
 
 ## 6. Hook golden tests (G5)
 - Fixtures: `internal/hook/testdata/<host>/<version>/<event>/<case>.json` with `{"env":{…},"stdin":{…},"daemon":{…fake gate answer…},"want":{"stdout":…,"stderr":…,"exit":…}}`. Payloads are synthetic, captured shapes from a throwaway `CLAUDE_CONFIG_DIR` with marker text (S13). `hook.Deps` is fully fakeable (fake `Daemon`, fake `Ledger`, `fakeplatform.Procs`, `Identify`, `Enqueue`, `Spawn`); texts come from the scaffold's `ui.Format`.
@@ -207,4 +213,4 @@ D1 per-root keys: key release for root B refused with only A unlocked (G2) · D2
 | E2E-9 | Codex hooks file before freezing `plugins/codex/` (D61): real Codex 0.154 with a synthetic `CODEX_HOME` loads `hooks/codex.json` (`-c hooks.*`, `--dangerously-bypass-hook-trust`) with `SHELL` = sh, bash, zsh and fish; a UserPromptSubmit block fires under each; a variant with `onFailure` on a handler records whether 0.154 accepts the key | G5 |
 
 ## 10. CI gates (G7 owns the workflow)
-`make lint` (gofmt, `go vet` for `{default, testing+failpoints}` × `{darwin, linux}`, `internal/archtest` — import allowlist, layers, test-only helpers, and the environment rule: no `os.Getenv/LookupEnv/Environ/ExpandEnv/UserHomeDir/UserCacheDir/UserConfigDir/TempDir`, `syscall`/`x/sys/unix` `Getenv/Environ` or `exec.LookPath` outside `internal/paths` under any alias, and every file building an `exec.Cmd` sets `Env` — `apidoc -check docs/API.md`, which also refuses exported identifiers in the skipped `_linux`/`_other` files, staticcheck, govulncheck, shellcheck), `make build build-linux`, `make test`, `make test-crash` (nightly and on changes under `internal/{fsx,capsule,sweep,live}`), `claude plugin validate --strict ./plugin` when `claude` is available, a byte-stability check that `plugins/codex/` matches its recorded SHA-256 list, and `testkit.Hygiene` over `testdata/`.
+`make lint` (gofmt, `go vet` for `{default, testing+failpoints}` × `{darwin, linux}`, `internal/archtest` — import allowlist, layers, test-only helpers, and the environment rule: no `os.Getenv/LookupEnv/Environ/ExpandEnv/UserHomeDir/UserCacheDir/UserConfigDir/TempDir`, `syscall`/`x/sys/unix` `Getenv/Environ` or `exec.LookPath` outside `internal/paths` under any alias, and every file building an `exec.Cmd` sets `Env` — `apidoc -check docs/API.md`, which also refuses exported identifiers in the skipped `_linux`/`_other` files, staticcheck, govulncheck, shellcheck), `make build build-linux`, `make test`, `make test-crash` (nightly and on changes under `internal/{fsx,capsule,sweep,live}`), `make crossgroup` and `make crossgroup-crash` (with `-timeout 8m` and `GOTRACEBACK=all`, on darwin and linux), `claude plugin validate --strict ./plugin` when `claude` is available, a byte-stability check that `plugins/codex/` matches its recorded SHA-256 list, and `testkit.Hygiene` over `testdata/`.

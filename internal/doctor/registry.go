@@ -15,15 +15,11 @@ type check struct {
 // once; codes shared with `status` attention items are the ipc.Attn*
 // constants (one vocabulary, SPEC §16.4).
 //
-// Some health checks of this package have no code of their own in the
-// contract yet. They report under the code of the component they break,
-// and this is the only place that knows it (change request: dedicated
-// codes): interrupted operations (journal leftovers) under unsealed,
-// abandoned staging directories and the Claude temp directory's
-// permissions under residue, history hold links under history-pending,
-// and stuck locks, socket problems and the permissions of precinto's own
-// directories under service-running (each of them stops the agent or the
-// background sweeps).
+// Interrupted operations (journal leftovers, abandoned staging, history
+// hold links) report under interrupted, the privacy of precinto's own
+// directories and of Claude's temp folder under permissions, socket
+// problems under agent-socket; stuck locks and the heartbeat stay under
+// service-running (CC-44).
 func registry() []check {
 	claudeH, codexH := harness.ClaudeCode, harness.Codex
 	return []check{
@@ -46,13 +42,18 @@ func registry() []check {
 		{code: CheckCodexShellNoise, harness: codexH, run: checkCodexShellNoise},
 		{code: CheckCodexWrongHome, harness: codexH, run: checkCodexWrongHome},
 		{code: CheckCodexOutsideRuns, harness: codexH, run: checkCodexOutsideRuns},
+		{code: CheckExperimentalVersion, run: checkExperimentalVersion},
 		{code: CheckRecoveryTested, run: checkRecoveryTested},
 		{code: CheckPassphraseFactor, run: checkPassphraseFactor},
+		{code: CheckPluginPin, run: checkPluginPin},
 		{code: CheckServiceRunning, run: checkServiceRunning},
+		{code: CheckAgentSocket, run: checkAgentSocket},
+		{code: CheckPermissions, run: checkPermissions},
 		{code: CheckServiceTCC, run: checkServiceTCC},
 		{code: CheckTerminalResidue, leaks: true, run: checkTerminalResidue},
 		{code: CheckQuarantine, run: checkQuarantine},
 		{code: CheckUnsealed, run: checkUnsealed},
+		{code: CheckInterrupted, run: checkInterrupted},
 		{code: CheckHoldCapped, run: checkHoldCapped},
 		{code: CheckResidue, run: checkResidue},
 		{code: CheckPendingPolicy, run: checkPendingPolicy},

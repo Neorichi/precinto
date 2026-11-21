@@ -49,7 +49,39 @@ func (r *run) sealCommand(ctx context.Context, units []harness.Unit, o Options) 
 
 // sealAll seals units with at most Env.Parallel (default 2) seals at once;
 // a unit above 1 GiB runs alone (R19). Results keep the input order.
+// Units live only by a first observation are decided again after the
+// run's single quiet-window wait (D63).
 func (r *run) sealAll(ctx context.Context, units []harness.Unit, o Options, explicit bool) []UnitResult {
+	return r.sealAllPrimed(ctx, units, o, explicit, false)
+}
+
+// sealAllPrimed is sealAll; primed reports that other subjects of the run
+// (notes, history) were observed for the first time and need the wait too.
+func (r *run) sealAllPrimed(ctx context.Context, units []harness.Unit, o Options, explicit, primed bool) []UnitResult {
+	results := r.sealUnits(ctx, units, o, explicit)
+	var again []int
+	for i, res := range results {
+		if unobservedResult(res) {
+			again = append(again, i)
+		}
+	}
+	if (len(again) > 0 || primed) && r.waitQuiet(ctx, o.Deadline) && len(again) > 0 {
+		sub := make([]harness.Unit, len(again))
+		for k, i := range again {
+			sub[k] = units[i]
+		}
+		for k, res := range r.sealUnits(ctx, sub, o, explicit) {
+			results[again[k]] = res
+		}
+	}
+	for _, res := range results {
+		r.add(res)
+	}
+	return results
+}
+
+// sealUnits is one decision pass over units (no report entries).
+func (r *run) sealUnits(ctx context.Context, units []harness.Unit, o Options, explicit bool) []UnitResult {
 	par := r.e.Parallel
 	if par <= 0 {
 		par = 2
@@ -90,9 +122,6 @@ func (r *run) sealAll(ctx context.Context, units []harness.Unit, o Options, expl
 		}(i, n, u)
 	}
 	wg.Wait()
-	for _, res := range results {
-		r.add(res)
-	}
 	return results
 }
 
@@ -192,6 +221,13 @@ func subjectOf(u harness.Unit, rd *receiptDisk) live.Subject {
 // checkLive evaluates a unit's liveness: adapter evidence plus the
 // engine's ledger, lease and stability evidence. Any error is "live".
 func (r *run) checkLive(ctx context.Context, ad harness.Adapter, u harness.Unit, rd *receiptDisk) (live.Verdict, bool) {
+	return r.checkLiveAfter(ctx, ad, u, rd, false)
+}
+
+// checkLiveAfter is checkLive; writerExited marks a unit whose only known
+// writer was reaped (--wait-pid, wrapper exit): with no other evidence the
+// engine skips the stability window (R20, D63).
+func (r *run) checkLiveAfter(ctx context.Context, ad harness.Adapter, u harness.Unit, rd *receiptDisk, writerExited bool) (live.Verdict, bool) {
 	var extra []live.Evidence
 	if ad != nil {
 		ev, err := ad.Probe(ctx, r.e.Harness, u)
@@ -200,7 +236,9 @@ func (r *run) checkLive(ctx context.Context, ad harness.Adapter, u harness.Unit,
 		}
 		extra = ev
 	}
-	v, err := r.p.live.Decide(ctx, subjectOf(u, rd), extra)
+	s := subjectOf(u, rd)
+	s.WriterExited = writerExited
+	v, err := r.p.live.Decide(ctx, s, extra)
 	if err != nil {
 		return live.Verdict{Live: true, Evidence: []live.Evidence{{Reason: live.ReasonUnknown, Detail: "liveness failed"}}}, true
 	}
@@ -313,28 +351,6 @@ func sessionLedgerSID(u harness.Unit) string {
 	return ""
 }
 
-// projectDirOf derives the manifest project_dir of Claude units from the
-// first "projects/<P>/…" file (the -c/--continue selector matches it).
-func projectDirOf(u harness.Unit) string {
-	if u.Kind == capsule.KindClaudeProject {
-		return u.UnitID
-	}
-	if u.Kind != capsule.KindClaudeSession {
-		return ""
-	}
-	for _, f := range u.Files {
-		if f.Base != capsule.BaseClaudeConfig {
-			continue
-		}
-		if rest, ok := strings.CutPrefix(f.Rel, "projects/"); ok {
-			if p, _, ok := strings.Cut(rest, "/"); ok {
-				return p
-			}
-		}
-	}
-	return ""
-}
-
 // rootPathOf returns the configured path of the unit's primary root.
 func (r *run) rootPathOf(u harness.Unit) string {
 	if len(u.RootIDs) == 0 {
@@ -360,10 +376,12 @@ func (r *run) sealLayered(ctx context.Context, u harness.Unit, o Options, explic
 	}
 	defer lk.Unlock()
 
+	exited := false
 	if o.WaitFor != nil {
 		if err := r.waitExit(ctx, *o.WaitFor, o.Deadline); err != nil {
 			return liveResult(res, live.Verdict{Live: true}, explicit, "writer running")
 		}
+		exited = true // R20: the only known writer was reaped
 	}
 	rd, hasRc, err := r.loadReceipt(u.Key)
 	if err != nil {
@@ -373,7 +391,7 @@ func (r *run) sealLayered(ctx context.Context, u harness.Unit, o Options, explic
 	if hasRc {
 		rcp = &rd
 	}
-	if v, isLive := r.checkLive(ctx, ad, u, rcp); isLive {
+	if v, isLive := r.checkLiveAfter(ctx, ad, u, rcp, exited); isLive {
 		return liveResult(res, v, explicit, "")
 	}
 	recips, err := r.p.vaults.recipients(u.VaultID)
@@ -492,7 +510,7 @@ func (us *unitSeal) beforeUnlink() error {
 func (us *unitSeal) journalFiles() []journal.File {
 	out := make([]journal.File, 0, len(us.files))
 	for _, f := range us.files {
-		out = append(out, journal.File{Base: encodeBase(f.Base, us.u.Home.Bases[f.Base]), Rel: f.Rel, Snap: f.Snap})
+		out = append(out, journal.File{Base: string(f.Base), Dir: us.u.Home.Bases[f.Base], Rel: f.Rel, Snap: f.Snap})
 	}
 	return out
 }
@@ -519,7 +537,7 @@ func (us *unitSeal) sealNew(ctx context.Context, lp lineagePlan) UnitResult {
 	}
 	rec.Files = us.journalFiles()
 	if sid != "" && ledN > 0 {
-		rec.Notes = append(rec.Notes, "ledger-sid="+sid, "ledger-n="+strconv.FormatInt(ledN, 10))
+		rec.LedgerSID, rec.LedgerN = sid, ledN // S13: archived by recovery after a commit
 	}
 	title, last := u.Title, u.LastActivity
 	if us.ad != nil && (title == "" || last.IsZero()) {
@@ -542,7 +560,7 @@ func (us *unitSeal) sealNew(ctx context.Context, lp lineagePlan) UnitResult {
 	man := capsule.Manifest{
 		Format: capsule.FormatVersion, Kind: u.Kind, Harness: string(u.Harness),
 		UnitKey: u.Key, UnitID: u.UnitID, VaultID: u.VaultID, RootIDs: append([]string(nil), u.RootIDs...),
-		RootPath: r.rootPathOf(u), ProjectDir: projectDirOf(u),
+		RootPath: r.rootPathOf(u), ProjectDir: u.ProjectDir,
 		Gen: n, Parent: lp.Parent, Lineage: lp.Lineage, CreatedAt: r.now(), Sealer: r.e.Sealer,
 		RecipientsFpr: us.recips.fpr, Title: title, LastActivity: last, Ledger: ledRaw,
 	}
@@ -721,8 +739,8 @@ func (r *run) unlinkFiles(ctx context.Context, u harness.Unit, bases map[capsule
 	}
 	sort.SliceStable(order, func(a, b int) bool {
 		fa, fb := rec.Files[order[a]], rec.Files[order[b]]
-		ida, _ := decodeBase(fa.Base)
-		idb, _ := decodeBase(fb.Base)
+		ida := capsule.BaseID(fa.Base)
+		idb := capsule.BaseID(fb.Base)
 		return appendOnly[fileKey{ida, fa.Rel}] && !appendOnly[fileKey{idb, fb.Rel}]
 	})
 	journalOK := true
@@ -735,7 +753,7 @@ func (r *run) unlinkFiles(ctx context.Context, u harness.Unit, bases map[capsule
 			ur.stayed++
 			continue
 		}
-		id, abs := decodeBase(jf.Base)
+		id, abs := capsule.BaseID(jf.Base), jf.Dir
 		if id == baseBlob {
 			continue // codex snapshot bookkeeping, not plaintext
 		}
@@ -797,7 +815,7 @@ func (r *run) unlinkFiles(ctx context.Context, u harness.Unit, bases map[capsule
 	}
 	ur.removedAll = true
 	for _, jf := range rec.Files {
-		if id, _ := decodeBase(jf.Base); !jf.Done && id != baseBlob {
+		if id := capsule.BaseID(jf.Base); !jf.Done && id != baseBlob {
 			ur.removedAll = false
 		}
 	}
@@ -826,7 +844,7 @@ func (r *run) pruneDirs(u harness.Unit, bases map[capsule.BaseID]dirHandle, rec 
 				continue
 			}
 			for _, jf := range rec.Files {
-				fid, _ := decodeBase(jf.Base)
+				fid := capsule.BaseID(jf.Base)
 				if fid != id || !jf.Done || !strings.HasPrefix(jf.Rel, prel+"/") {
 					continue
 				}
@@ -900,7 +918,7 @@ func (r *run) rescue(ctx context.Context, u harness.Unit, rec *journal.Record, k
 	man := capsule.Manifest{
 		Format: capsule.FormatVersion, Kind: u.Kind, Harness: string(u.Harness), UnitKey: u.Key, UnitID: u.UnitID,
 		VaultID: u.VaultID, RootIDs: append([]string(nil), u.RootIDs...), RootPath: r.rootPathOf(u),
-		ProjectDir: projectDirOf(u), Gen: g, Parent: parent, Lineage: l, CreatedAt: r.now(), Sealer: r.e.Sealer,
+		ProjectDir: u.ProjectDir, Gen: g, Parent: parent, Lineage: l, CreatedAt: r.now(), Sealer: r.e.Sealer,
 		RecipientsFpr: recips.fpr, Title: u.Title, LastActivity: r.now(),
 	}
 	spec := &commitSpec{
@@ -944,7 +962,7 @@ func (r *run) rewriteReceipt(unit string, kind capsule.Kind, h string, bases map
 		if jf.Done {
 			continue
 		}
-		id, _ := decodeBase(jf.Base)
+		id := capsule.BaseID(jf.Base)
 		d := bases[id]
 		if d == nil {
 			continue

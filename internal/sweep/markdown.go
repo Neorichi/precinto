@@ -290,7 +290,11 @@ func SealMarkdown(ctx context.Context, e Env, root config.Root, o Options) (*Rep
 		return r.finish(), err
 	}
 	r.recoverAll(ctx)
-	r.sealMarkdown(ctx, root, o, r.noteCandidates(ctx, root))
+	cands := r.noteCandidates(ctx, root)
+	if r.primeNotes(ctx, root, cands) {
+		r.waitQuiet(ctx, o.Deadline) // D63: one look, one quiet window, then decide
+	}
+	r.sealMarkdown(ctx, root, o, cands)
 	return r.finish(), nil
 }
 
@@ -914,7 +918,7 @@ type notesIndex struct {
 	Roots map[string][]string `json:"roots"`
 }
 
-func (r *run) notesIndexPath() string { return filepath.Join(r.l.StateDir, "notes.json") }
+func (r *run) notesIndexPath() string { return r.l.NotesIndex }
 
 func (r *run) readNotesIndex() notesIndex {
 	idx := notesIndex{V: 1, Roots: map[string][]string{}}

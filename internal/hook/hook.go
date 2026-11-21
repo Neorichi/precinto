@@ -152,10 +152,11 @@ type Output struct {
 // never emits keys a host does not accept (Codex deny_unknown_fields).
 func Encode(host Host, ev Event, d Decision) Output { return encode(host, ev, d) }
 
-// FailClosed returns the static block/deny output used on every error path
-// of a gate event in a managed session (daemon unreachable, decode error,
-// deadline, panic) (I5), in the format of host (the detected host, which
-// defaults to the argv label, D56).
+// FailClosed returns the static block/deny output of a gate event in a
+// managed session when precinto could not decide (decode error, deadline,
+// panic) (I5), in the format of host (the detected host, which defaults to
+// the argv label, D56). Its prompt text is C3.failed; the gate's own
+// unreachable-daemon answer says C3.agentdown instead (CC-38).
 func FailClosed(host Host, ev Event, folder string) Output { return failClosed(host, ev, folder) }
 
 // Daemon is the subset of the ipc client the hook uses (fakeable;
@@ -193,6 +194,10 @@ type Deps struct {
 	DialUnlock func(ctx context.Context) (Daemon, error)
 	// Enqueue writes a seal request (SessionEnd) and Spawn starts the
 	// detached `precinto seal --queue` worker (Setsid, stdio /dev/null).
+	// Spawn's argv is the arguments after the precinto executable (e.g.
+	// ["seal","--queue"]); the production implementation prepends
+	// platform.Executable() and spawns detached with an allowlisted env and
+	// cwd /.
 	Enqueue func(r queue.Request) (string, error)
 	Spawn   func(argv []string) error
 }

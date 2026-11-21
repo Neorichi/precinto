@@ -266,13 +266,27 @@ func TestSignalGroupOnlyTheSetsidSession(t *testing.T) {
 		t.Fatal("Setsid child is not a session leader")
 	}
 	mySID := mustLookup(t, os.Getpid()).SID
-	if err := platform.SignalGroup(mySID, 0); err == nil {
+	own, err := platform.Identify(mySID)
+	if err != nil {
+		own = platform.ProcID{PID: mySID} // the session leader is gone
+	}
+	if err := platform.SignalGroup(own, 0); err == nil {
 		t.Fatal("SignalGroup accepted the caller's own session (the user's terminal session)")
 	}
-	if err := platform.SignalGroup(1, 0); err == nil {
+	if err := platform.SignalGroup(platform.ProcID{PID: 1}, 0); err == nil {
 		t.Fatal("SignalGroup accepted session 1")
 	}
-	if err := platform.SignalGroup(leader.id.PID, syscall.SIGKILL); err != nil {
+	// A leader pid that now names another incarnation is refused, and
+	// nothing is signalled.
+	reused := leader.id
+	reused.StartUS++
+	if err := platform.SignalGroup(reused, syscall.SIGKILL); !errors.Is(err, platform.ErrNotSame) {
+		t.Fatalf("SignalGroup with a reused leader pid = %v, want ErrNotSame", err)
+	}
+	if !platform.System().Alive(leader.id) || !platform.System().Alive(member.ID) {
+		t.Fatal("a refused SignalGroup signalled the session")
+	}
+	if err := platform.SignalGroup(leader.id, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	leader.wait(t)
@@ -462,5 +476,25 @@ func TestHelperSleep(t *testing.T) {
 			time.Sleep(30 * time.Second)
 			os.Exit(0)
 		}
+	}
+}
+
+// StartTime is the wall-clock start of a process (D66): a child started
+// now starts now, whatever the OS's StartUS representation.
+func TestStartTimeIsWallClock(t *testing.T) {
+	before := time.Now()
+	c := startChild(t, "/", false, "/bin/sleep", "5")
+	after := time.Now()
+	got := platform.StartTime(c.id)
+	if got.Before(before.Add(-time.Second)) || got.After(after.Add(time.Second)) {
+		t.Fatalf("StartTime = %v, want within 1 s of [%v, %v]", got, before, after)
+	}
+	if st := platform.StartTime(platform.Self()); st.After(time.Now()) || time.Since(st) > 24*time.Hour {
+		t.Fatalf("StartTime(Self) = %v", st)
+	}
+	// A ProcID with no boot id (a fake) is wall time on every OS.
+	fake := platform.ProcID{PID: 42, StartUS: before.UnixMicro()}
+	if !platform.StartTime(fake).Equal(time.UnixMicro(before.UnixMicro())) {
+		t.Fatalf("StartTime(fake) = %v", platform.StartTime(fake))
 	}
 }

@@ -36,6 +36,7 @@ function _precinto_enter --argument-names first
     set -l action ''
     set -l root ''
     set -l epoch ''
+    set -l dir ''
     set -l msg ''
     for line in $out
         switch $line
@@ -45,6 +46,8 @@ function _precinto_enter --argument-names first
                 set root (string replace -- 'root=' '' $line)
             case 'epoch=*'
                 set epoch (string replace -- 'epoch=' '' $line)
+            case 'path=*'
+                set dir (string replace -- 'path=' '' $line)
             case 'message=*'
                 set msg (string replace -- 'message=' '' $line)
         end
@@ -63,8 +66,8 @@ function _precinto_enter --argument-names first
             return 0
         end
         printf '\n'
-        if test -z "$key"
-            command '/opt/precinto/bin/precinto' unlock
+        if test -z "$key"; and test -n "$dir"
+            command '/opt/precinto/bin/precinto' unlock --root "$dir"
         end
     else
         printf '%s\n' "$msg"

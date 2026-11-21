@@ -65,10 +65,10 @@ func onEnter(ctx context.Context, c config.Config, l paths.Layout, r EnterReques
 	if known && vs.State == stateUnlocked {
 		return EnterResult{}, nil
 	}
-	res := EnterResult{RootID: root.ID, Folder: displayFolder(l, root.Path), Epoch: epochOf(vs, known)}
+	res := EnterResult{RootID: root.ID, Path: root.Path, Folder: displayFolder(l, r.Home, root.Path), Epoch: epochOf(vs, known)}
 	if r.SkipKey == res.RootID+":"+strconv.FormatUint(res.Epoch, 10) {
 		// Already asked in this shell since the folder last locked.
-		return EnterResult{RootID: res.RootID, Folder: res.Folder, Epoch: res.Epoch}, nil
+		return EnterResult{RootID: res.RootID, Path: res.Path, Folder: res.Folder, Epoch: res.Epoch}, nil
 	}
 	v := ui.Vars{Folder: res.Folder}
 	switch {
@@ -77,8 +77,14 @@ func onEnter(ctx context.Context, c config.Config, l paths.Layout, r EnterReques
 	case mode == config.OnEnterNotify:
 		res.Action, res.Message = EnterNotify, ui.Format(ui.MsgEnterNotify, v)
 	default:
-		// "prompt", and any value precinto does not know (strictest).
-		res.Action, res.Message = EnterPrompt, ui.Format(ui.MsgEnterPrompt, v)
+		// "prompt", and any value precinto does not know (strictest). The
+		// prompt names the folder's first factor usable here (CC-40).
+		res.Action = EnterPrompt
+		if v.Factor = ui.FactorName(vs.Factors, r.GUI); v.Factor != "" {
+			res.Message = ui.Format(ui.MsgEnterPrompt, v)
+		} else {
+			res.Message = ui.Format(ui.MsgEnterPromptPlain, v)
+		}
 	}
 	return res, nil
 }
@@ -122,11 +128,15 @@ func epochOf(vs ipc.VaultStatus, known bool) uint64 {
 	return uint64(vs.Since.Unix())
 }
 
-// displayFolder is the ~-shortened folder path. OnEnter has no environment,
-// so HOME is recovered from precinto's base when the base is the default
-// one for the OS (…/Library/Application Support/precinto or
-// …/.local/share/precinto); otherwise the full path is shown.
-func displayFolder(l paths.Layout, p string) string {
+// displayFolder is the ~-shortened folder path: with the caller's HOME
+// when it gave one (EnterRequest.Home), else HOME recovered from
+// precinto's base when the base is the default one for the OS
+// (…/Library/Application Support/precinto or …/.local/share/precinto);
+// otherwise the full path is shown.
+func displayFolder(l paths.Layout, home, p string) string {
+	if h, ok := cleanAbs(home); ok {
+		return paths.Tilde(h, p)
+	}
 	for _, suffix := range []string{"/Library/Application Support/precinto", "/.local/share/precinto"} {
 		if home, ok := strings.CutSuffix(l.Base, suffix); ok && home != "" && filepath.IsAbs(home) {
 			return paths.Tilde(home, p)
@@ -135,10 +145,9 @@ func displayFolder(l paths.Layout, p string) string {
 	return p
 }
 
-// resultLines renders r the way the integration scripts read the output of
-// `precinto shell-hook`: one key=value line each for action, root, epoch,
-// folder and message, every value on one line. Nothing at all when there
-// is nothing to do.
+// resultLines implements EnterResult.Lines: one key=value line each for
+// action, root, epoch, path, folder and message, every value on one line.
+// Nothing at all when there is nothing to do.
 func resultLines(r EnterResult) string {
 	if r.Action == EnterNothing {
 		return ""
@@ -148,6 +157,7 @@ func resultLines(r EnterResult) string {
 		{"action", string(r.Action)},
 		{"root", r.RootID},
 		{"epoch", strconv.FormatUint(r.Epoch, 10)},
+		{"path", r.Path},
 		{"folder", r.Folder},
 		{"message", r.Message},
 	} {

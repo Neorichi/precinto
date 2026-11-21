@@ -54,7 +54,7 @@ func cmdVault(a *app, args []string) int {
 	}
 	var recovery *memguard.LockedBuffer
 	if *useRecovery {
-		recovery, err = t.Secret(textRecoveryPrompt)
+		recovery, err = t.Secret(ui.Format(ui.MsgRecoveryPrompt, ui.Vars{}))
 		if err != nil {
 			return a.fail("vault repair", err)
 		}

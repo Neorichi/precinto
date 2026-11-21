@@ -192,7 +192,7 @@ func layoutDirs(l paths.Layout) []string {
 	return []string{
 		l.Base, filepath.Dir(l.BinLink), l.VaultsDir, l.FactorsDir, l.CapsulesDir, l.HomesDir, l.StagingDir,
 		l.QuarantineDir, l.StateDir, l.VerifiedDir, l.GensDir, l.ReceiptsDir, l.LeasesDir, l.SessionsDir,
-		l.ProjectsDir, l.JournalDir, l.QueueDir, l.LocksDir, l.LogsDir, l.RunDir,
+		l.ProjectsDir, l.JournalDir, l.QueueDir, l.LocksDir, l.HookDedupeDir, l.LogsDir, l.RunDir,
 	}
 }
 

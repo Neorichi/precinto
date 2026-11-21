@@ -125,18 +125,65 @@ func TestWrongHomeRollouts(t *testing.T) {
 	write("sessions/2026/11/21/rollout-c.jsonl", meta(filepath.Join(dir, "elsewhere")))
 	write("sessions/2026/11/21/rollout-d.jsonl.zst", "compressed")
 	write("sessions/2026/11/21/rollout-e.jsonl", `{"type":"session_meta","payload":{"cwd":"`+strings.Repeat("x", maxMetaLine)+`"}}`)
+	write("sessions/2026/11/21/rollout-f.jsonl", `{"type":"turn_context","payload":{"cwd":"`+filepath.Join(dir, "work", "acme")+`"}}`+"\n")
+	write("sessions/2026/11/21/rollout-g.jsonl", "{broken\n")
 	write("sessions/2026/11/21/notes.jsonl", meta(filepath.Join(dir, "work", "acme")))
-	got, err := wrongHomeRollouts(context.Background(), user, c)
+	got, err := WrongHomeRollouts(context.Background(), user, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, map[string]int{"root-acme": 2, "": 1}) {
+	// inside: a and b; could not be checked: the compressed d, the
+	// oversized e and the broken g; outside (c) and another record type
+	// (f) are not counted.
+	if !reflect.DeepEqual(got, map[string]int{"root-acme": 2, "": 3}) {
 		t.Fatalf("wrong-home rollouts = %v", got)
 	}
-	if got, err := wrongHomeRollouts(context.Background(), filepath.Join(dir, "missing"), c); err != nil || len(got) != 0 {
+	if got, err := WrongHomeRollouts(context.Background(), filepath.Join(dir, "missing"), c); err != nil || len(got) != 0 {
 		t.Fatalf("missing home: %v %v", got, err)
 	}
-	if _, err := wrongHomeRollouts(context.Background(), "relative", c); err == nil {
+	if _, err := WrongHomeRollouts(context.Background(), "relative", c); err == nil {
 		t.Fatal("relative home accepted")
+	}
+}
+
+// The first-line reader keeps only the record type and the payload's cwd
+// (moved here from internal/doctor, CC-18).
+func TestSessionMetaCwd(t *testing.T) {
+	dir := t.TempDir()
+	big := strings.Repeat("x", 70<<10)
+	metaLine := func(cwd string) string {
+		return `{"timestamp":"2026-11-21T09:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"00000000-0000-7000-8000-000000000001","id":"00000000-0000-7000-8000-000000000001","cwd":"` + cwd + `","originator":"codex_cli_rs","cli_version":"0.154.0"}}`
+	}
+	cases := []struct {
+		name, content string
+		want          string
+		st            metaStatus
+	}{
+		{"session_meta", metaLine("/u/work/acme") + "\n{\"type\":\"turn_context\"}\n", "/u/work/acme", metaOK},
+		{"rest of the file is never parsed", metaLine("/u/work/acme") + "\n\x00\x01 not json at all", "/u/work/acme", metaOK},
+		{"no newline", metaLine("/u/work/acme"), "/u/work/acme", metaOK},
+		{"payload before type", `{"payload":{"cwd":"/u/a","instructions":"x"},"type":"session_meta"}` + "\n", "/u/a", metaOK},
+		{"cwd before a long line's cut", `{"type":"session_meta","payload":{"cwd":"/u/a","instructions":"` + big + `"}}` + "\n", "/u/a", metaOK},
+		{"cwd after the 64 KiB cut", `{"type":"session_meta","payload":{"instructions":"` + big + `","cwd":"/u/a"}}` + "\n", "", metaUnreadable},
+		{"another record type", `{"type":"turn_context","payload":{"cwd":"/u/a"}}` + "\n", "", metaOther},
+		{"cwd not a string", `{"type":"session_meta","payload":{"cwd":42}}` + "\n", "", metaUnreadable},
+		{"relative cwd", `{"type":"session_meta","payload":{"cwd":"work/acme"}}` + "\n", "", metaUnreadable},
+		{"no payload", `{"type":"session_meta"}` + "\n", "", metaUnreadable},
+		{"not JSON", "garbage\n", "", metaUnreadable},
+		{"empty", "", "", metaUnreadable},
+		{"nested values are skipped", `{"type":"session_meta","payload":{"git":{"a":[1,{"b":"c"}]},"cwd":"/u/n"}}` + "\n", "/u/n", metaOK},
+	}
+	for i, c := range cases {
+		p := filepath.Join(dir, "rollout-"+string(rune('a'+i))+".jsonl")
+		if err := os.WriteFile(p, []byte(c.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, st := sessionMetaCwd(p)
+		if got != c.want || st != c.st {
+			t.Errorf("%s: sessionMetaCwd = %q, %v; want %q, %v", c.name, got, st, c.want, c.st)
+		}
+	}
+	if _, st := sessionMetaCwd(filepath.Join(dir, "missing.jsonl")); st != metaUnreadable {
+		t.Error("a missing file has a cwd")
 	}
 }

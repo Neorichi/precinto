@@ -78,6 +78,7 @@ const (
 	CodeUnauthorized Code = "unauthorized"  // exit 3
 	CodeAgentContext Code = "agent_context" // exit 3 (D28)
 	CodeCancelled    Code = "cancelled"     // exit 3
+	CodeBadSecret    Code = "bad_secret"    // exit 3: wrong passphrase or recovery key (vault.ErrBadSecret, C2.badsecret)
 	CodeNoUI         Code = "no_ui"         // exit 3 (D27)
 	CodeRateLimited  Code = "rate_limited"  // exit 3 (D27)
 	CodeLive         Code = "live"          // exit 4
@@ -100,7 +101,7 @@ func (e *Error) Error() string { return string(e.Code) + ": " + e.Msg }
 // ExitCode maps the error to the CLI exit codes of SPEC §16.2.
 func (e *Error) ExitCode() int {
 	switch e.Code {
-	case CodeLocked, CodeUnauthorized, CodeAgentContext, CodeCancelled, CodeNoUI, CodeRateLimited:
+	case CodeLocked, CodeUnauthorized, CodeAgentContext, CodeCancelled, CodeBadSecret, CodeNoUI, CodeRateLimited:
 		return 3
 	case CodeLive:
 		return 4
@@ -316,6 +317,14 @@ type UnlockReq struct {
 	SID         string        `json:"sid,omitempty"` // hook: the session requesting it
 	Deadline    time.Time     `json:"deadline"`
 	ConfirmDiff bool          `json:"confirm_diff,omitempty"` // also confirm pending policy changes (D48)
+	// AgentMarkers are the client's own paths.AgentMarkers: a
+	// self-restricting claim. The daemon unions it with the ancestry and
+	// no-controlling-terminal rules it measures itself and never treats an
+	// empty list as proof of a human (D28, D59).
+	AgentMarkers []string `json:"agent_markers,omitempty"`
+	// Test is a factor test (precinto factor test): unwrap with Factor and
+	// verify, then drop; no grant, no restore worker, no policy re-pin.
+	Test bool `json:"test,omitempty"`
 }
 
 // UnlockResp lists what was unlocked.
@@ -384,10 +393,20 @@ const (
 	PurposeList       = "list"        // ls titles
 )
 
+// MaxKeysPerRequest bounds a keys request: it names at most this many
+// capsules (bad_request otherwise). Clients batch and destroy each file key
+// as soon as its capsule is decrypted, so locked memory stays small.
+const MaxKeysPerRequest = 256
+
 // KeysReq asks for per-capsule file keys (D39).
 type KeysReq struct {
-	Capsules []CapsuleRef `json:"capsules"`
-	Purpose  string       `json:"purpose"` // one of the Purpose* constants
+	Capsules []CapsuleRef `json:"capsules"` // at most MaxKeysPerRequest
+	Purpose  string       `json:"purpose"`  // one of the Purpose* constants
+	// AgentMarkers are the client's own paths.AgentMarkers: a
+	// self-restricting claim. The daemon unions it with the ancestry and
+	// no-controlling-terminal rules it measures itself and never treats an
+	// empty list as proof of a human (D28, D59).
+	AgentMarkers []string `json:"agent_markers,omitempty"`
 }
 
 // KeyGrant describes one released key; the key itself follows in an 'S'
@@ -408,9 +427,12 @@ type EventKind string
 
 // Event kinds.
 const (
-	EventLocked    EventKind = "locked"
-	EventUnlocked  EventKind = "unlocked"
-	EventEnd       EventKind = "end" // end these sessions now (hard lock)
+	EventLocked   EventKind = "locked"
+	EventUnlocked EventKind = "unlocked"
+	// EventEnd is sent only on the subscriptions of wrappers whose session
+	// the daemon ends (registration wrapper ProcID = subscribing peer), with
+	// SIDs when known (D71): end these sessions now (hard lock).
+	EventEnd       EventKind = "end"
 	EventExpiring  EventKind = "expiring"
 	EventHeartbeat EventKind = "heartbeat" // every 1 s; 2 s without one ⇒ wrapper locks locally
 )
@@ -425,6 +447,10 @@ type Event struct {
 	At       time.Time `json:"at"`
 	Deadline time.Time `json:"deadline,omitempty"`
 	Busy     bool      `json:"busy,omitempty"`
+	// Factors are the folder's enrolled factor kinds in unlock order ("se",
+	// "plugin", "passphrase"; never "recovery"), on locked, unlocked and
+	// expiring events (ui.FactorName names one for {factor}).
+	Factors []string `json:"factors,omitempty"`
 }
 
 // SubscribeReq subscribes to events for roots and/or a session.
@@ -446,6 +472,11 @@ type FactorAddReq struct {
 	Recipient    string `json:"recipient,omitempty"`
 	IdentityStub string `json:"identity_stub,omitempty"`
 	PluginPath   string `json:"plugin_path,omitempty"`
+	// PresencePolicy is a plugin factor's presence policy ("touch-always",
+	// "touch-cached", "pin-always", "pin-once", "tpm-pin"); "" requires
+	// NoPresenceAck (S10, vault.FactorSpec).
+	PresencePolicy string `json:"presence_policy,omitempty"`
+	NoPresenceAck  bool   `json:"no_presence_ack,omitempty"`
 }
 
 // VaultRepairReq asks the daemon to repair a vault whose recipient set
@@ -456,7 +487,11 @@ type FactorAddReq struct {
 type VaultRepairReq struct {
 	VaultID     string `json:"vault_id"` // root id or "global"
 	UseRecovery bool   `json:"use_recovery,omitempty"`
-	Confirmed   bool   `json:"confirmed"` // the client showed the diff and obtained typed confirmation
+	// Confirmed false is a dry run: unwrap (presence), genuineness check,
+	// diff in VaultRepairResp, nothing written; the identity stays bound to
+	// that connection for at most 120 s and any lock wipes it. true writes
+	// (and unwraps again only on another connection or after that).
+	Confirmed bool `json:"confirmed"`
 }
 
 // VaultRepairResp reports a repair.
@@ -480,12 +515,15 @@ type PolicyResp struct {
 type VaultStatus struct {
 	VaultID      string    `json:"vault_id"`
 	RootPath     string    `json:"root_path,omitempty"`
-	State        string    `json:"state"` // "locked" | "unlocked"
+	State        string    `json:"state"` // "locked" | "unlocking" (a single-flight unlock is in progress) | "unlocked"
 	Reason       string    `json:"reason,omitempty"`
 	Since        time.Time `json:"since"`
 	IdleDeadline time.Time `json:"idle_deadline,omitempty"`
 	AbsDeadline  time.Time `json:"abs_deadline,omitempty"`
 	LastHuman    time.Time `json:"last_human,omitempty"`
+	// Factors are the folder's enrolled factor kinds in unlock order ("se",
+	// "plugin", "passphrase"; never "recovery").
+	Factors []string `json:"factors,omitempty"`
 }
 
 // SessionStatus is one live or paused session in status.
@@ -501,6 +539,7 @@ type SessionStatus struct {
 	HooksSeen  bool            `json:"hooks_seen"`
 	Registered bool            `json:"registered"` // false: found by the process-table scan only (D52, D57)
 	TTY        string          `json:"tty,omitempty"`
+	Version    string          `json:"version,omitempty"` // harness version from register (SPEC §16.4 AGENTS line)
 }
 
 // Attention codes: one kebab-case vocabulary shared by `status` and
@@ -524,12 +563,13 @@ const (
 
 // Attention is one "needs attention" item (UX22).
 type Attention struct {
-	Code   string `json:"code"` // one of the Attn* constants
-	Folder string `json:"folder,omitempty"`
-	Count  int    `json:"count,omitempty"`
-	PID    int    `json:"pid,omitempty"`
-	Detail string `json:"detail,omitempty"`
-	Fix    string `json:"fix,omitempty"` // the command that fixes it, e.g. "precinto vault repair --root ~/work/acme"
+	Code    string `json:"code"` // one of the Attn* constants
+	Folder  string `json:"folder,omitempty"`
+	Count   int    `json:"count,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Fix     string `json:"fix,omitempty"`     // the command that fixes it, e.g. "precinto vault repair --root ~/work/acme"
+	Harness string `json:"harness,omitempty"` // {harness} of C9.ungated
 }
 
 // StatusResp is the daemon side of `precinto status` (the CLI adds on-disk
@@ -671,7 +711,8 @@ func (c *Client) Keys(ctx context.Context, r KeysReq) (*KeySet, KeysResp, error)
 }
 
 // Subscribe streams events; the channel closes on disconnect, which
-// wrappers treat as a lock (SPEC §15.3).
+// wrappers treat as a lock (SPEC §15.3). The stream starts with one locked
+// or unlocked event per subscribed folder (D71).
 func (c *Client) Subscribe(ctx context.Context, r SubscribeReq) (<-chan Event, error) {
 	return c.subscribe(ctx, r)
 }

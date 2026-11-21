@@ -34,6 +34,3 @@ func SetStatus(f StatusFunc, dialPanic bool) (restore func()) {
 	}
 	return func() { dialStatus = old }
 }
-
-// ResultLines is how shell-hook prints a result for the scripts.
-func ResultLines(r EnterResult) string { return resultLines(r) }

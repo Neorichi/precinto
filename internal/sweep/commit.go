@@ -3,9 +3,9 @@ package sweep
 import (
 	"context"
 	"errors"
+	"path"
 
 	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
 )
@@ -14,16 +14,16 @@ import (
 // (docs/TESTPLAN.md §4); unit seals use the seal.* names, history and
 // Codex commits their own (or none).
 type sealPoints struct {
-	prepared, tmpWritten, committed string
+	prepared, tmpWritten, logged, committed string
 }
 
-var unitSealPoints = sealPoints{prepared: "seal.prepared", tmpWritten: "seal.tmp_written", committed: "seal.committed"}
+var unitSealPoints = sealPoints{prepared: "seal.prepared", tmpWritten: "seal.tmp_written", logged: "seal.logged", committed: "seal.committed"}
 
 // commitSpec is one capsule to write under an already begun journal
 // record.
 type commitSpec struct {
 	rec        *journal.Record
-	unitDir    dirHandle // capsules/<store>/<unit>: holds the operation directory
+	unitDir    dirHandle // capsules/<store>/<unit>
 	outDir     dirHandle // where the capsule is committed (unitDir, or its blobs/ subdirectory)
 	capsuleRel string    // the capsule relative to unitDir (journaled as Record.Capsule)
 	name       string    // final file name in outDir
@@ -36,9 +36,15 @@ type commitSpec struct {
 	// names before anything is written (rescue); otherwise the names are
 	// saved within the current phase.
 	preparePhase journal.Phase
-	// beforeRename runs between the capsule write and its commit rename
-	// (the codex.manifest failpoint).
+	// beforeRename runs between the capsule's verification and its commit
+	// rename (the codex.manifest failpoint), from Seal's PhaseVerified.
 	beforeRename func() error
+}
+
+// tmpRel is the temporary capsule.Seal writes, relative to the unit
+// directory: capsule.TmpName of the final name, next to it.
+func (c *commitSpec) tmpRel() string {
+	return path.Join(path.Dir(c.capsuleRel), capsule.TmpName(c.name))
 }
 
 // commitError says what a failed commit left behind.
@@ -63,22 +69,22 @@ func keepRecord(err error) bool {
 
 // commit writes one capsule crash-safely (SPEC §10.3 steps 3–5, D58):
 //
-//  1. journal the operation directory (Record.Tmp), the final name
-//     (Record.Capsule) and the generation before anything is written;
-//  2. capsule.Seal writes, verifies and renames the capsule inside that
-//     private operation directory (tmp_written is journaled from its
-//     OnPhase callback);
-//  3. a no-replace rename commits it into the unit directory, which is
-//     fsynced;
-//  4. the capsule-log entry is appended (FullSync), and only then is
+//  1. journal the temporary (Record.Tmp = capsule.TmpName of the final
+//     name, D58a), the final name (Record.Capsule) and the generation
+//     before anything is written;
+//  2. capsule.Seal writes Out/TmpName(Name), verifies it and commits it
+//     to Out/Name with a no-replace rename straight into the unit
+//     directory (tmp_written is journaled from its OnPhase callback); there
+//     is no per-operation directory and no second rename;
+//  3. the capsule-log entry is appended (FullSync), and only then is
 //     committed journaled.
 //
-// On any failure before the log append nothing of the attempt is left: the
-// operation directory is removed, and a capsule renamed but not logged is
-// deleted (it can never be re-verified, D58).
+// On any failure before the log append nothing of the attempt is left:
+// Seal removes its temporary on every error return, and a capsule renamed
+// but not logged is deleted (it can never be re-verified, D58b).
 func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error) {
 	rec := c.rec
-	rec.Tmp = opDirName(rec.ID)
+	rec.Tmp = c.tmpRel()
 	rec.Capsule = c.capsuleRel
 	rec.Gen = c.gen
 	var err error
@@ -93,38 +99,26 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 	if err := hit(c.points.prepared); err != nil {
 		return nil, &commitError{err: err}
 	}
-	op, err := c.unitDir.OpenDir(rec.Tmp, true)
-	if err != nil {
-		return nil, r.abandon(c, err)
-	}
-	defer op.Close()
 	req := c.req
-	req.Out = op
+	req.Out = c.outDir
 	req.Name = c.name
 	req.OnPhase = func(p capsule.Phase, _ *capsule.Sealed) error {
-		if p != capsule.PhaseTmpWritten {
-			return nil
+		switch p {
+		case capsule.PhaseTmpWritten:
+			if err := r.jr.Advance(rec, journal.PhaseTmpWritten); err != nil {
+				return err
+			}
+			return hit(c.points.tmpWritten)
+		case capsule.PhaseVerified:
+			if c.beforeRename != nil {
+				return c.beforeRename()
+			}
 		}
-		if err := r.jr.Advance(rec, journal.PhaseTmpWritten); err != nil {
-			return err
-		}
-		return hit(c.points.tmpWritten)
+		return nil
 	}
 	sealed, err := r.p.codec.Seal(ctx, req)
 	if err != nil {
 		return nil, r.abandon(c, err)
-	}
-	if c.beforeRename != nil {
-		if err := c.beforeRename(); err != nil {
-			return nil, r.abandon(c, err)
-		}
-	}
-	if err := op.RenameTo(c.name, c.outDir, c.name, fsx.NoReplace); err != nil {
-		return nil, r.abandon(c, err)
-	}
-	_ = removeOpDir(c.unitDir, rec.Tmp) // empty now; recovery removes it otherwise
-	if r.p.afterRename != nil {
-		r.p.afterRename()
 	}
 	en := c.entry
 	en.Path = c.logPath
@@ -139,8 +133,9 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 		}
 		return nil, &commitError{err: err}
 	}
-	if r.p.afterLog != nil {
-		r.p.afterLog()
+	if err := hit(c.points.logged); err != nil {
+		// Logged but the milestone is not journaled (SEAL-7).
+		return sealed, &commitError{err: err, keepRecord: true, committed: true}
 	}
 	if err := r.jr.Advance(rec, journal.PhaseCommitted); err != nil {
 		// Logged but the milestone is not journaled: recovery finds the
@@ -153,11 +148,26 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 	return sealed, nil
 }
 
-// abandon cleans up a failed attempt: the operation directory, and a
-// capsule already renamed into place but not logged.
+// abandon cleans up a failed attempt (D58b): the temporary if it is still
+// there, and a capsule of the final name that Seal committed before it
+// failed but that the log does not have (an unlogged capsule is ours: it
+// can never be re-verified). A logged or foreign capsule there is kept.
 func (r *run) abandon(c *commitSpec, cause error) error {
-	if err := removeOpDir(c.unitDir, c.rec.Tmp); err != nil {
-		return &commitError{err: errors.Join(cause, err), keepRecord: true}
+	var errs []error
+	if err := c.unitDir.Remove(c.tmpRel()); err != nil && !isMissing(err) {
+		errs = append(errs, err)
+	}
+	state, err := r.inspectCapsule(c.unitDir, c.capsuleRel, c.logPath)
+	switch {
+	case err != nil:
+		errs = append(errs, err)
+	case state == capsOrphan:
+		if err := c.unitDir.Remove(c.capsuleRel); err != nil && !isMissing(err) {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return &commitError{err: errors.Join(append([]error{cause}, errs...)...), keepRecord: true}
 	}
 	return &commitError{err: cause}
 }

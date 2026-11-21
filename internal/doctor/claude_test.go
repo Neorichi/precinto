@@ -115,11 +115,16 @@ func TestClaudeHooksOff(t *testing.T) {
 	want(t, f.run(), doctor.CheckClaudeHooksOff, doctor.OK)
 
 	local := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.local.json"), map[string]any{"disableAllHooks": true})
-	shared := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"precinto@precinto": false}})
+	// Only paths.ClaudePluginID is precinto's plugin (CC-37): a same-named
+	// plugin of another marketplace is not.
+	shared := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"precinto@precinto": false, "precinto@elsewhere": false}})
 	user := writeJSON(t, filepath.Join(f.h.ClaudeConfig, "settings.json"), map[string]any{"disableAllHooks": true})
 	fs := f.run()
 	want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(local)+" turns off every hook", f.tilde(f.h.Root))
-	want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(shared)+" disables precinto's plugin (precinto@precinto)")
+	got := want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(shared)+" disables precinto's plugin (precinto@precinto)")
+	if strings.Contains(got.Message, "precinto@elsewhere") {
+		t.Errorf("another marketplace's plugin counted as precinto's: %s", got.Message)
+	}
 	want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(user)+" turns off every hook")
 
 	// disableAllHooks false is fine.
@@ -267,10 +272,10 @@ func TestHistoryPending(t *testing.T) {
 	if err := os.Link(hist, hold); err != nil {
 		t.Fatal(err)
 	}
-	want(t, f.run(), doctor.CheckHistoryPending, doctor.Warn, f.tilde(hold)+" is a leftover copy")
+	want(t, f.run(), doctor.CheckInterrupted, doctor.Warn, f.tilde(hold)+" is a leftover copy")
 	mkdir(t, f.h.Layout.JournalDir, 0o700)
 	f.d.JournalPending = func() ([]*journal.Record, error) {
 		return []*journal.Record{{ID: "0001", Kind: journal.KindHistoryRotate, Phase: journal.PhaseHeld, Hold: ".precinto-hold-0001"}}, nil
 	}
-	want(t, f.run(), doctor.CheckHistoryPending, doctor.Info, "the next sweep finishes it")
+	want(t, f.run(), doctor.CheckInterrupted, doctor.Info, "the next sweep finishes it")
 }

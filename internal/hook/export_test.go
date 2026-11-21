@@ -4,6 +4,7 @@ package hook
 // the external tests in package hook_test use these).
 
 import (
+	"github.com/precinto/precinto/internal/ui"
 	"io"
 	"time"
 
@@ -86,7 +87,7 @@ func WorkerEnv(env paths.Env) []string { return workerEnv(env) }
 func ProductionDeps(env paths.Env) Deps { return productionDeps(env) }
 
 // LockedLine is the PreToolUse stopReason text.
-func LockedLine(folder string) string { return lockedLine(folder) }
+func LockedLine(folder string) string { return ui.Format(ui.MsgToolStop, ui.Vars{Folder: folder}) }
 
 // HeadlessUI is the hook's relayed-prompt handler.
 type HeadlessUI = headlessUI

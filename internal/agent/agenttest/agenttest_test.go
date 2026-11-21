@@ -11,6 +11,7 @@ import (
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/vault/vaulttest"
 )
 
 func TestStartGateLockSpawned(t *testing.T) {
@@ -106,5 +107,53 @@ func TestRegisterSubscribeAndStop(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("subscription survived Stop")
+	}
+}
+
+// CC-53: Client is a non-fatal dial, safe from any goroutine and after the
+// agent stopped (an error, never a panic).
+func TestClientNonFatal(t *testing.T) {
+	h := testkit.NewHome(t)
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	c, err := a.Client(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	done := make(chan error, 1)
+	go func() {
+		c, err := a.Client(context.Background())
+		if err == nil {
+			c.Close()
+		}
+		done <- err
+	}()
+	if err := <-done; err != nil {
+		t.Fatalf("Client from another goroutine: %v", err)
+	}
+	a.Stop()
+	if c, err := a.Client(context.Background()); err == nil {
+		c.Close()
+		t.Fatal("Client succeeded after the agent stopped")
+	}
+}
+
+// CC-53: UnlockForTest unlocks a vault with the recovery factor.
+func TestUnlockForTest(t *testing.T) {
+	h := testkit.NewHome(t)
+	fx := vaulttest.New(t, h.Base, "root-acme")
+	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
+	a.UnlockForTest(t, []string{"root-acme"}, fx.Recovery.String())
+	c := a.Dial(t)
+	st, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlocked := false
+	for _, v := range st.Vaults {
+		unlocked = unlocked || (v.VaultID == "root-acme" && v.State == "unlocked")
+	}
+	if !unlocked {
+		t.Fatalf("root-acme not unlocked: %+v", st.Vaults)
 	}
 }

@@ -156,8 +156,8 @@ func TestPassphraseFactorWrapUnwrap(t *testing.T) {
 	id2.Destroy()
 
 	// Wrong passphrase, cancelled prompt, no UI.
-	if _, err := g.Unwrap(context.Background(), "passphrase", uiWith("not the passphrase at all").AsUI()); !errors.Is(err, vault.ErrCancelled) {
-		t.Errorf("wrong passphrase = %v", err)
+	if _, err := g.Unwrap(context.Background(), "passphrase", uiWith("not the passphrase at all").AsUI()); !errors.Is(err, vault.ErrBadSecret) || errors.Is(err, vault.ErrWrongIdentity) {
+		t.Errorf("wrong passphrase = %v, want ErrBadSecret (never ErrWrongIdentity)", err)
 	}
 	if _, err := g.Unwrap(context.Background(), "passphrase", uiWith().AsUI()); !errors.Is(err, vault.ErrCancelled) {
 		t.Errorf("cancelled = %v", err)
@@ -228,8 +228,8 @@ func TestCreateRootVaults(t *testing.T) {
 	if _, err := s.Create(context.Background(), "root-acme", "", uiWith(pass).AsUI()); !errors.Is(err, fs.ErrExist) {
 		t.Errorf("duplicate Create = %v", err)
 	}
-	if _, err := s.Create(context.Background(), "root-b", "", uiWith("wrong passphrase entirely").AsUI()); !errors.Is(err, vault.ErrCancelled) {
-		t.Errorf("Create with a wrong passphrase = %v", err)
+	if _, err := s.Create(context.Background(), "root-b", "", uiWith("wrong passphrase entirely").AsUI()); !errors.Is(err, vault.ErrBadSecret) {
+		t.Errorf("Create with a wrong passphrase = %v, want ErrBadSecret", err)
 	}
 	if _, err := s.Create(context.Background(), "root-b", "", (&vaulttest.UI{}).AsUI()); !errors.Is(err, vault.ErrNoUI) {
 		t.Errorf("Create without UI = %v", err)

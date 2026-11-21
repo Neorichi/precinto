@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/precinto/precinto/internal/shellinit"
-	"github.com/precinto/precinto/internal/ui"
 )
 
 func TestShellInitScript(t *testing.T) {
@@ -47,45 +46,34 @@ func TestShellInitInstall(t *testing.T) {
 	}
 }
 
-// shell-hook: OnEnter decides; notify prints C1.notify and sets the skip
-// key; prompt asks C1.prompt and unlocks on Enter only.
+// shell-hook prints shellinit.EnterResult.Lines and nothing else (D69): no
+// prompt, no unlock, no shell assignment; the scripts parse the lines.
 func TestShellHook(t *testing.T) {
 	e := newEnv(t)
-	e.shell.enter = shellinit.EnterResult{Action: shellinit.EnterNotify, RootID: "root-acme", Epoch: 7}
+	e.shell.enter = shellinit.EnterResult{Action: shellinit.EnterNotify, RootID: "root-acme", Path: e.h.Root, Folder: "~/work/acme", Epoch: 7, Message: "precinto: ~/work/acme is locked."}
 	if code := e.run("shell-hook", "--shell", "zsh", "--pwd", e.h.Root, "--prev", e.h.HomeDir, "--skip", "x:1", "--first"); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if r := e.shell.requests[0]; r.PWD != e.h.Root || r.PrevPWD != e.h.HomeDir || r.SkipKey != "x:1" || !r.FirstRun || r.Shell != "zsh" {
+	r := e.shell.requests[0]
+	if r.PWD != e.h.Root || r.PrevPWD != e.h.HomeDir || r.SkipKey != "x:1" || !r.FirstRun || r.Shell != "zsh" || r.Home != e.h.HomeDir {
 		t.Fatalf("request %+v", r)
 	}
-	if e.stdout() != "_PRECINTO_SKIP='root-acme:7'\n" {
-		t.Fatalf("stdout %q", e.stdout())
-	}
-	if !strings.Contains(e.stderr(), ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: "~/work/acme"})) {
-		t.Fatalf("stderr %q", e.stderr())
+	if e.stdout() != e.shell.enter.Lines() || e.stderr() != "" {
+		t.Fatalf("stdout %q stderr %q, want exactly the result lines", e.stdout(), e.stderr())
 	}
 
+	// A prompt is printed as data too: precinto never reads the terminal
+	// or unlocks from shell-hook.
 	e = newEnv(t)
-	e.shell.enter = shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Epoch: 3}
-	e.tty.lines = []string{""} // Enter
+	e.shell.enter = shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Path: e.h.Root, Epoch: 3, Message: "m"}
+	e.tty.lines = []string{""} // an Enter that must not be read
 	if code := e.run("shell-hook", "--shell", "fish", "--pwd", e.h.Root); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if len(e.daemon.unlocks) != 1 || e.daemon.unlocks[0].RootIDs[0] != "root-acme" || !e.daemon.unlocks[0].TTY {
-		t.Fatalf("unlocks %+v", e.daemon.unlocks)
-	}
-	if e.stdout() != "set -g _PRECINTO_SKIP 'root-acme:3'\n" {
-		t.Fatalf("stdout %q", e.stdout())
-	}
-
-	e = newEnv(t)
-	e.shell.enter = shellinit.EnterResult{Action: shellinit.EnterPrompt, RootID: "root-acme", Epoch: 3}
-	e.tty.lines = []string{"n"} // any other key skips
-	e.run("shell-hook", "--shell", "bash", "--pwd", e.h.Root)
 	if len(e.daemon.unlocks) != 0 {
-		t.Fatal("unlocked on a skip")
+		t.Fatalf("shell-hook unlocked: %+v", e.daemon.unlocks)
 	}
-	if e.stdout() != "_PRECINTO_SKIP='root-acme:3'\n" {
+	if e.stdout() != e.shell.enter.Lines() {
 		t.Fatalf("stdout %q", e.stdout())
 	}
 
@@ -95,6 +83,10 @@ func TestShellHook(t *testing.T) {
 	if code := e.run("shell-hook", "--shell", "zsh", "--pwd", e.h.Root); code != exitOK || e.stdout() != "" || e.stderr() != "" {
 		t.Fatalf("failure not silent: %d %q %q", code, e.stdout(), e.stderr())
 	}
+	e = newEnv(t)
+	if code := e.run("shell-hook", "--shell", "zsh", "--pwd", e.h.Root); code != exitOK || e.stdout() != "" {
+		t.Fatalf("nothing to do: %d %q", code, e.stdout())
+	}
 }
 
 var errBoom = boomError("boom")
@@ -102,12 +94,3 @@ var errBoom = boomError("boom")
 type boomError string
 
 func (b boomError) Error() string { return string(b) }
-
-func TestShellAssignQuoting(t *testing.T) {
-	if got := shellAssign("zsh", "V", "a'b"); got != `V='a'\''b'` {
-		t.Fatalf("%s", got)
-	}
-	if got := shellAssign("fish", "V", `a'b\c`); got != `set -g V 'a\'b\\c'` {
-		t.Fatalf("%s", got)
-	}
-}

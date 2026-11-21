@@ -421,7 +421,6 @@ func checkHistoryPending(e *env) []Finding {
 			}
 			total[id] += n
 		}
-		out = append(out, e.holdLinks(d)...)
 	}
 	sort.Strings(order)
 	for _, id := range order {
@@ -514,9 +513,9 @@ func (e *env) holdLinks(configDir string) []Finding {
 		}
 		p := filepath.Join(configDir, en.Name())
 		if named[en.Name()] {
-			out = append(out, info(CheckHistoryPending, "an interrupted history rotation left "+e.show(p)+"; the next sweep finishes it", "precinto sweep"))
+			out = append(out, info(CheckInterrupted, "an interrupted history rotation left "+e.show(p)+"; the next sweep finishes it", "precinto sweep"))
 		} else {
-			out = append(out, warn(CheckHistoryPending, e.show(p)+" is a leftover copy of Claude's prompt history from an interrupted rotation",
+			out = append(out, warn(CheckInterrupted, e.show(p)+" is a leftover copy of Claude's prompt history from an interrupted rotation",
 				"run precinto sweep; if it stays, remove "+e.arg(p)+" while no Claude session runs"))
 		}
 	}

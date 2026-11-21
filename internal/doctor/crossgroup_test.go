@@ -10,13 +10,9 @@ package doctor_test
 // or the user's login shell, which tests never do.
 
 import (
-	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
-
-	"filippo.io/age"
 
 	"github.com/precinto/precinto/internal/agent/agenttest"
 	"github.com/precinto/precinto/internal/doctor"
@@ -48,27 +44,11 @@ func realDeps(f *fixture) *doctor.Deps {
 // doctor reports vault-tampered naming `precinto vault repair`.
 func TestCrossgroupVaultTripwire(t *testing.T) {
 	f := newFixture(t)
-	vaulttest.New(t, f.h.Base, "root-acme")
+	fx := vaulttest.New(t, f.h.Base, "root-acme")
 	f.d = realDeps(f)
 	want(t, f.run(), doctor.CheckVaultTampered, doctor.OK)
 
-	path := filepath.Join(f.h.Layout.VaultDir("root-acme"), "vault.toml")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	re := regexp.MustCompile(`(?m)^recovery_recipient\s*=\s*"[^"]*"`)
-	if !re.Match(b) {
-		t.Fatalf("vault.toml has no recovery_recipient line")
-	}
-	b = re.ReplaceAll(b, []byte(`recovery_recipient = "`+other.Recipient().String()+`"`))
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	fx.TamperRecipient(t, "root-acme", true)
 	got := want(t, f.run(), doctor.CheckVaultTampered, doctor.Fail, f.tilde(f.h.Root)+"'s vault file was changed outside precinto")
 	if got.Fix != "precinto vault repair --root "+f.tilde(f.h.Root) {
 		t.Errorf("fix %q", got.Fix)

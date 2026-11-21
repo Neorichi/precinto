@@ -41,7 +41,9 @@ type FileKeys interface {
 }
 
 // KeySource obtains file keys (production: ipc.Client.Keys through
-// cmd/precinto; tests: a vaulttest identity).
+// cmd/precinto; tests: a vaulttest identity). Callers pass at most 256
+// paths per FileKeys call (ipc.MaxKeysPerRequest) and destroy the keys as
+// soon as their capsules are decrypted.
 type KeySource interface {
 	FileKeys(ctx context.Context, paths []string, purpose string) (FileKeys, error)
 }
@@ -66,6 +68,11 @@ type Env struct {
 	Sealer   string // "precinto <version>"
 	// Parallel bounds concurrent unit seals (default 2; units > 1 GiB run alone, R19).
 	Parallel int
+	// Sleep waits d or until ctx ends; nil = a real timer. It is used for
+	// the D63 quiet-window wait (and every other wait of a run: rescue
+	// grace, history tail quiet, writer polling). Tests with a fake clock
+	// pass one that advances it.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // Options controls a seal/sweep run.
@@ -99,6 +106,8 @@ const (
 	OutInaccessible Outcome = "inaccessible"  // EACCES/EPERM/TCC: never treated as missing
 	OutRemoveFailed Outcome = "remove-failed" // committed, but plaintext could not be unlinked
 	OutQuarantined  Outcome = "quarantined"
+	OutPruned       Outcome = "pruned"    // Prune deleted (or, with DryRun, would delete) Files capsules of the unit
+	OutForgotten    Outcome = "forgotten" // Forget deleted Files capsules of the unit
 	OutFailed       Outcome = "failed"
 )
 
@@ -110,8 +119,8 @@ type UnitResult struct {
 	Outcome  Outcome
 	Gen      uint64
 	Lineage  capsule.Lineage
-	Files    int
-	Bytes    int64
+	Files    int   // seal/restore: plaintext files; prune/forget: capsules deleted
+	Bytes    int64 // seal/restore: plaintext bytes; prune/forget: capsule bytes deleted
 	Evidence []live.Evidence
 	Hazards  []harness.Hazard
 	Class    fsx.Class // error class for failures

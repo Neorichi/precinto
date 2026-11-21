@@ -185,7 +185,7 @@ func (e *env) ungatedScan() []Finding {
 			if p.State == platform.StateZombie || !k.match(p) {
 				continue
 			}
-			if p.ID.StartUS > 0 && e.now.Sub(time.UnixMicro(p.ID.StartUS)) < hookWindow {
+			if st := platform.StartTime(p.ID); p.ID.StartUS > 0 && !st.IsZero() && e.now.Sub(st) < hookWindow {
 				continue // its first hook may not have run yet
 			}
 			cwd, err := e.o.Procs.Cwd(p.ID)

@@ -199,17 +199,6 @@ func TestUnionAndMergeHelpers(t *testing.T) {
 	}
 }
 
-func TestEncodeBase(t *testing.T) {
-	t.Parallel()
-	id, abs := decodeBase(encodeBase(capsule.BaseID("generic:gemini"), "/a|b/c"))
-	if id != "generic:gemini" || abs != "/a|b/c" {
-		t.Fatalf("round trip %q %q", id, abs)
-	}
-	if id, abs := decodeBase("claude_config"); id != capsule.BaseClaudeConfig || abs != "" {
-		t.Fatal("bare base")
-	}
-}
-
 // keyGuard never wipes a key under a reader and refuses keys afterwards.
 func TestKeyGuard(t *testing.T) {
 	te := newTestEnv(t)

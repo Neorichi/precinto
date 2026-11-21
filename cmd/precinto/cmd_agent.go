@@ -98,6 +98,7 @@ func (a *app) stopAgent() error {
 func cmdDoctor(a *app, args []string) int {
 	f := newFlags("doctor")
 	leaks := f.Bool("leaks", false, "also look for residue outside precinto's inventory (slower)")
+	asJSON := f.Bool("json", false, "print the findings as one JSON document (v1)")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
 		return code
@@ -128,26 +129,15 @@ func cmdDoctor(a *app, args []string) int {
 	if err != nil {
 		return a.fail("doctor", err)
 	}
-	code := exitOK
-	problems := 0
-	for _, fd := range findings {
-		if fd.Severity == doctor.OK {
-			continue
-		}
-		problems++
-		line := fmt.Sprintf("%-5s %s: %s", fd.Severity, fd.Code, oneLineText(fd.Message))
-		if fd.Fix != "" {
-			line += " · fix: " + oneLineText(fd.Fix)
-		}
-		fmt.Fprintln(a.out, line)
-		if fd.Severity == doctor.Fail {
-			code = exitError
-		}
+	// doctor.Render is the one renderer (CC-45); exit 1 only when a
+	// finding fails, warnings do not change it (SPEC §16.2).
+	if err := doctor.Render(a.out, findings, *asJSON); err != nil {
+		return a.fail("doctor", err)
 	}
-	if problems == 0 {
-		a.sayOut(textDoctorOK)
+	if doctor.Worst(findings) == doctor.Fail {
+		return exitError
 	}
-	return code
+	return exitOK
 }
 
 // cmdHook is the harness hook entry point: it must stay fast and fail

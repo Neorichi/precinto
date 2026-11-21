@@ -104,6 +104,7 @@ func (l Layout) dirs() ([]layoutDir, error) {
 		{"JournalDir", l.JournalDir},
 		{"QueueDir", l.QueueDir},
 		{"LocksDir", l.LocksDir},
+		{"HookDedupeDir", l.HookDedupeDir},
 		{"LogsDir", l.LogsDir},
 		{"RunDir", l.RunDir},
 	}

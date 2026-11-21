@@ -16,7 +16,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN     := bin/precinto
 
-.PHONY: all build build-testing build-linux test test-race test-crash test-e2e test-integration crossgroup vet vet-crossgroup lint fmt fmt-check arch api-doc api-check hygiene codex-plugin-check clean ci
+.PHONY: all build build-testing build-linux test test-race test-crash test-e2e test-integration crossgroup crossgroup-crash vet vet-crossgroup lint fmt fmt-check arch api-doc api-check hygiene codex-plugin-check clean ci
 
 all: build
 
@@ -43,9 +43,14 @@ test-race:
 
 ## crossgroup: tests that need every group's real implementation (build tag
 ## crossgroup: test/integration flows, adapters over agenttest); they compile
-## in every worktree and pass once the groups are integrated
+## in every worktree and pass once the groups are integrated. Bounded at 8 min
+## with every goroutine's stack on a hang (TESTPLAN §10).
 crossgroup:
-	$(GO) test -tags testing,crossgroup ./...
+	GOTRACEBACK=all $(GO) test -tags testing,crossgroup -timeout 8m ./...
+
+## crossgroup-crash: the crossgroup crash rows (failpoints over the real groups)
+crossgroup-crash:
+	GOTRACEBACK=all $(GO) test -tags testing,crossgroup,failpoints -timeout 8m -count=1 ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/... ./test/integration/...
 
 ## test-integration: cross-package flows against the testing binary (crossgroup)
 test-integration:

@@ -167,10 +167,12 @@ func (r *run) sealCodexHome(ctx context.Context, u harness.Unit, o Options, expl
 // set, overrides the computed lineage (reconcile).
 func (r *run) sealCodexLocked(ctx context.Context, ad harness.Adapter, u harness.Unit, o Options, explicit, keep bool, forceLineage capsule.Lineage) UnitResult {
 	res := resultOf(u)
+	exited := false
 	if o.WaitFor != nil {
 		if err := r.waitExit(ctx, *o.WaitFor, o.Deadline); err != nil {
 			return liveResult(res, live.Verdict{Live: true}, explicit, "writer running")
 		}
+		exited = true // R20: the only known writer was reaped
 	}
 	rd, hasRc, err := r.loadReceipt(u.Key)
 	if err != nil {
@@ -181,7 +183,7 @@ func (r *run) sealCodexLocked(ctx context.Context, ad harness.Adapter, u harness
 		rcp = &rd
 	}
 	if !keep {
-		if v, isLive := r.checkLive(ctx, ad, u, rcp); isLive {
+		if v, isLive := r.checkLiveAfter(ctx, ad, u, rcp, exited); isLive {
 			return liveResult(res, v, explicit, "")
 		}
 	}
@@ -383,7 +385,7 @@ func (r *run) sealSnapshot(ctx context.Context, us *unitSeal, lp lineagePlan, ke
 		for _, en := range sealed.Manifest.Files {
 			shas[fileKey{en.Base, en.Rel}] = en.SHA256
 		}
-		rec.Files = append(rec.Files, journal.File{Base: encodeBase(baseBlob, ""), Rel: path.Join(blobsDir, name), Done: true})
+		rec.Files = append(rec.Files, journal.File{Base: string(baseBlob), Rel: path.Join(blobsDir, name), Done: true})
 		if err := r.jr.Save(rec); err != nil {
 			return failed(res, err)
 		}
@@ -490,7 +492,7 @@ func (r *run) collectBlobs(rec *journal.Record) {
 	}
 	defer unitDir.Close()
 	for _, jf := range rec.Files {
-		if id, _ := decodeBase(jf.Base); id != baseBlob || !jf.Done {
+		if id := capsule.BaseID(jf.Base); id != baseBlob || !jf.Done {
 			continue
 		}
 		lp := logPathOf(storeOfRecord(rec), rec.Unit, jf.Rel)
@@ -560,8 +562,9 @@ func (r *run) recoverCodexSnapshot(ctx context.Context, rec *journal.Record) *Un
 		defer capsRoot.Close()
 		defer unitDir.Close()
 	}
-	if unitDir != nil && rec.Tmp != "" && isOpDir(rec.Tmp) {
-		if err := removeOpDir(unitDir, rec.Tmp); err != nil {
+	if unitDir != nil && rec.Tmp != "" {
+		// D58b: the journaled temporary of capsule.Seal, if a crash left it.
+		if err := removeTmp(unitDir, rec.Tmp); err != nil {
 			return recoveredResult(rec, capsule.KindCodexHome, OutFailed, failDetail(err))
 		}
 	}
@@ -577,14 +580,14 @@ func (r *run) recoverCodexSnapshot(ctx context.Context, rec *journal.Record) *Un
 		// The snapshot never committed: the previous one stays
 		// authoritative, the blobs of this attempt go, plaintext stays.
 		if !isGen && state == capsLogged {
-			rec.Files = append(rec.Files, journal.File{Base: encodeBase(baseBlob, ""), Rel: rec.Capsule, Done: true})
+			rec.Files = append(rec.Files, journal.File{Base: string(baseBlob), Rel: rec.Capsule, Done: true})
 		}
 		r.collectBlobs(rec)
 		return r.doneRecovered(rec, capsule.KindCodexHome, OutSkipped, "recovered: snapshot rolled back, plaintext kept")
 	}
 	var content []journal.File
 	for _, jf := range rec.Files {
-		if id, _ := decodeBase(jf.Base); id != baseBlob {
+		if id := capsule.BaseID(jf.Base); id != baseBlob {
 			content = append(content, jf)
 		}
 	}
@@ -616,7 +619,7 @@ func (r *run) recoverCodexSnapshot(ctx context.Context, rec *journal.Record) *Un
 func blobFilesOf(rec *journal.Record) []journal.File {
 	var out []journal.File
 	for _, jf := range rec.Files {
-		if id, _ := decodeBase(jf.Base); id == baseBlob {
+		if id := capsule.BaseID(jf.Base); id == baseBlob {
 			out = append(out, jf)
 		}
 	}

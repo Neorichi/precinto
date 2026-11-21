@@ -649,3 +649,31 @@ func TestRecoverRollsBackAPreparedRestore(t *testing.T) {
 		t.Fatal("record left")
 	}
 }
+
+// D73, CC-23: the manifest's project_dir is copied from Unit.ProjectDir
+// (sweep never derives it), and a ProjectDir selector matches it exactly:
+// the start directory selects the session, its parent or a subdirectory
+// does not.
+func TestProjectDirSelectorMatchesTheUnitProjectDir(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	te.writeSession(sid1, "", nil)
+	u := te.scanSession(sid1)
+	start := filepath.Join(te.h.Root, "svc")
+	u.ProjectDir = start
+	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	mustNoErr(t, err)
+	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
+		t.Fatalf("seal %+v", res)
+	}
+	for _, dir := range []string{te.h.Root, filepath.Join(start, "sub")} {
+		rep := te.restoreUnits(RestoreRequest{Select: []harness.Selector{{Kind: capsule.KindClaudeSession, RootID: rootID, ProjectDir: dir, Recent: 5}}})
+		if rep.Count(OutRestored) != 0 {
+			t.Fatalf("selector %s restored the session started in %s: %+v", dir, start, rep.Units)
+		}
+	}
+	rep = te.restoreUnits(RestoreRequest{Select: []harness.Selector{{Kind: capsule.KindClaudeSession, RootID: rootID, ProjectDir: start, Recent: 5}}})
+	if outcome(t, rep, u.Key).Outcome != OutRestored {
+		t.Fatalf("selector of the start dir: %+v", rep.Units)
+	}
+}

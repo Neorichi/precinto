@@ -37,6 +37,9 @@ func RotateHistory(ctx context.Context, e Env) (*Report, error) {
 		return r.finish(), err
 	}
 	r.recoverAll(ctx)
+	if r.primeHistory(ctx) {
+		r.waitQuiet(ctx, time.Time{}) // D63: one look, one quiet window, then decide
+	}
 	r.rotateHistory(ctx)
 	return r.finish(), nil
 }
@@ -187,8 +190,7 @@ func (r *run) rotateHome(ctx context.Context, ad harness.Adapter, h harness.Home
 		return &res
 	}
 	defer lk.Unlock()
-	pseudo := harness.Unit{Harness: harness.ClaudeCode, Kind: capsule.KindClaudeHistory, Key: jkey, Home: h,
-		Paths: []string{filepath.Join(cfgDir, historyRel)}}
+	pseudo, _ := r.historySubject(h)
 	if v, isLive := r.checkLive(ctx, ad, pseudo, nil); isLive {
 		res = liveResult(res, v, false, "")
 		res.Detail = "history_pending: " + res.Detail
@@ -226,7 +228,7 @@ func (r *run) rotateHome(ctx context.Context, ad harness.Adapter, h harness.Home
 		f := failed(res, err)
 		return &f
 	}
-	rec.Files = []journal.File{{Base: encodeBase(capsule.BaseClaudeConfig, cfgDir), Rel: historyRel, Snap: st}}
+	rec.Files = []journal.File{{Base: string(capsule.BaseClaudeConfig), Dir: cfgDir, Rel: historyRel, Snap: st}}
 	rec.Hold = ".precinto-hold-" + rec.ID
 	if err := r.jr.Save(rec); err != nil {
 		_ = r.jr.Done(rec)
@@ -359,7 +361,7 @@ func (ro *rotation) pasteFiles(names map[string]bool) ([]journal.File, error) {
 		if !st.IsRegular() || st.Nlink != 1 {
 			continue
 		}
-		out = append(out, journal.File{Base: encodeBase(capsule.BaseClaudeConfig, ro.cfgDir), Rel: rel, Snap: st})
+		out = append(out, journal.File{Base: string(capsule.BaseClaudeConfig), Dir: ro.cfgDir, Rel: rel, Snap: st})
 	}
 	return out, nil
 }
@@ -679,7 +681,7 @@ func (r *run) recoverHistory(ctx context.Context, rec *journal.Record) *UnitResu
 	if len(rec.Files) == 0 {
 		return r.doneRecovered(rec, capsule.KindClaudeHistory, OutSkipped, "recovered: nothing held")
 	}
-	id, cfgDir := decodeBase(rec.Files[0].Base)
+	id, cfgDir := capsule.BaseID(rec.Files[0].Base), rec.Files[0].Dir
 	if id != capsule.BaseClaudeConfig || cfgDir == "" {
 		f := failed(res, fmt.Errorf("%w: malformed history record", fsx.ErrUnsafe))
 		return &f

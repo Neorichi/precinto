@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -35,10 +36,6 @@ func kill() {
 // arm arms a failpoint spec or a test seam ("hook:<name>").
 func arm(te *testEnv, spec string) {
 	switch spec {
-	case "hook:afterRename":
-		te.p.afterRename = kill
-	case "hook:afterLog":
-		te.p.afterLog = kill
 	case "hook:midTmp":
 		te.codec.midTmp = kill
 	case "hook:extract":
@@ -106,8 +103,8 @@ func rolledBack(t *testing.T, te *testEnv, st crashState) {
 	te.checkRecovered()
 	te.plaintextIntact(st.orig)
 	for _, name := range te.unitDirEntries(st.u.Key) {
-		if isOpDir(name) {
-			t.Fatalf("operation directory left: %s", name)
+		if strings.HasPrefix(name, ".op-") || name == capsule.TmpName("g000001.pcap") {
+			t.Fatalf("operation leftover: %s", name)
 		}
 		if _, err := te.e.Log.Lookup("claude-code/"+st.u.Key+"/"+name, ""); err == nil {
 			t.Fatalf("an unlogged capsule %s left", name)
@@ -155,11 +152,12 @@ func TestCrashSEAL2MidTemporary(t *testing.T) { sealCrash(t, "hook:midTmp", fals
 // SEAL-3: SIGKILL after the temporary is FullSynced, before verify.
 func TestCrashSEAL3AfterTmpWritten(t *testing.T) { sealCrash(t, "seal.tmp_written", false) }
 
-// SEAL-6: SIGKILL after the no-replace rename, before the log append.
-func TestCrashSEAL6AfterRename(t *testing.T) { sealCrash(t, "hook:afterRename", false) }
+// SEAL-6: SIGKILL after the no-replace rename, before the log append
+// (capsule.renamed, evaluated by Seal; the fake codec mirrors it).
+func TestCrashSEAL6AfterRename(t *testing.T) { sealCrash(t, "capsule.renamed", false) }
 
 // SEAL-7: SIGKILL after the log append, before committed is journaled.
-func TestCrashSEAL7AfterLogAppend(t *testing.T) { sealCrash(t, "hook:afterLog", true) }
+func TestCrashSEAL7AfterLogAppend(t *testing.T) { sealCrash(t, "seal.logged", true) }
 
 // SEAL-8: SIGKILL after committed, before the first unlink.
 func TestCrashSEAL8AfterCommitted(t *testing.T) { sealCrash(t, "seal.committed", true) }

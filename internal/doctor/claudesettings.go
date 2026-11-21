@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/paths"
 )
 
 // settingsFile is what the checks read from one Claude settings file: key
@@ -84,11 +85,8 @@ var errInvalidJSON = errors.New("doctor: invalid JSON")
 func isJSONNull(raw json.RawMessage) bool { return bytes.Equal(bytes.TrimSpace(raw), []byte("null")) }
 
 // isPrecintoPlugin reports whether a plugin id (name@marketplace) is
-// precinto's Claude plugin (SPEC §21: plugin name "precinto").
-func isPrecintoPlugin(id string) bool {
-	name, _, _ := strings.Cut(id, "@")
-	return name == "precinto"
-}
+// precinto's Claude plugin: exactly paths.ClaudePluginID (SPEC §21, CC-37).
+func isPrecintoPlugin(id string) bool { return id == paths.ClaudePluginID }
 
 // claudeConfigDirs returns the Claude config dirs to inspect: every
 // registered home (config) and the default of this environment

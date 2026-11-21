@@ -30,7 +30,9 @@ const (
 	// hookPresenceWithin is Codex's UserPromptSubmit window after the first
 	// Enter (SPEC §14.4).
 	hookPresenceWithin = 5 * time.Second
-	maxHomeEntries     = capsule.MaxEntries
+	// sessionEndBudget is Codex's SessionEnd hook budget (HOOKS-IO §1).
+	sessionEndBudget = 3 * time.Second
+	maxHomeEntries   = capsule.MaxEntries
 )
 
 var errNoSalt = errors.New("codex: no name salt")
@@ -418,6 +420,10 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		Mode:    a.inv.Classify(args, true, true),
 		Resume:  parseResume(args, a.inv),
 		Argv:    append([]string{exe}, args...),
+		// Codex installs no SIGTERM handler: Ctrl-C twice makes it exit
+		// cleanly (HA19); its SessionEnd hooks get 3 s (HOOKS-IO §1).
+		QuitKeys:  []byte{0x03, 0x03},
+		KillGrace: harness.KillGrace(sessionEndBudget),
 	}
 	root, ok := e.Cfg.RootFor(filepath.Clean(cwd))
 	if !ok || plan.Mode == harness.LaunchPassthrough {
@@ -455,6 +461,11 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	}
 	if st, err := fsx.Lstat(home); err != nil || !st.IsDir() {
 		plan.Confirm = msgConsent
+		folder := root.Path
+		if h, err := paths.UserHome(e.Host); err == nil {
+			folder = paths.Tilde(h, root.Path)
+		}
+		plan.MsgVars = map[string]string{"folder": folder}
 	} else if trusted, known, _ := hooksTrusted(home); known && !trusted {
 		plan.Confirm = msgUntrusted
 	}

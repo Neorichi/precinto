@@ -24,6 +24,11 @@ const (
 	// failpoints: cmd/precinto reads it here and calls failpoint.Set before
 	// dispatching (docs/TESTPLAN.md §4). Ignored by every other build.
 	EnvCrashpoint = "PRECINTO_CRASHPOINT"
+	// EnvTestAncestryStop ("PID:START") ends the harness-ancestry walk of
+	// ui.AgentContext and of the daemon's peer checks at that process, in
+	// -tags testing builds only (D64); read it with TestAncestryStop.
+	// Production builds never read it; hook mode and the shim ignore it.
+	EnvTestAncestryStop = "PRECINTO_TEST_ANCESTRY_STOP"
 
 	EnvClaudeConfigDir   = "CLAUDE_CONFIG_DIR"
 	EnvClaudeTmpDir      = "CLAUDE_CODE_TMPDIR"
@@ -130,6 +135,25 @@ func OverridesAllowed(e Env) bool { return overridesAllowed(e, testingBuild) }
 // TestingBuild reports whether the binary was built with -tags testing.
 func TestingBuild() bool { return testingBuild }
 
+// TestAncestryStop returns the PID:START value of EnvTestAncestryStop in a
+// -tags testing build (ok=false when unset or malformed); ("", false) in
+// every other build, which never reads the variable (the reading code is
+// only in build_testing.go, D64). Callers end the harness-ancestry walk at
+// the process whose measured ProcID equals it: that process and its
+// ancestors are ignored, everything below is checked, and env markers and
+// the no-controlling-terminal rule still apply.
+func TestAncestryStop(e Env) (string, bool) { return testAncestryStop(e) }
+
+// Names fixed by the product (owner-revisable, OD-05).
+const (
+	// ServiceLabel is the LaunchAgent label; its plist is
+	// ~/Library/LaunchAgents/<label>.plist.
+	ServiceLabel = "com.github.precinto.sweep"
+	// ClaudePluginID is the Claude Code plugin id: plugin precinto of the
+	// marketplace precinto (SPEC §21).
+	ClaudePluginID = "precinto@precinto"
+)
+
 // UserHome returns $HOME, which must be absolute (precinto trusts HOME;
 // see SPEC §19).
 func UserHome(e Env) (string, error) {
@@ -195,6 +219,8 @@ type Layout struct {
 	QueueDir       string // state/queue/<req-id>.json
 	LocksDir       string // state/locks/*.lock (never deleted)
 	PolicyPinned   string // state/policy.pinned: policy confirmed at the last TTY unlock, with per-vault MACs (D48, D55)
+	HookDedupeDir  string // state/hookdedupe (HA21 duplicate suppression, content-free hashed names)
+	NotesIndex     string // state/notes.json (pending-notes index: absolute note paths per root, no content)
 	SweepRequested string // state/sweep.requested
 	SweepLast      string // state/sweep.last (heartbeat for status)
 
@@ -236,6 +262,11 @@ func defaultBaseFor(e Env, goos string) (string, error) {
 // OverridesAllowed(e). It fails if the socket path is 104 bytes or longer.
 func NewLayout(e Env) (Layout, error) { return newLayout(e, runtime.GOOS, OverridesAllowed(e)) }
 
+// HookLayout returns the default base and run dir for e, never honouring
+// PRECINTO_* overrides (hook mode, D6/D56), in every build; it fails like
+// NewLayout when the socket path is too long (ErrSocketPath).
+func HookLayout(e Env) (Layout, error) { return newLayout(e, runtime.GOOS, false) }
+
 // LayoutAt derives a Layout for an explicit base and run directory (tests,
 // and the daemon after it has resolved its own layout). Both must be
 // absolute and clean; the socket path must be shorter than MaxSocketPath.
@@ -274,6 +305,8 @@ func LayoutAt(base, runDir string) (Layout, error) {
 		QueueDir:       j(st, "queue"),
 		LocksDir:       j(st, "locks"),
 		PolicyPinned:   j(st, "policy.pinned"),
+		HookDedupeDir:  j(st, "hookdedupe"),
+		NotesIndex:     j(st, "notes.json"),
 		SweepRequested: j(st, "sweep.requested"),
 		SweepLast:      j(st, "sweep.last"),
 

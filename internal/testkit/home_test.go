@@ -13,6 +13,7 @@ import (
 
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/testkit"
 )
 
@@ -103,6 +104,8 @@ func TestNewHomeEnv(t *testing.T) {
 		"XDG_CACHE_HOME":         filepath.Join(h.Dir, "xdg", "cache"),
 		"XDG_CONFIG_HOME":        filepath.Join(h.Dir, "xdg", "config"),
 		paths.EnvXDGRuntimeDir:   filepath.Join(h.RunDir, "xdg"),
+		// D64: testing binaries end their ancestry walk at this process.
+		paths.EnvTestAncestryStop: platform.Self().String(),
 	}
 	for k, w := range want {
 		if v, ok := h.Env.Lookup(k); !ok || v != w {
@@ -147,6 +150,13 @@ func TestNewHomeNeverRealHome(t *testing.T) {
 	h := testkit.NewHome(t)
 	for _, kv := range h.Env.Environ() {
 		k, v, _ := strings.Cut(kv, "=")
+		if k == paths.EnvTestAncestryStop {
+			// D64: the test process's PID:START, not a path.
+			if v != platform.Self().String() {
+				t.Errorf("Env %s=%q, want the test process %s", k, v, platform.Self())
+			}
+			continue
+		}
 		for _, p := range filepath.SplitList(v) {
 			if !filepath.IsAbs(p) {
 				t.Errorf("Env %s=%q holds a relative path", k, v)

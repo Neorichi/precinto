@@ -121,7 +121,7 @@ func TestUnsealedInterruptedOperations(t *testing.T) {
 			{ID: "3", Kind: journal.KindSeal, PID: 5000, Updated: now.Add(-time.Minute)},      // in flight
 		}, nil
 	}
-	got := want(t, f.run(), doctor.CheckUnsealed, doctor.Warn, "2 interrupted operations (restore 1, seal 1) wait for recovery")
+	got := want(t, f.run(), doctor.CheckInterrupted, doctor.Warn, "2 interrupted operations (restore 1, seal 1) wait for recovery")
 	if got.Fix != "precinto sweep" {
 		t.Errorf("fix %q", got.Fix)
 	}
@@ -155,11 +155,11 @@ func TestResidue(t *testing.T) {
 		return []*journal.Record{{ID: "op-owned", Kind: journal.KindRestore, Phase: journal.PhaseStaged, Staging: owned, Updated: now}}, nil
 	}
 	fs := f.run()
-	got := want(t, fs, doctor.CheckResidue, doctor.Warn, f.h.Layout.StagingDir+"/op-orphan is an abandoned restore staging folder with 1 decrypted file")
+	got := want(t, fs, doctor.CheckInterrupted, doctor.Warn, f.h.Layout.StagingDir+"/op-orphan is an abandoned restore staging folder with 1 decrypted file")
 	if got.Fix != "rm -r "+orphan {
 		t.Errorf("fix %q", got.Fix)
 	}
-	for _, x := range of(fs, doctor.CheckResidue) {
+	for _, x := range of(fs, doctor.CheckInterrupted) {
 		if strings.Contains(x.Message, "op-owned") {
 			t.Errorf("staging owned by a journal record reported: %q", x.Message)
 		}
@@ -174,7 +174,7 @@ func TestResidue(t *testing.T) {
 	writeFile(t, filepath.Join(f.h.ClaudeConfig, "shell-snapshots", "snapshot-zsh-2.sh"), "export X=1\n", 0o600) // fresh: in use
 	setMtime(t, filepath.Join(f.h.ClaudeConfig, "shell-snapshots", "snapshot-zsh-2.sh"), time.Hour)
 	fs = f.run()
-	want(t, fs, doctor.CheckResidue, doctor.Warn, "Claude's temp folder "+f.h.ClaudeTmp+" can be read by other users")
+	want(t, fs, doctor.CheckPermissions, doctor.Warn, "Claude's temp folder "+f.h.ClaudeTmp+" can be read by other users")
 	want(t, fs, doctor.CheckResidue, doctor.Warn, "1 old shell snapshot in")
 
 	// --leaks: usage data, edit diffs, Codex hook outputs.

@@ -30,7 +30,7 @@ func usageErrorf(format string, args ...any) error {
 type notProtectedError struct{ dir string }
 
 func (e notProtectedError) Error() string {
-	return fmt.Sprintf(textNotProtected, e.dir)
+	return ui.Format(ui.MsgNotProtected, ui.Vars{Folder: e.dir})
 }
 
 // refusedError is a refusal the CLI itself decided (agent context, no
@@ -61,7 +61,7 @@ var (
 	restoreVerifyErrors = []error{fsx.ErrUnsafe, harness.ErrUnitKey}
 	liveErrors          = []error{sweep.ErrLive, capsule.ErrChanged, sweep.ErrConflict}
 	lockedErrors        = []error{
-		sweep.ErrKeyDenied, vault.ErrCancelled, vault.ErrNoUI, vault.ErrLocked, vault.ErrNeedRecovery,
+		sweep.ErrKeyDenied, vault.ErrCancelled, vault.ErrBadSecret, vault.ErrNoUI, vault.ErrLocked, vault.ErrNeedRecovery,
 		ui.ErrCancelled, platform.ErrRoot,
 	}
 	usageErrors = []error{sweep.ErrNotMarker}
@@ -173,7 +173,7 @@ func (a *app) failWith(name string, err error, code int) int {
 		return code
 	}
 	if errors.Is(err, ipc.ErrNoDaemon) {
-		a.say(textAgentDown)
+		a.line(ui.MsgAgentDownAll, ui.Vars{})
 		return code
 	}
 	a.say("%s: %s", name, oneLineText(err.Error()))

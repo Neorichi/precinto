@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,12 @@ import (
 // internal/ui, so plans carry ui.MsgID values as strings and the wrapper
 // renders them (ui.Format renders an unknown id as the id itself).
 const (
-	msgBareWarning = "C9.bare"  // --bare in a protected folder
-	msgResumeTwice = "C7.twice" // the session is open in another terminal
-	envAwaySummary = "CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0"
+	msgBareWarning  = "C9.bare"     // --bare in a protected folder
+	msgResumeTwice  = "C7.twice"    // the session is open in another terminal
+	msgSettingsKept = "C9.settings" // the user passed --settings: precinto added none (D32)
+	// sessionEndBudget is Claude's SessionEnd hook budget (HOOKS-IO §1).
+	sessionEndBudget = 1500 * time.Millisecond
+	envAwaySummary   = "CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0"
 )
 
 const (
@@ -49,7 +53,10 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	if !filepath.IsAbs(cwd) {
 		return harness.LaunchPlan{}, fmt.Errorf("claude: cwd %q is not absolute", cwd)
 	}
-	cwd = filepath.Clean(cwd)
+	// The realpath'd launch cwd: roots are realpath'd in config, and the
+	// selectors below match Manifest.ProjectDir, the realpath'd start cwd,
+	// exactly (D73), so a launch through a symlinked path selects the same.
+	cwd = realpath(cwd)
 	args := append([]string(nil), argv[1:]...)
 	exe, err := a.resolveExe(e, argv[0])
 	if err != nil {
@@ -59,6 +66,9 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		Harness:   harness.ClaudeCode,
 		Mode:      a.inv.Classify(args, true, true),
 		HookCheck: harness.HookCheck{Event: "SessionStart", Within: hookPresenceWithin},
+		// Claude's SessionEnd hooks get 1.5 s (HOOKS-IO §1); it exits on
+		// SIGTERM, so no quit keys.
+		KillGrace: harness.KillGrace(sessionEndBudget),
 	}
 	resume, cont, fork := resumeFlagsOf(a.inv)
 	plan.Resume = parseResume(args, resume, cont, fork)
@@ -80,6 +90,8 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	final := []string{exe}
 	if !hasSettingsFlag(args) {
 		final = append(final, "--settings", settingsJSON(e.Cfg.Policy))
+	} else {
+		plan.Notices = append(plan.Notices, msgSettingsKept) // SPEC §7.1.5, CC-38
 	}
 	final = append(final, args...)
 	if hasArg(args, "--bare") {
@@ -88,6 +100,8 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 
 	h, registered := launchHome(e)
 	maxAge := retention(h)
+	// Selectors match Manifest.ProjectDir exactly: the session's realpath'd
+	// start cwd (D73); cwd is realpath'd above.
 	recent := harness.Selector{Kind: capsule.KindClaudeSession, RootID: root.ID, ProjectDir: cwd,
 		Recent: e.Cfg.Policy.RestoreRecent, MaxAge: maxAge, MaxBytes: e.Cfg.Policy.RestoreMaxBytes}
 	project := a.projectSelector(e, h, registered, root, cwd)
@@ -100,10 +114,11 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		plan.Sync = append(plan.Sync, harness.Selector{Kind: capsule.KindClaudeSession, Keys: []string{key}, MtimeNow: true})
 		plan.Lease = append(plan.Lease, key)
 		plan.SealScope.SIDs = []string{sid}
-		if a.openElsewhere(e, h, sid) && !plan.Resume.Fork {
+		if pid, open := a.openElsewhere(e, h, sid); open && !plan.Resume.Fork {
 			// Opening a session twice can lose messages (C7.twice): the
 			// plan opens a copy; answering no aborts the launch.
 			plan.Confirm = msgResumeTwice
+			plan.MsgVars = map[string]string{"sid": sid, "pid": strconv.Itoa(pid)}
 			plan.Resume.Fork = true
 			final = append(final, fork[0])
 		}
@@ -205,7 +220,7 @@ func (a *adapter) projectSelector(e harness.Env, h home, registered bool, root c
 		}
 	}
 	if len(sel.Keys) == 0 {
-		sel.ProjectDir = cwd
+		sel.ProjectDir = cwd // realpath'd by PlanLaunch (D73)
 	}
 	return sel
 }
@@ -234,13 +249,13 @@ func (a *adapter) resumeTarget(e harness.Env, h home, r harness.Resume) (string,
 
 // openElsewhere reports whether the registry shows sid running in another
 // live Claude process (C7.twice).
-func (a *adapter) openElsewhere(e harness.Env, h home, sid string) bool {
+func (a *adapter) openElsewhere(e harness.Env, h home, sid string) (int, bool) {
 	if e.Procs == nil {
-		return false
+		return 0, false
 	}
 	reg, err := readRegistry(h.configDir())
 	if err != nil {
-		return false
+		return 0, false
 	}
 	for _, r := range reg {
 		if !r.Valid || !strings.EqualFold(r.SessionID, sid) {
@@ -248,8 +263,8 @@ func (a *adapter) openElsewhere(e harness.Env, h home, sid string) bool {
 		}
 		info, err := e.Procs.Lookup(r.PID)
 		if err == nil && info.State != platform.StateZombie && registryMatches(r, info) {
-			return true
+			return r.PID, true
 		}
 	}
-	return false
+	return 0, false
 }

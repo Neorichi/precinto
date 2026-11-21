@@ -35,10 +35,10 @@ Module `github.com/precinto/precinto` · `go 1.26.0` (the go command rejects a b
  4  live
  3  ledger, ipc, vaulttest, testkit
  2  config, capsule, vault, ui, sweep/journal, sweep/queue, fakeplatform
- 1  paths, platform, sweep/capslog
+ 1  paths, platform, sweep/capslog, fsx/fsxtest (test-only)
  0  fsx, fsx/failpoint, inventories, archtest
 ```
-`internal/agent` never imports `internal/sweep` (it spawns `precinto sweep|seal|restore` workers); `internal/sweep` never imports `internal/ipc`; `internal/wrapper` never imports `internal/sweep`, `internal/vault` or `internal/agent`.
+`internal/agent` never imports `internal/sweep` (it spawns `precinto sweep|seal|restore` workers) and may import `inventories` (embedded data: `harness.LoadInventories(inventories.FS)` once at start for `register` and the D52 scan); `internal/sweep` never imports `internal/ipc`; `internal/wrapper` never imports `internal/sweep`, `internal/vault` or `internal/agent`.
 
 ## 4. Cross-group seams (who implements what)
 | Interface (owner) | Implemented by | Purpose |
@@ -52,6 +52,8 @@ Module `github.com/precinto/precinto` · `go 1.26.0` (the go command rejects a b
 | `hook.Daemon`, `hook.Ledger` (G5) | `*ipc.Client` (G2), `*ledger.Ledger` (G3); fakes in hook tests | gate/activity/register/unlock; ledger facts |
 | `wrapper.Backend`, `wrapper.Daemon`, `wrapper.Lease` (G6) | `cmd/precinto` (G7) over `harness`, `sweep`, `live`, `ledger`, `ipc`; `*ipc.Client`; `*live.Held` | restore-before-launch orchestration via interfaces; G6 tests fake all three |
 | `live.Engine` (G3) | used by `sweep` (G4) and `doctor` (G7) | liveness decisions |
+| `sweep.Env.Sleep` (G4) | nil in production (real sleep); tests pass a function that advances the fake clock | the one D63 quiet-window wait per run |
+| `agenttest.Agent.Client` (G2) | fake backends and other goroutines (non-fatal dial; `Dial` calls `t.Fatalf` and is for the test goroutine only) | background dials in tests |
 
 Every "implemented directly" row is a compile-time assertion in `cmd/precinto/seams.go` (or `fakeplatform`), so a signature drift fails `go build`.
 
@@ -61,11 +63,13 @@ Every "implemented directly" row is a compile-time assertion in `cmd/precinto/se
 | nil | 0 |
 | usage errors; `ipc.CodeBadRequest` | 2 |
 | `sweep.ErrNotMarker` (cat/open of a non-marker) | 2 |
-| `ipc.CodeLocked`, `CodeUnauthorized`, `CodeAgentContext`, `CodeCancelled`, `CodeNoUI`, `CodeRateLimited`; `sweep.ErrKeyDenied`; `vault.ErrCancelled`, `vault.ErrNoUI`, `vault.ErrLocked`, `vault.ErrNeedRecovery`; `ui.ErrCancelled` | 3 |
+| `ipc.CodeLocked`, `CodeUnauthorized`, `CodeAgentContext`, `CodeCancelled`, `CodeNoUI`, `CodeRateLimited`, `CodeBadSecret`; `sweep.ErrKeyDenied`; `vault.ErrCancelled`, `vault.ErrBadSecret`, `vault.ErrNoUI`, `vault.ErrLocked`, `vault.ErrNeedRecovery`; `ui.ErrCancelled`; `platform.ErrRoot` | 3 |
 | `sweep.ErrLive`, `capsule.ErrChanged`, `sweep.ErrConflict` (codex launch) | 4 |
 | `capsule.ErrVerify`, `capsule.ErrHeader`, `capsule.ErrRecipients`, `capsule.ErrFormat`, `capsule.ErrUnsafe`, `capsule.ErrTooLarge`, `fsx.ErrUnsafe` from restore/extract, `harness.ErrUnitKey` from restore (unit id does not match its key), `vault.ErrMACMismatch`, `vault.ErrRecipientsChanged` (`sweep.ErrTripwire`), `vault.ErrWrongIdentity`, `vault.ErrPluginPin`, `capslog.ErrNotLogged` (`sweep.ErrNotLogged`: quarantined, no provenance), `ipc.CodeVerify`, `ipc.CodeNotLogged` | 5 |
 | anything else (`ipc.ErrUntrustedServer`, `ipc.ErrNoDaemon`, `sweep.ErrInaccessible`, I/O) | 1 |
 | `sweep.ErrBusy` from `precinto sweep` | 0 (another sweep will rescan) |
+| `wrapper.ExitNotStarted` from `wrapper.Run` (the launch never started) | map the returned error with this table (an executable that cannot run: 127, or 126 when it is not executable); once the child started, `run` returns the child's own code |
+| `precinto doctor` | `doctor.Worst`: 1 when any finding fails, else 0 |
 | hook mode | see `hook.ExitOK`/`ExitBlockCode2`/`ExitFailure` (D43) |
 
 ## 6. On-disk and wire formats and their owners
@@ -89,19 +93,19 @@ Every "implemented directly" row is a compile-time assertion in `cmd/precinto/se
 ## 7. CLI wiring (G7)
 | Subcommand | Wires |
 |---|---|
-| `init`, `factor` | `ui.AgentContext` refusal, `vault.Store.Init`, `ipc` `factor_add`, `ui.TTY.ShowSecretScreen`, B.remote passphrase offer in tmux/SSH (D60), `service install` offer |
+| `init`, `factor` | `ui.AgentContext` refusal, `vault.Store.Init`, `ipc` `factor_add` (`PresencePolicy`/`NoPresenceAck` for plugin factors), `ui.TTY.ShowSecretScreen`, B.remote passphrase offer in tmux/SSH (D60), `service install` offer; `factor test NAME`: `ipc.Client.Unlock` with `UnlockReq.Test`; `factor repin NAME`: typed confirmation, `vault.Store.RepinPlugin` (D75) |
 | `vault repair` | TTY + `ui.AgentContext` refusal, `ipc.Client.VaultRepair` (recovery key read with `ui.TTY.Secret` for `--recovery`), diff + `ui.MsgVaultRepairConfirm` typed confirmation (D53) |
 | `protect`, `unprotect` | `config` (overlap check, new root id, `WriteRootsList`), `ipc` `vault_create`, `sweep.Sweep` scoped to the root, `.git/info/exclude`; `unprotect`: typed confirmation, refused in agent contexts (D59) |
 | `status` | `ipc.Client.Status` + `sweep.PlaintextSummary` + `doctor` codes; `--json` v1; `--check` exit 3 |
 | `unlock`, `lock` | `ipc.Client.Unlock`/`Lock` with a TTY `ipc.UIHandler`; typed confirmation for `--all` (D40) |
 | `seal`, `sweep`, `restore`, `resume`, `ls`, `open`, `cat`, `resolve`, `forget`, `prune`, `codex` | `sweep` with `sweep.Env` built from `config`, `paths`, `ledger`, `live`, `harness` adapters, `vault.Store`, `capslog`, `journal`; KeySource/Grants over `ipc`; `cat`/`open` via `sweep.ParseMarker`, `CatNote`, `OpenNotes`; `forget`/`prune` (not `--dry-run`): typed confirmation (`ui.MsgConfirmTyped`), refused in agent contexts and without a controlling terminal (D59); `codex sync-config` via `codex.PrepareHome` with `ForceConfig` |
-| `run` | `wrapper.Run` with a `wrapper.Backend` over `harness`, `sweep`, `live`, `ipc` |
+| `run` | `wrapper.Run` with a `wrapper.Backend` over `harness`, `sweep`, `live`, `ipc`; `wrapper.ExitNotStarted` maps the returned error with §5 |
 | `hook` | `hook.Main` (fast path; no autostart) |
-| `shell-init`, `shell-hook` | `shellinit.Script`, `shellinit.OnEnter` |
+| `shell-init`, `shell-hook` | `shellinit.Script`, `shellinit.OnEnter`; `shell-hook` prints `shellinit.EnterResult.Lines()` and nothing else (D69) |
 | `agent`, `service` | `agent.Run`; darwin LaunchAgent running `precinto sweep --quiet` (linux unit deferred, D49: exit 2 with a notice) |
 | `integrate` | harness plugin CLIs (`claude plugin …`, `codex plugin …`), `<base>/bin/precinto` link |
-| `doctor` | `doctor.Run` |
-| `recover` | `vault.ParseRecoveryKey`, `vault.VerifyRecovery` |
+| `doctor` | `doctor.Run`, printed with `doctor.Render` (`--json`), exit from `doctor.Worst` |
+| `recover` | `vault.ParseRecoveryKey`, `vault.VerifyRecovery`; `--verify` records `vault.Store.MarkRecoveryVerified` |
 | `canary`, `scrub`, `rekey`, `import` | deferred beyond v0.2 (D49): exit 2 with a notice |
 | every build with `-tags failpoints` | `main` reads `paths.EnvCrashpoint` through `internal/paths` and calls `failpoint.Set` before dispatching (TESTPLAN §4) |
 
@@ -153,6 +157,17 @@ func Hit(name string) error
 // (failpoints builds only; 0 otherwise).
 func Hits(name string) int
 
+// NoteFS reports op to the observers registered with ObserveFS. It is a
+// no-op without -tags failpoints or without observers.
+func NoteFS(op FSOp)
+
+// ObserveFS registers fn to receive every FSOp reported by NoteFS until
+// the returned stop is called. fn runs synchronously in the reporting
+// goroutine, possibly concurrently with itself, and must not call back
+// into internal/fsx. Only valid with -tags failpoints; otherwise it panics
+// so tests cannot silently pass.
+func ObserveFS(fn func(FSOp)) (stop func())
+
 // Reset disarms every fault and clears hit counters.
 func Reset()
 
@@ -166,6 +181,35 @@ func Reset()
 // Only valid with -tags failpoints; otherwise it panics so tests cannot
 // silently pass. A malformed spec panics too. Implemented in the scaffold.
 func Set(spec string)
+
+// FSOp is one mutating file-system operation that internal/fsx reports in
+// failpoints builds, so that test helpers (internal/fsx/fsxtest) can build
+// power-loss images (docs/TESTPLAN.md §4). Paths are absolute. Rename,
+// link, unlink and rmdir are reported twice: with Done=false right before
+// the operation (Path and Target still hold their old state) and with
+// Done=true once it succeeded; the other kinds only with Done=true.
+type FSOp struct {
+	Kind   FSOpKind
+	Path   string
+	Target string   // rename and link: the new name
+	Done   bool     // false: about to run; true: completed
+	File   *os.File // FSFsync: the synced file (read it only with ReadAt/Stat)
+}
+
+// FSOpKind names a mutating file-system operation reported by NoteFS.
+type FSOpKind string
+
+// Reported operations (internal/fsx, failpoints builds only).
+const (
+	FSCreate  FSOpKind = "create"  // a file was created (O_EXCL, or a lock file)
+	FSMkdir   FSOpKind = "mkdir"   // a directory was created
+	FSRename  FSOpKind = "rename"  // Path renamed to Target (Target replaced if it existed)
+	FSLink    FSOpKind = "link"    // Target created as a hard link of Path
+	FSUnlink  FSOpKind = "unlink"  // a non-directory was removed
+	FSRmdir   FSOpKind = "rmdir"   // an empty directory was removed
+	FSFsync   FSOpKind = "fsync"   // File's data and size are durable (FullSync)
+	FSDirSync FSOpKind = "dirsync" // the entries of the directory Path are durable
+)
 ```
 
 ### `internal/fsx`
@@ -259,11 +303,13 @@ func MkdirPrivate(path string) error
 
 // ProbeHeld reports whether another process holds any flock on path. It
 // tries LOCK_EX|LOCK_NB and releases immediately, then verifies that the
-// path still names the probed inode; any error, an unsupported file system
-// or an inode mismatch reports held=true (R17). Use it only on precinto's
-// own lock and lease files: harness writer locks (Codex
-// thread-writer-locks) are checked with platform.ProcTable.OpenFilesUnder,
-// never by flocking them (HA17).
+// path still names the probed inode. A missing file is not held: (false,
+// nil) — lease files are created before use and never deleted (SPEC §9.3).
+// Any other error, an unsupported file system, or an inode swap during the
+// probe reports held=true (R17). It is the one probe implementation for
+// leases (live.Probe uses it). Use it only on precinto's own lock and lease
+// files: harness writer locks (Codex thread-writer-locks) are checked with
+// platform.ProcTable.OpenFilesUnder, never by flocking them (HA17).
 func ProbeHeld(path string) (held bool, err error)
 
 // Realpath resolves symlinks in an existing absolute path once (protect and
@@ -322,6 +368,17 @@ type Dir struct {
 // owned by the current uid.
 func OpenBase(path string) (*Dir, error)
 
+// AppendLine appends line, plus "\n" if it lacks one, with one
+// O_WRONLY|O_APPEND|O_NOFOLLOW write to the regular file rel opened
+// component by component below d (created 0600 with O_EXCL when absent;
+// the parent directory is then fsynced), then FullSyncs it; refuses
+// non-regular files (a FIFO is refused without blocking) and files not
+// owned by the user (ErrUnsafe). line must hold no other '\n' and be at
+// most MaxLine bytes; an empty line appends only the newline (used to end
+// a torn last line). Parent directories are never created (failpoints
+// "fsx.write", "fsx.fsync").
+func (d *Dir) AppendLine(rel string, line []byte) error
+
 // Chmod sets permission bits of rel (masked with 0o700) without following.
 func (d *Dir) Chmod(rel string, perm fs.FileMode) error
 
@@ -333,7 +390,9 @@ func (d *Dir) Close() error
 
 // CreateTemp creates a new 0600 file in the directory dirRel (created 0700
 // if missing) with O_CREAT|O_EXCL|O_NOFOLLOW and returns it with its name
-// relative to d.
+// relative to d. The last '*' of pattern is replaced by a random string; a
+// pattern without '*' is the exact name, created O_EXCL (ErrExist if it
+// exists). Unlike os.CreateTemp, a pattern without '*' gets no suffix.
 func (d *Dir) CreateTemp(dirRel, pattern string) (*os.File, string, error)
 
 // Device returns the st_dev of the directory.
@@ -525,6 +584,50 @@ type WalkEntry struct {
 }
 ```
 
+### `internal/fsx/fsxtest`
+
+- Owner: **G1 crypto core** · layer 1 · test-only helper (production packages must not import it)
+- May import (module): `internal/fsx`, `internal/fsx/failpoint`
+- May import (third party): stdlib only
+- Tests: self-tests (-tags failpoints): an unsynced rename, create, unlink or write is absent from the strict image and present in the full one, synced operations and everything they depend on are present in every image, identical images are merged
+
+> Package fsxtest records the mutating file-system operations of
+> internal/fsx and builds power-loss images from them (docs/TESTPLAN.md §4,
+> power-loss mode). It works only in -tags failpoints builds, where fsx
+> reports every create, mkdir, rename, link, unlink, rmdir, file FullSync
+> and directory fsync through failpoint.NoteFS.
+>
+> The model: an entry created, renamed, linked or removed in a directory is
+> durable once that directory (for a rename or link: the new name's
+> directory) was fsynced after it; file data is durable as of the file's
+> last FullSync. Images undo non-durable name operations (a random subset
+> closed under their dependencies, newest first) and revert non-durable
+> data to its last synced content (empty for a file created during the
+> recording and never synced). Writes are seen only through FullSync, so
+> files that existed before Record and were never synced during it keep
+> their current content. A rename out of the imaged directory cannot be
+> undone and counts as persisted.
+
+```go
+// Recording is the operation log of one test (Record).
+type Recording struct {
+	// contains filtered or unexported fields
+}
+
+// Record starts logging every mutating fsx operation of the process until
+// the test ends. It skips the test in builds without -tags failpoints.
+func Record(t testing.TB) *Recording
+
+// Images builds up to n power-loss images of dir (n ≥ 2: the first keeps
+// only what is durable, the second everything; the rest are random subsets
+// of the non-durable operations, deterministic per test name). Each image
+// is a directory tree under t.TempDir() with dir's layout, returned by
+// path; journals inside hold absolute paths, so callers copy an image over
+// dir before running recovery on it. dir must be the absolute path the
+// code under test used (or its realpath).
+func (r *Recording) Images(t testing.TB, dir string, n int) []string
+```
+
 ### `internal/capsule`
 
 - Owner: **G1 crypto core** · layer 2 · production
@@ -604,7 +707,7 @@ func GenName(n uint64) string
 func HashFile(dir *fsx.Dir, name string) (sha256 string, size int64, err error)
 
 // LoadSalt reads <state>/name.salt, creating 32 random bytes (0600) if
-// missing.
+// missing. Sealers use it; read-only callers use ReadSalt.
 func LoadSalt(path string) ([]byte, error)
 
 // ParseGenName parses a generation file name; it accepts only names that
@@ -616,9 +719,22 @@ func ParseGenName(name string) (uint64, bool)
 // (age.ExtractHeader), opening it with O_NOFOLLOW, plus its SHA-256.
 func ReadHeader(dir *fsx.Dir, name string) (header []byte, headerSHA256 string, err error)
 
+// ReadSalt reads state/name.salt without creating it; ok=false when it does
+// not exist (then no unit key exists yet). Read-only callers (doctor,
+// status) use it, sealers keep LoadSalt. A symlink, FIFO or other
+// non-regular file at path, or a salt of the wrong size, is an error.
+func ReadSalt(path string) (salt []byte, ok bool, err error)
+
 // RecipientsFingerprint is SHA-256 over the canonical recipient set
 // (sorted recipient strings joined by '\n', prefixed by the family) (D5).
 func RecipientsFingerprint(family string, recipients []string) string
+
+// TmpName returns the temporary Seal writes in SealRequest.Out for the
+// final name: "." + name + ".tmp", created O_EXCL (Seal fails with
+// fsx.ErrExist when it is left over, and leaves it) and removed on every
+// error return. It is a pure function of the final name so that callers
+// journal it before Seal (D58a, journal.Record.Tmp).
+func TmpName(name string) string
 
 // UnitKey derives a unit key: lowercase hex of the first 16 bytes of
 // HMAC-SHA256(salt, join(parts, 0x1f)). Parts per kind are fixed by SPEC
@@ -677,9 +793,10 @@ type Input struct {
 	Snap   fsx.Stat
 	Append bool
 	Group  string
-	// Open, if set, is read instead of opening Dir/Rel: rescue of bytes
-	// appended to an already-unlinked inode (SPEC §10.3 step 7). Snap must
-	// be its current fstat.
+	// Open, if set, is read instead of opening Dir/Rel, for any input whose
+	// bytes sit in an already-unlinked inode (rescue, SPEC §10.3 step 7;
+	// extracted history lines). Snap must be its current fstat; Dir/Rel
+	// still name the entry.
 	Open *os.File
 }
 
@@ -701,8 +818,11 @@ const (
 
 // Limits bounds extraction (SPEC §5 rule 3, §11.5).
 type Limits struct {
-	MaxTotal int64 // reject if the manifest sum exceeds it (free space − floor)
-	MaxFiles int   // default MaxEntries
+	// MaxTotal rejects a manifest whose sum of file sizes exceeds it; ≤ 0
+	// refuses any non-empty capsule (ErrTooLarge). Callers always pass the
+	// real budget (free space − floor).
+	MaxTotal int64
+	MaxFiles int // default MaxEntries
 }
 
 // Lineage of a generation relative to its parent (D9, D10, D42).
@@ -727,7 +847,7 @@ type Manifest struct {
 	VaultID        string    `json:"vault_id"` // vault whose recipient sealed it (D1)
 	RootIDs        []string  `json:"root_ids"` // every managed root; key release needs all of them unlocked
 	RootPath       string    `json:"root_path,omitempty"`
-	ProjectDir     string    `json:"project_dir,omitempty"`
+	ProjectDir     string    `json:"project_dir,omitempty"` // copied from harness.Unit.ProjectDir (D73)
 	Gen            uint64    `json:"gen"`
 	Parent         uint64    `json:"parent"`
 	Lineage        Lineage   `json:"lineage"`
@@ -763,13 +883,19 @@ const (
 
 // SealRequest describes one capsule to write.
 type SealRequest struct {
-	Manifest   Manifest        // Files is filled by Seal from Inputs and Dirs
-	Inputs     []Input         // regular files, in tar order
-	Dirs       []Entry         // empty directories to record
+	Manifest Manifest // Files is filled by Seal from Inputs and Dirs
+	Inputs   []Input  // regular files, in tar order
+	// Dirs are member-less entries recorded as given: empty directories
+	// (Dir=true) and, for codex-home snapshot manifests, files whose bytes
+	// live in a blob capsule (Blob set, Size/SHA256 as recorded). Seal
+	// rejects an entry that is neither (ErrFormat).
+	Dirs       []Entry
 	Recipients []age.Recipient // exactly {vault, recovery} X25519; Seal adds an ephemeral one
-	Out        *fsx.Dir        // capsule unit directory
-	Name       string          // final file name, e.g. "g000007.pcap"; committed with NoReplace
-	OnPhase    func(Phase, *Sealed) error
+	// Out is the capsule unit directory; Seal writes only Out/TmpName(Name)
+	// and commits it to Out/Name with a no-replace rename.
+	Out     *fsx.Dir
+	Name    string // final file name, e.g. "g000007.pcap"; committed with NoReplace
+	OnPhase func(Phase, *Sealed) error
 }
 
 // Sealed is a committed, verified capsule whose plaintext still exists.
@@ -857,14 +983,19 @@ var (
 	ErrNotFound          = errors.New("vault: no such vault")
 	ErrLocked            = errors.New("vault: vault is locked")
 	ErrNeedRecovery      = errors.New("vault: the recovery recipient differs from the verified copy; repair needs the recovery key") // D53
+	// ErrBadSecret: a wrong passphrase or recovery key (exit 3). It counts
+	// toward the D27 prompt rate limit like a cancel and is never a tamper
+	// alert (never ErrWrongIdentity).
+	ErrBadSecret = errors.New("vault: incorrect passphrase or recovery key")
 )
 
 // CalibrateScrypt returns the scrypt logN that takes about target on this
 // machine, clamped to [19, 22] (D3: 2^20 default).
 func CalibrateScrypt(target time.Duration) int
 
-// Diceware generates a passphrase of words from the embedded EFF list
-// (7 words ≈ 90 bits; S9).
+// Diceware generates a passphrase of words from the embedded 7776-word
+// list (7 words ≈ 90 bits; S9). The list file (wordlist.txt) is swappable
+// without a code change (OD-01).
 func Diceware(words int) (*memguard.LockedBuffer, error)
 
 // EstimateBits estimates the entropy of a user-chosen passphrase; the
@@ -911,14 +1042,20 @@ const (
 // FactorSpec describes a factor to enroll.
 type FactorSpec struct {
 	Kind            FactorKind
-	Name            string                 // default: kind, or plugin name
-	Recipient       string                 // se/plugin: from keygen output, never from `recipients` (S10)
-	IdentityStub    string                 // se/plugin handle
-	PluginPath      string                 // absolute; hashed and pinned
-	SEAccessControl string                 // default "any-biometry-or-passcode"; biometry-only and "none" rejected
-	Passphrase      *memguard.LockedBuffer // passphrase factor; consumed
-	ScryptLogN      int                    // 0 = calibrate
-	NoPresenceAck   bool                   // accept a plugin factor without a known presence policy (S10)
+	Name            string // default: kind, or plugin name
+	Recipient       string // se/plugin: from keygen output, never from `recipients` (S10)
+	IdentityStub    string // se/plugin handle
+	PluginPath      string // absolute; hashed and pinned
+	SEAccessControl string // se only: default "any-biometry-or-passcode"; biometry-only and "none" rejected
+	// PresencePolicy is for plugin factors: "touch-always" | "touch-cached" |
+	// "pin-always" | "pin-once" | "tpm-pin"; "" requires NoPresenceAck
+	// (S10); se keeps SEAccessControl. Recorded as Factor.PresencePolicy.
+	PresencePolicy string
+	// Passphrase is consumed (destroyed) by AddFactor, Init and Create:
+	// pass a fresh copy per vault.
+	Passphrase    *memguard.LockedBuffer
+	ScryptLogN    int  // 0 = calibrate
+	NoPresenceAck bool // accept a plugin factor without a known presence policy (S10)
 }
 
 // InitOptions configures Init.
@@ -965,6 +1102,12 @@ func (k *Keyring) Put(id string, identity *memguard.LockedBuffer) error
 // WithIdentity runs fn with a parsed identity of vault id (vault creation,
 // factor enrollment, MAC computation). fn must not retain it.
 func (k *Keyring) WithIdentity(id string, fn func(age.Identity, *memguard.LockedBuffer) error) error
+
+// WithIdentityBuffer runs fn with the locked identity of vault id (factor
+// enrollment by the daemon, which cannot import age); fn must not retain,
+// copy or log it. The buffer is destroyed when fn returns. ErrLocked if the
+// vault is not unlocked.
+func (k *Keyring) WithIdentityBuffer(id string, fn func(identity *memguard.LockedBuffer) error) error
 
 // Meta is vaults/<id>/vault.toml.
 type Meta struct {
@@ -1029,6 +1172,19 @@ func (s *Store) Initialized() (bool, error)
 // List returns every vault id.
 func (s *Store) List() ([]string, error)
 
+// MarkAudited sets last_audit of vault id after the daemon audited every
+// capsule sealed since the previous last_audit (D5). It never moves
+// last_audit backwards (an older at is a no-op) and refuses an at later
+// than now; vault.toml is rewritten atomically under the vault's lock
+// file, outside the recipients MAC. Readers treat a last_audit later than
+// now as zero (audit everything).
+func (s *Store) MarkAudited(id string, at time.Time) error
+
+// MarkRecoveryVerified records recovery_verified_at = at in every
+// vault.toml after `precinto recover --verify` succeeded (SPEC §4.7). Like
+// MarkAudited it never moves the time backwards and refuses the future.
+func (s *Store) MarkRecoveryVerified(at time.Time) error
+
 // Open loads vaults/<id>/vault.toml.
 func (s *Store) Open(id string) (*Vault, error)
 
@@ -1037,8 +1193,8 @@ func (s *Store) Open(id string) (*Vault, error)
 // ErrRecipientsChanged if vault.toml differs from the verified copy (D5).
 func (s *Store) Recipients(id string) ([]age.Recipient, string, error)
 
-// Remove deletes vaults/<id> and its verified copy (unprotect, after every
-// capsule of the root was restored or explicitly forgotten).
+// Remove deletes vaults/<id> and its verified copy. Unused in v0.2:
+// unprotect keeps the vault and every capsule (D74).
 func (s *Store) Remove(id string) error
 
 // Repair rewrites vault.toml of v after a MAC or tripwire failure (D53):
@@ -1051,6 +1207,13 @@ func (s *Store) Remove(id string) error
 // typed confirmation on a TTY; the caller then audits capsules sealed
 // since LastAudit and reports foreign fingerprints as exposed.
 func (s *Store) Repair(v *Vault, o RepairOptions) (RepairResult, error)
+
+// RepinPlugin re-pins factor name in every vault to the binary now at its
+// pinned path, which must be a regular file (not a symlink) owned by root
+// or the user and not group- or other-writable. It returns the previous
+// and the new SHA-256. The caller showed both hashes and obtained the
+// typed word on a TTY (D75); ErrNotFound when no vault has the factor.
+func (s *Store) RepinPlugin(name string) (oldSHA, newSHA string, err error)
 
 // Verify checks that identity matches the vault recipient and that the
 // recipients MAC is valid, then (re)writes the verified copy (D5).
@@ -1124,6 +1287,13 @@ type Fixture struct {
 // root vault rootID, all unlocked in Keyring.
 func New(t testing.TB, dir, rootID string) *Fixture
 
+// TamperRecipient replaces the vault recipient of vaultID in its vault.toml
+// (or, with recovery, the recovery recipient) with a fresh foreign X25519
+// recipient, as a one-shot writer would (SEC-9, SEC-26), and returns it.
+// Only the top-level key is edited, byte for byte, so the recipients MAC
+// and the verified copy no longer match.
+func (f *Fixture) TamperRecipient(t testing.TB, vaultID string, recovery bool) string
+
 // UI is a scripted vault.UI.
 type UI struct {
 	Secrets     []string // answers to Secret, in order
@@ -1156,10 +1326,15 @@ func (u *UI) AsUI() vault.UI
 > Files: platform.go (exported API, shared types), *_darwin.go, *_linux.go
 > (implementations), *_other.go (unsupported stubs so `go vet` builds).
 > darwin: sysctl kern.proc.pid (kp_proc.p_starttime, p_stat), kern.procargs2
-> (exe path), kqueue EVFILT_PROC NOTE_EXIT, getsockopt LOCAL_PEERCRED /
-> LOCAL_PEERPID, PT_DENY_ATTACH, `/usr/sbin/ioreg` polling (IOConsoleLocked,
-> HIDIdleTime), `lsof` for open-file holders. linux: /proc/<pid>/stat field
-> 22 + /proc/sys/kernel/random/boot_id, /proc/<pid>/exe, pidfd_open /
+> (exe path), proc_info(2) (proc_pidpath, PROC_PIDVNODEPATHINFO,
+> PROC_PIDLISTFDS + PROC_PIDFDVNODEPATHINFO) through syscall(2) for
+> executables, working directories and open-file holders, with `lsof` only
+> when proc_info is unavailable (ENOSYS); inspection-protected processes
+> (EPERM) are skipped like lsof does. kqueue EVFILT_PROC NOTE_EXIT,
+> getsockopt LOCAL_PEERCRED / LOCAL_PEERPID, PT_DENY_ATTACH,
+> `/usr/sbin/ioreg` polling (IOConsoleLocked, HIDIdleTime), `tmutil`
+> queries (read-only). linux: /proc/<pid>/stat field 22 (µs since boot,
+> D66) + /proc/sys/kernel/random/boot_id, /proc/<pid>/exe, pidfd_open /
 > pidfd_send_signal, SO_PEERCRED, PR_SET_DUMPABLE, `loginctl show-session`
 > (LockedHint, IdleSinceHint).
 >
@@ -1175,6 +1350,13 @@ var (
 	ErrRoot        = errors.New("platform: refusing to run as root")
 	ErrUnsafeEnv   = errors.New("platform: unsafe loader environment (DYLD_*/LD_*)")
 )
+
+// BackupExcluded is a read-only Time Machine query: `tmutil
+// destinationinfo`, then `tmutil isexcluded path`, with an explicit minimal
+// environment and a 10 s timeout per run. known=false off darwin or when
+// no backup destination is configured (nothing is backed up; err is nil
+// then), or when the answer could not be read (err says why).
+func BackupExcluded(ctx context.Context, path string) (excluded, known bool, err error)
 
 // CheckLoaderEnv returns ErrUnsafeEnv if environ contains DYLD_* or LD_*
 // variables; the daemon refuses to start (or re-execs with a clean env).
@@ -1217,17 +1399,28 @@ func ScrubTTY(tty string, o ScrubOptions) error
 // changed (S14).
 func Signal(id ProcID, sig syscall.Signal) error
 
-// SignalGroup sends sig to every remaining process whose session id is sid.
-// Only for sessions precinto created itself — the wrapper's PTY child or a
+// SignalGroup signals the remaining processes whose session id is
+// leader.PID. It refuses (ErrNotSame) when a process with that pid exists
+// with another start time (the session id was reused), refuses sid ≤ 1 and
+// the caller's own session, and never signals the caller. Only for
+// sessions precinto created itself — the wrapper's PTY child or a
 // direct-mode child started with Setsid, both session leaders — never for
 // an unwrapped harness, whose session is the user's terminal session (its
-// login shell and every other job of that tab) (R11, D57). Callers pass the
-// child's pid, which is the session id.
-func SignalGroup(sid int, sig syscall.Signal) error
+// login shell and every other job of that tab) (R11, D57). Members are
+// re-verified one by one like Signal.
+func SignalGroup(leader ProcID, sig syscall.Signal) error
 
 // SpotlightIndexed reports whether Spotlight indexes path (`mdfind -onlyin
 // <path> -count 'kMDItemFSName == *.md'` > 0); known=false off darwin.
 func SpotlightIndexed(ctx context.Context, path string) (indexed, known bool, err error)
+
+// StartTime returns the wall-clock start of id for comparisons with
+// harness timestamps (D18 registry startedAt, hook windows): darwin's
+// StartUS as is; on linux the current btime is added to a ProcID measured
+// on this boot (one with a BootID; a ProcID without one, such as a test
+// fake, is taken as wall time). It is the zero time when btime cannot be
+// read. See D66.
+func StartTime(id ProcID) time.Time
 
 // WaitExit blocks until id has exited (zombie counts as exited) or ctx ends;
 // darwin kqueue EVFILT_PROC/NOTE_EXIT, linux pidfd poll, fallback polling.
@@ -1275,12 +1468,16 @@ type Peer struct {
 func PeerOf(c *net.UnixConn) (Peer, error)
 
 // ProcID is one process incarnation as measured by precinto: pid plus the
-// kernel start time in microseconds since the Unix epoch (darwin
-// kp_proc.p_starttime; linux boot time + /proc/<pid>/stat starttime, with
-// BootID guarding reboots). ProcIDs are compared by equality only; never
-// computed as now−elapsed and never taken from a harness (R9, S14).
+// kernel start time, with BootID guarding reboots on linux. ProcIDs are
+// compared by equality only; never computed as now−elapsed and never taken
+// from a harness (R9, S14). Use StartTime to compare a start with a wall
+// clock time (D66).
 type ProcID struct {
-	PID     int    `json:"pid"`
+	PID int `json:"pid"`
+	// StartUS is the kernel start time in µs: wall time on darwin
+	// (p_starttime), µs since boot on linux (/proc/<pid>/stat field 22 ×
+	// 10^6/CLK_TCK), so a wall-clock step never changes a measured
+	// identity; compared by equality only.
 	StartUS int64  `json:"start_us"`
 	BootID  string `json:"boot_id,omitempty"` // linux only
 }
@@ -1580,6 +1777,11 @@ const (
 	AttnExposed         = "exposed-capsules"  // capsules sealed to a foreign recipient set (D5 audit)
 )
 
+// MaxKeysPerRequest bounds a keys request: it names at most this many
+// capsules (bad_request otherwise). Clients batch and destroy each file key
+// as soon as its capsule is decrypted, so locked memory stays small.
+const MaxKeysPerRequest = 256
+
 // ErrNoDaemon is returned by Dial when no daemon listens and autostart is
 // off or failed.
 var ErrNoDaemon = errors.New("ipc: precinto agent is not running")
@@ -1628,12 +1830,13 @@ type ActivityReq struct {
 
 // Attention is one "needs attention" item (UX22).
 type Attention struct {
-	Code   string `json:"code"` // one of the Attn* constants
-	Folder string `json:"folder,omitempty"`
-	Count  int    `json:"count,omitempty"`
-	PID    int    `json:"pid,omitempty"`
-	Detail string `json:"detail,omitempty"`
-	Fix    string `json:"fix,omitempty"` // the command that fixes it, e.g. "precinto vault repair --root ~/work/acme"
+	Code    string `json:"code"` // one of the Attn* constants
+	Folder  string `json:"folder,omitempty"`
+	Count   int    `json:"count,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Fix     string `json:"fix,omitempty"`     // the command that fixes it, e.g. "precinto vault repair --root ~/work/acme"
+	Harness string `json:"harness,omitempty"` // {harness} of C9.ungated
 }
 
 // CapsuleRef names one capsule for key release.
@@ -1681,7 +1884,8 @@ func (c *Client) Shutdown(ctx context.Context) error
 func (c *Client) Status(ctx context.Context) (StatusResp, error)
 
 // Subscribe streams events; the channel closes on disconnect, which
-// wrappers treat as a lock (SPEC §15.3).
+// wrappers treat as a lock (SPEC §15.3). The stream starts with one locked
+// or unlocked event per subscribed folder (D71).
 func (c *Client) Subscribe(ctx context.Context, r SubscribeReq) (<-chan Event, error)
 
 // Unlock requests an unlock and relays UI prompts to ui until the final
@@ -1709,6 +1913,7 @@ const (
 	CodeUnauthorized Code = "unauthorized"  // exit 3
 	CodeAgentContext Code = "agent_context" // exit 3 (D28)
 	CodeCancelled    Code = "cancelled"     // exit 3
+	CodeBadSecret    Code = "bad_secret"    // exit 3: wrong passphrase or recovery key (vault.ErrBadSecret, C2.badsecret)
 	CodeNoUI         Code = "no_ui"         // exit 3 (D27)
 	CodeRateLimited  Code = "rate_limited"  // exit 3 (D27)
 	CodeLive         Code = "live"          // exit 4
@@ -1779,6 +1984,10 @@ type Event struct {
 	At       time.Time `json:"at"`
 	Deadline time.Time `json:"deadline,omitempty"`
 	Busy     bool      `json:"busy,omitempty"`
+	// Factors are the folder's enrolled factor kinds in unlock order ("se",
+	// "plugin", "passphrase"; never "recovery"), on locked, unlocked and
+	// expiring events (ui.FactorName names one for {factor}).
+	Factors []string `json:"factors,omitempty"`
 }
 
 // EventKind is a lock event pushed to subscribers.
@@ -1786,9 +1995,12 @@ type EventKind string
 
 // Event kinds.
 const (
-	EventLocked    EventKind = "locked"
-	EventUnlocked  EventKind = "unlocked"
-	EventEnd       EventKind = "end" // end these sessions now (hard lock)
+	EventLocked   EventKind = "locked"
+	EventUnlocked EventKind = "unlocked"
+	// EventEnd is sent only on the subscriptions of wrappers whose session
+	// the daemon ends (registration wrapper ProcID = subscribing peer), with
+	// SIDs when known (D71): end these sessions now (hard lock).
+	EventEnd       EventKind = "end"
 	EventExpiring  EventKind = "expiring"
 	EventHeartbeat EventKind = "heartbeat" // every 1 s; 2 s without one ⇒ wrapper locks locally
 )
@@ -1799,6 +2011,11 @@ type FactorAddReq struct {
 	Recipient    string `json:"recipient,omitempty"`
 	IdentityStub string `json:"identity_stub,omitempty"`
 	PluginPath   string `json:"plugin_path,omitempty"`
+	// PresencePolicy is a plugin factor's presence policy ("touch-always",
+	// "touch-cached", "pin-always", "pin-once", "tpm-pin"); "" requires
+	// NoPresenceAck (S10, vault.FactorSpec).
+	PresencePolicy string `json:"presence_policy,omitempty"`
+	NoPresenceAck  bool   `json:"no_presence_ack,omitempty"`
 }
 
 // FrameKind tags a frame.
@@ -1883,8 +2100,13 @@ func (k *KeySet) Key(path string) (*memguard.LockedBuffer, bool)
 
 // KeysReq asks for per-capsule file keys (D39).
 type KeysReq struct {
-	Capsules []CapsuleRef `json:"capsules"`
-	Purpose  string       `json:"purpose"` // one of the Purpose* constants
+	Capsules []CapsuleRef `json:"capsules"` // at most MaxKeysPerRequest
+	Purpose  string       `json:"purpose"`  // one of the Purpose* constants
+	// AgentMarkers are the client's own paths.AgentMarkers: a
+	// self-restricting claim. The daemon unions it with the ancestry and
+	// no-controlling-terminal rules it measures itself and never treats an
+	// empty list as proof of a human (D28, D59).
+	AgentMarkers []string `json:"agent_markers,omitempty"`
 }
 
 // KeysResp answers Keys.
@@ -2050,6 +2272,7 @@ type SessionStatus struct {
 	HooksSeen  bool            `json:"hooks_seen"`
 	Registered bool            `json:"registered"` // false: found by the process-table scan only (D52, D57)
 	TTY        string          `json:"tty,omitempty"`
+	Version    string          `json:"version,omitempty"` // harness version from register (SPEC §16.4 AGENTS line)
 }
 
 // StatusResp is the daemon side of `precinto status` (the CLI adds on-disk
@@ -2124,6 +2347,14 @@ type UnlockReq struct {
 	SID         string        `json:"sid,omitempty"` // hook: the session requesting it
 	Deadline    time.Time     `json:"deadline"`
 	ConfirmDiff bool          `json:"confirm_diff,omitempty"` // also confirm pending policy changes (D48)
+	// AgentMarkers are the client's own paths.AgentMarkers: a
+	// self-restricting claim. The daemon unions it with the ancestry and
+	// no-controlling-terminal rules it measures itself and never treats an
+	// empty list as proof of a human (D28, D59).
+	AgentMarkers []string `json:"agent_markers,omitempty"`
+	// Test is a factor test (precinto factor test): unwrap with Factor and
+	// verify, then drop; no grant, no restore worker, no policy re-pin.
+	Test bool `json:"test,omitempty"`
 }
 
 // UnlockResp lists what was unlocked.
@@ -2154,7 +2385,11 @@ type VaultCreateReq struct {
 type VaultRepairReq struct {
 	VaultID     string `json:"vault_id"` // root id or "global"
 	UseRecovery bool   `json:"use_recovery,omitempty"`
-	Confirmed   bool   `json:"confirmed"` // the client showed the diff and obtained typed confirmation
+	// Confirmed false is a dry run: unwrap (presence), genuineness check,
+	// diff in VaultRepairResp, nothing written; the identity stays bound to
+	// that connection for at most 120 s and any lock wipes it. true writes
+	// (and unwraps again only on another connection or after that).
+	Confirmed bool `json:"confirmed"`
 }
 
 // VaultRepairResp reports a repair.
@@ -2168,12 +2403,15 @@ type VaultRepairResp struct {
 type VaultStatus struct {
 	VaultID      string    `json:"vault_id"`
 	RootPath     string    `json:"root_path,omitempty"`
-	State        string    `json:"state"` // "locked" | "unlocked"
+	State        string    `json:"state"` // "locked" | "unlocking" (a single-flight unlock is in progress) | "unlocked"
 	Reason       string    `json:"reason,omitempty"`
 	Since        time.Time `json:"since"`
 	IdleDeadline time.Time `json:"idle_deadline,omitempty"`
 	AbsDeadline  time.Time `json:"abs_deadline,omitempty"`
 	LastHuman    time.Time `json:"last_human,omitempty"`
+	// Factors are the folder's enrolled factor kinds in unlock order ("se",
+	// "plugin", "passphrase"; never "recovery").
+	Factors []string `json:"factors,omitempty"`
 }
 
 // Verdict is a gate decision.
@@ -2190,7 +2428,7 @@ const (
 ### `internal/agent`
 
 - Owner: **G2 daemon** · layer 7 · production
-- May import (module): `internal/ipc`, `internal/vault`, `internal/capsule`, `internal/sweep/capslog`, `internal/sweep/queue`, `internal/sweep/journal`, `internal/config`, `internal/paths`, `internal/platform`, `internal/fsx`, `internal/ledger`, `internal/harness`, `internal/harness/claude`, `internal/ui`
+- May import (module): `internal/ipc`, `internal/vault`, `internal/capsule`, `internal/sweep/capslog`, `internal/sweep/queue`, `internal/sweep/journal`, `internal/config`, `internal/paths`, `internal/platform`, `internal/fsx`, `internal/ledger`, `internal/harness`, `internal/harness/claude`, `internal/ui`, `inventories`
 - May import (third party): stdlib, `github.com/awnumar/memguard`
 - Tests: unit: Machine exhaustively with a fake clock (idle only on verified human input: wrapper Input/Enter with FromWrapper, Prompt with a recorded human origin; unknown origin never; busy grace, screen-lock hard-after, max_unlock, sleep jump, background exemption, automated prompts never prompt, ungated scan sessions); integration with agenttest: gate fail-closed, activity from a non-wrapper peer dropped, key release scope and provenance, TTL clamp, policy pinning across a daemon restart, vault repair, rate limits, single-flight unlock
 
@@ -2240,7 +2478,7 @@ func ClampTTL(p config.Policy, ttl time.Duration) time.Duration
 func GateFromSnapshot(s *Snapshot, p config.Policy, q GateQuery) ipc.GateResp
 
 // KillGrace returns the SIGTERM→SIGKILL delay for a harness given its
-// SessionEnd budget (R20).
+// SessionEnd budget (R20): harness.KillGrace.
 func KillGrace(sessionEndBudget time.Duration) time.Duration
 
 // Run is `precinto agent`: Options.Harden (platform.Harden and
@@ -2395,7 +2633,10 @@ type Options struct {
 
 	// Test seams (internal/agent/agenttest sets them; nil selects the real
 	// implementation). Spawn starts `<Exe> sweep|seal|restore` workers
-	// (default platform.Spawn); Screen polls the console (default
+	// (default platform.Spawn); a worker names its folder by the absolute
+	// path: `<Exe> sweep --lock --root <abs path>`, `<Exe> restore --root
+	// <abs path> --recent N --md --history --background` (the CLI's --root
+	// takes a path only). Screen polls the console (default
 	// platform.ReadScreen); Harden runs platform.Harden and
 	// CheckLoaderEnv (agenttest passes a no-op so the go test binary is
 	// never hardened or re-executed); Pinentry runs pinentry for hook-raised
@@ -2491,7 +2732,7 @@ const (
 
 - Owner: **G2 daemon** · layer 8 · test-only helper (production packages must not import it)
 - May import (module): `internal/agent`, `internal/ipc`, `internal/paths`, `internal/platform`, `internal/platform/fakeplatform`, `internal/config`
-- May import (third party): stdlib only
+- May import (third party): stdlib, `github.com/awnumar/memguard`
 - Tests: used by G2/G5/G6/G7 tests
 
 > Package agenttest runs a real agent in-process on a throwaway layout with
@@ -2511,21 +2752,38 @@ type Agent struct {
 // sets every agent.Options seam: Harden is a no-op (the go test binary is
 // never hardened), Spawn records worker argv without executing anything
 // (see Spawned), Screen returns the state set with SetScreen (unlocked,
-// HID idle unknown by default), and Pinentry fails with vault.ErrNoUI.
+// HID idle unknown by default), and Pinentry is a stub that always fails,
+// so no pinentry program can run from a test whatever process table is
+// used (the daemon reports vault.ErrNoUI, ipc.CodeNoUI).
 func Start(t testing.TB, l paths.Layout, clock *fakeplatform.Clock, procs *fakeplatform.Procs) *Agent
 
-// Dial returns a client connected to the agent.
+// Client is a non-fatal dial for fake backends and other goroutines: it
+// never calls t.Fatalf, so it is safe after the test ended (it then fails
+// with an error). The caller closes the client.
+func (a *Agent) Client(ctx context.Context) (*ipc.Client, error)
+
+// Dial returns a client connected to the agent. It calls t.Fatalf on
+// failure, so call it from the test goroutine only; other goroutines (fake
+// backends) use Client.
 func (a *Agent) Dial(t testing.TB) *ipc.Client
 
 // SetScreen sets what the agent's next console poll observes.
 func (a *Agent) SetScreen(s platform.ScreenState)
 
 // Spawned returns the argv of every worker the agent asked to spawn, in
-// order (`<Exe> sweep --lock --root …`, `<Exe> restore --background …`).
+// order. Workers name the folder by its absolute path (--root takes a path
+// only): `<Exe> sweep --lock --root <abs path>`, `<Exe> restore --root <abs
+// path> --recent N --md --history --background`.
 func (a *Agent) Spawned() [][]string
 
 // Stop stops the agent and waits for it.
 func (a *Agent) Stop()
+
+// UnlockForTest unlocks rootIDs with the recovery factor, answering the
+// relayed secret prompt with recoveryKey (test-only; vaulttest
+// Fixture.Recovery.String()). It fails the test on any error, so call it
+// from the test goroutine.
+func (a *Agent) UnlockForTest(t testing.TB, rootIDs []string, recoveryKey string)
 ```
 
 ## G3 harness adapters
@@ -2732,13 +2990,17 @@ type Engine struct {
 	Procs     platform.ProcTable
 	Clock     platform.Clock
 	LeasesDir string
-	Observer  *Observer
-	Quiet     time.Duration // policy.quiet_window
+	Observer  *Observer     // nil: no unit is ever stable
+	Quiet     time.Duration // policy.quiet_window; ≤ 0 means 120 s, never immediate
 	HoldCap   time.Duration // policy.hold_cap
 }
 
 // Decide evaluates s plus adapter-supplied evidence. It adds ledger-proc,
-// lease and stability evidence itself.
+// lease and stability evidence itself. Weak evidence (capped by HoldCap,
+// S14) is: a harness process by name, a future mtime, a change of file
+// times only, a first observation (ReasonUnobserved), a restore within the
+// quiet window, and a registry naming a non-harness pid. A nil Observer
+// means not stable.
 func (e *Engine) Decide(ctx context.Context, s Subject, extra []Evidence) (Verdict, error)
 
 // StillQuiet re-checks, immediately before an unlink, that s shows no new
@@ -2763,11 +3025,14 @@ type Held struct {
 }
 
 // Acquire takes shared leases for every key (creating lease files 0600) and
-// records proc. Leases on the same key by several wrappers coexist.
+// records proc. Leases on the same key by several wrappers coexist. The
+// shared flock is taken with a bounded wait (2 s), so a concurrent probe's
+// momentary LOCK_EX|LOCK_NB never fails a launch.
 func Acquire(dir string, keys []string, l Lease) (*Held, error)
 
 // Add takes shared leases on more keys (units resolved after the launch
-// started, e.g. by a restore Selector) before their plaintext is placed.
+// started, e.g. by a restore Selector) before their plaintext is placed,
+// with Acquire's bounded wait.
 func (h *Held) Add(keys ...string) error
 
 // Inheritable returns the locked descriptors so a wrapper that execs the
@@ -2792,14 +3057,17 @@ type Lease struct {
 }
 
 // Probe reports whether any process holds a lease on key, and the lease
-// descriptions found; an inode mismatch or probe error reports held=true.
+// descriptions found while it is held. It is fsx.ProbeHeld on the lease
+// file: a missing file was never leased; an inode swap during the probe or
+// any probe error reports held=true.
 func Probe(dir, key string) (held bool, leases []Lease, err error)
 
 // Observer tracks file identities across observations on the monotonic
 // clock: a unit is stable when every file's (dev, ino, size, mtime, ctime)
 // and every directory listing were identical in two observations at least Q
-// apart (R16). The daemon keeps one long-lived Observer so sweeps can decide
-// at once; a CLI sweep without the daemon waits Q.
+// apart (R16). Every sealing process starts without observations (sweeps,
+// seals and the queue worker are separate processes, SPEC §13.1): a sweep
+// decides once, waits Q once and decides again (D63).
 type Observer struct {
 	// contains filtered or unexported fields
 }
@@ -2828,6 +3096,10 @@ const (
 	ReasonOpenFD     Reason = "open-fd"      // a process holds a descriptor below the unit (HA9)
 	ReasonProcess    Reason = "process"      // a harness process is running (global/project units, D21)
 	ReasonUnstable   Reason = "unstable"     // files changed within the stability window (R16)
+	// ReasonUnobserved: first observation, the unit was not yet seen across
+	// a full quiet window (weak); a caller without earlier observations
+	// waits Quiet once and decides again (D63).
+	ReasonUnobserved Reason = "unobserved"
 	ReasonFutureTime Reason = "future-mtime" // mtime in the future: treated as live (R16)
 	ReasonWarm       Reason = "warm"         // non-current session of a live process, not yet stable (D20)
 	ReasonForkParent Reason = "fork-parent"  // a live session references this transcript (R21)
@@ -2904,6 +3176,11 @@ var (
 	ErrWrongHome      = errors.New("harness: session does not use the folder's sealed home") // codex D31
 	ErrUnitKey        = errors.New("harness: unit key parts missing or malformed")
 )
+
+// KillGrace is the SIGTERM→SIGKILL grace for a harness whose SessionEnd
+// hooks take up to sessionEnd: max(8 s, sessionEnd+6 s), capped at 70 s
+// (SPEC §12.7).
+func KillGrace(sessionEnd time.Duration) time.Duration
 
 // Register adds an adapter (called from cmd/precinto wiring).
 func Register(a Adapter)
@@ -3092,15 +3369,32 @@ type LaunchPlan struct {
 	Lease      []string   // lease keys known up front (e.g. the codex home key); restored units are added as they are placed
 	Argv       []string   // final argv (argv[0] absolute), e.g. with --settings injected (D32)
 	Env        []string   // environment additions (CODEX_HOME, CODEX_SQLITE_HOME, TMPDIR, CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0…)
-	Notices    []string   // one-line notices printed before exec
-	Confirm    string     // question to ask on the TTY before launching (e.g. claude purge, --bare), "" if none
+	// Notices are ui.MsgID values (harness packages cannot import
+	// internal/ui), printed before exec; the wrapper renders them with
+	// ui.Format and MsgVars.
+	Notices []string
+	// Confirm is a ui.MsgID asked on the TTY before launching (e.g.
+	// C7.twice, C7.purge, C9.bare, C10.consent), "" if none: yes runs Argv
+	// as planned (e.g. with --fork-session for C7.twice), no aborts the
+	// launch with ui.ErrCancelled (exit 3).
+	Confirm string
+	// MsgVars are the {placeholder} values for Notices and Confirm, keyed
+	// without braces ("sid", "pid", "folder").
+	MsgVars map[string]string
+	// QuitKeys are sent through the PTY before SIGTERM when precinto ends
+	// the session (codex: Ctrl-C twice); nil = none.
+	QuitKeys []byte
+	// KillGrace is the SIGTERM→SIGKILL grace for this harness (KillGrace).
+	KillGrace time.Duration
 	// Prepare runs after unlock and before restore (codex per-root home
 	// creation and seeding, D31).
 	Prepare func(ctx context.Context) error
 	// Finish runs after the child exited and before sealing (codex auth.json
 	// sync back, D31).
 	Finish func(ctx context.Context, exitCode int) error
-	// SealUnits are the units to seal after exit (resolved again by scanning).
+	// SealScope selects the units to seal after exit (resolved again by
+	// scanning). Adapters always set SIDs when the resume target is known;
+	// the backend adds Procs=[child].
 	SealScope Scope
 	// HookCheck says how to verify hook health (UX10): event expected and
 	// within how long after start.
@@ -3165,9 +3459,18 @@ type ResumeSpec struct {
 type Scope struct {
 	RootIDs []string // empty = every root
 	SIDs    []string // specific sessions
-	Kinds   []capsule.Kind
-	Global  bool // include global stores
-	All     bool
+	// Kinds: empty = every kind except KindGeneric, which is scanned only
+	// when listed (seal --dormant, D33).
+	Kinds  []capsule.Kind
+	Global bool // include global stores
+	// Adopt also adopts sessions found only by transcript cwd (seal
+	// --adopt, md="all" sweeps; S6).
+	Adopt bool
+	// Procs keeps only sessions whose ledger current owner is one of these
+	// processes (the wrapper's seal after exit of a fresh session); units
+	// that are not sessions are left out. Adapters without session units
+	// (codex homes, generic partitions) ignore it.
+	Procs []platform.ProcID
 }
 
 // Selector picks sealed units to restore. internal/sweep resolves it
@@ -3177,7 +3480,7 @@ type Selector struct {
 	Kind       capsule.Kind
 	RootID     string
 	Keys       []string      // exact unit keys (e.g. resume by sid, computed with capsule.UnitKey)
-	ProjectDir string        // only units whose manifest project_dir equals it (-c / --continue)
+	ProjectDir string        // the realpath'd launch cwd; matches Manifest.ProjectDir exactly (-c / --continue, D73)
 	Title      string        // only units whose manifest title contains it (--resume <name>)
 	Recent     int           // newest N by last activity; 0 = every match
 	Newest     bool          // only the single newest match
@@ -3198,21 +3501,33 @@ type TargetRules struct {
 	// Policy returns the placement of an entry.
 	Policy func(e capsule.Entry) Placement
 	Mode   GenMode
+	// Last reports entries placed after every other entry (Claude
+	// <sid>.jsonl, REST-3); nil = no ordering constraint.
+	Last func(e capsule.Entry) bool
+	// Skip names bases that exist but are unsafe now (Claude $TMP not
+	// 0700/owned, S7), with the reason: their entries are skipped and
+	// reported, never written, and the rest of the unit restores. An entry
+	// whose base is in neither Bases nor Skip still rejects the capsule
+	// (exit 5).
+	Skip map[capsule.BaseID]string
 }
 
 // Unit is one sealable group of plaintext files.
 type Unit struct {
-	Harness      ID
-	Kind         capsule.Kind
-	Key          string // unit key (capsule.UnitKey)
-	UnitID       string // sid, slug, relpath… (private; never logged)
-	VaultID      string // sealing vault (D1, D36)
-	RootIDs      []string
-	Home         Home
-	Files        []File
-	Dirs         []File // empty directories to record
-	Hazards      []Hazard
-	Prune        []string // base-relative directories to remove when empty after sealing
+	Harness ID
+	Kind    capsule.Kind
+	Key     string // unit key (capsule.UnitKey)
+	UnitID  string // sid, slug, relpath… (private; never logged)
+	VaultID string // sealing vault (D1, D36)
+	RootIDs []string
+	Home    Home
+	Files   []File
+	Dirs    []File // empty directories to record
+	Hazards []Hazard
+	// Prune lists "<base id>:<rel>" entries (e.g. "claude_tmp:<P>/<sid>"),
+	// deepest first, of directories to remove when empty after sealing;
+	// never a base root and never projects/<P>. One format, no bare rel.
+	Prune        []string
 	Mode         GenMode
 	Procs        []platform.ProcID // ledger owners (current), for live.Subject
 	Paths        []string          // absolute files/dirs for stability and fd checks
@@ -3221,6 +3536,11 @@ type Unit struct {
 	LastActivity time.Time
 	Adopted      bool   // found by scanning, not by the ledger (S6)
 	Note         string // content-free scan note
+	// ProjectDir is, for claude-session units, the session's start cwd,
+	// realpath'd (the ledger start event, else the transcript's first cwd);
+	// for claude-project units the cwd the project index maps to <P> when
+	// unique, else "". Copied into capsule.Manifest.ProjectDir (D73).
+	ProjectDir string
 }
 
 // Ref returns the reference of u.
@@ -3407,6 +3727,19 @@ func SyncAuthBack(ctx context.Context, s Seed) error
 
 // UserHome resolves the user's own Codex home (CODEX_HOME or ~/.codex) from e.
 func UserHome(e paths.Env) (string, error)
+
+// WrongHomeRollouts counts the rollouts under userHome/sessions (and
+// userHome/archived_sessions) whose first line is a session_meta record
+// (its `type` is checked) with payload.cwd inside a protected root of c:
+// sessions started without the wrapper, written outside the sealed
+// per-root home and never sealed (codex-wrong-home, C9.codexoutside, D31).
+// It reads at most 64 KiB of that line and keeps only cwd, decoding token
+// by token so no other value is kept; counts are per root id. Compressed
+// (.jsonl.zst) or unreadable rollouts (a first line that is not JSON, or
+// whose cwd lies beyond the bound) are counted under "" (could not be
+// checked); a readable first line of another record type is not a
+// session and is not counted. A missing home counts nothing.
+func WrongHomeRollouts(ctx context.Context, userHome string, c config.Config) (map[string]int, error)
 
 // Class is how a file below a per-root home is treated.
 type Class string
@@ -3615,7 +3948,10 @@ func NewID() string
 
 // File is one source or target recorded in a journal (no content).
 type File struct {
-	Base string   `json:"base"`
+	Base string `json:"base"` // base id (capsule.BaseID)
+	// Dir is the absolute, realpath'd base directory, for keyless recovery
+	// (recovery runs without the adapters).
+	Dir  string   `json:"dir"`
 	Rel  string   `json:"rel"`
 	Snap fsx.Stat `json:"snap"`
 	Done bool     `json:"done,omitempty"` // unlinked / placed
@@ -3706,10 +4042,15 @@ type Record struct {
 	// size of the rewritten history.jsonl right after the rename (tail
 	// appends skip kept lines already present after it, so a re-run never
 	// appends a line twice).
-	Offset  int64    `json:"offset,omitempty"`
-	Pending int64    `json:"pending,omitempty"`
-	NewBase int64    `json:"new_base,omitempty"`
-	Notes   []string `json:"notes,omitempty"` // content-free diagnostics
+	Offset  int64 `json:"offset,omitempty"`
+	Pending int64 `json:"pending,omitempty"`
+	NewBase int64 `json:"new_base,omitempty"`
+	// LedgerSID and LedgerN name the ledger snapshot sealed into the
+	// capsule (S13): after a committed seal, recovery archives that many
+	// bytes of the session's ledger (ledger.Archive).
+	LedgerSID string   `json:"ledger_sid,omitempty"`
+	LedgerN   int64    `json:"ledger_n,omitempty"`
+	Notes     []string `json:"notes,omitempty"` // content-free diagnostics
 }
 ```
 
@@ -3920,6 +4261,11 @@ type Env struct {
 	Sealer   string // "precinto <version>"
 	// Parallel bounds concurrent unit seals (default 2; units > 1 GiB run alone, R19).
 	Parallel int
+	// Sleep waits d or until ctx ends; nil = a real timer. It is used for
+	// the D63 quiet-window wait (and every other wait of a run: rescue
+	// grace, history tail quiet, writer polling). Tests with a fake clock
+	// pass one that advances it.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // FileKeys is a set of released per-capsule file keys (*ipc.KeySet
@@ -3949,7 +4295,9 @@ func Generations(e Env, unit string) ([]Generation, error)
 type Grants func(ctx context.Context) (unlocked map[string]bool, err error)
 
 // KeySource obtains file keys (production: ipc.Client.Keys through
-// cmd/precinto; tests: a vaulttest identity).
+// cmd/precinto; tests: a vaulttest identity). Callers pass at most 256
+// paths per FileKeys call (ipc.MaxKeysPerRequest) and destroy the keys as
+// soon as their capsules are decrypted.
 type KeySource interface {
 	FileKeys(ctx context.Context, paths []string, purpose string) (FileKeys, error)
 }
@@ -3992,6 +4340,8 @@ const (
 	OutInaccessible Outcome = "inaccessible"  // EACCES/EPERM/TCC: never treated as missing
 	OutRemoveFailed Outcome = "remove-failed" // committed, but plaintext could not be unlinked
 	OutQuarantined  Outcome = "quarantined"
+	OutPruned       Outcome = "pruned"    // Prune deleted (or, with DryRun, would delete) Files capsules of the unit
+	OutForgotten    Outcome = "forgotten" // Forget deleted Files capsules of the unit
 	OutFailed       Outcome = "failed"
 )
 
@@ -4141,7 +4491,10 @@ func Sweep(ctx context.Context, e Env, o Options) (*Report, error)
 // Count returns the number of units with outcome o.
 func (r *Report) Count(o Outcome) int
 
-// Err summarizes failures as one error (nil if none).
+// Err summarizes failures as one error (nil if none). Live, warm and
+// leased units are failures (ErrLive, exit 4) only for an explicit Seal of
+// named units (their Detail carries the live code); sweeps report them as
+// outcomes and exit 0.
 func (r *Report) Err() error
 
 // RestoreRequest selects what to restore.
@@ -4190,8 +4543,8 @@ type UnitResult struct {
 	Outcome  Outcome
 	Gen      uint64
 	Lineage  capsule.Lineage
-	Files    int
-	Bytes    int64
+	Files    int   // seal/restore: plaintext files; prune/forget: capsules deleted
+	Bytes    int64 // seal/restore: plaintext bytes; prune/forget: capsule bytes deleted
 	Evidence []live.Evidence
 	Hazards  []harness.Hazard
 	Class    fsx.Class // error class for failures
@@ -4295,6 +4648,10 @@ type Deps struct {
 	DialUnlock func(ctx context.Context) (Daemon, error)
 	// Enqueue writes a seal request (SessionEnd) and Spawn starts the
 	// detached `precinto seal --queue` worker (Setsid, stdio /dev/null).
+	// Spawn's argv is the arguments after the precinto executable (e.g.
+	// ["seal","--queue"]); the production implementation prepends
+	// platform.Executable() and spawns detached with an allowlisted env and
+	// cwd /.
 	Enqueue func(r queue.Request) (string, error)
 	Spawn   func(argv []string) error
 }
@@ -4367,10 +4724,11 @@ type Output struct {
 // never emits keys a host does not accept (Codex deny_unknown_fields).
 func Encode(host Host, ev Event, d Decision) Output
 
-// FailClosed returns the static block/deny output used on every error path
-// of a gate event in a managed session (daemon unreachable, decode error,
-// deadline, panic) (I5), in the format of host (the detected host, which
-// defaults to the argv label, D56).
+// FailClosed returns the static block/deny output of a gate event in a
+// managed session when precinto could not decide (decode error, deadline,
+// panic) (I5), in the format of host (the detected host, which defaults to
+// the argv label, D56). Its prompt text is C3.failed; the gate's own
+// unreachable-daemon answer says C3.agentdown instead (CC-38).
 func FailClosed(host Host, ev Event, folder string) Output
 
 // Payload is the normalized, content-free view of one invocation. Raw
@@ -4469,7 +4827,7 @@ type EnterAction string
 const (
 	EnterNothing EnterAction = ""
 	EnterNotify  EnterAction = "notify" // print ui.MsgEnterNotify
-	EnterPrompt  EnterAction = "prompt" // print ui.MsgEnterPrompt and unlock on Enter
+	EnterPrompt  EnterAction = "prompt" // print ui.MsgEnterPrompt (or .plain) and unlock on Enter
 	EnterBusy    EnterAction = "busy"   // another terminal is unlocking (ui.MsgEnterElsewhere)
 )
 
@@ -4480,12 +4838,19 @@ type EnterRequest struct {
 	Shell    string
 	SkipKey  string // _PRECINTO_SKIP=<root-id>:<epoch> from the shell
 	FirstRun bool   // first prompt of a new shell
+	Home     string // the user's HOME, for ~-shortened folders
+	// GUI reports whether a GUI dialog can appear for this terminal
+	// (platform.DetectUIContext): C1.prompt names the Mac password only
+	// then (ui.FactorName).
+	GUI bool
 }
 
-// EnterResult is printed by the shell hook as shell assignments.
+// EnterResult is the decision of one shell-hook invocation; `precinto
+// shell-hook` prints Lines() and nothing else (D69).
 type EnterResult struct {
 	Action  EnterAction
 	RootID  string
+	Path    string // absolute folder path, for precinto unlock --root
 	Folder  string
 	Epoch   uint64 // lock epoch, so a skip is remembered until the next lock
 	Message string
@@ -4494,6 +4859,12 @@ type EnterResult struct {
 // OnEnter decides the action for r using config and a ≤150 ms daemon
 // status query; it never prompts and never autostarts the daemon.
 func OnEnter(ctx context.Context, c config.Config, l paths.Layout, r EnterRequest) (EnterResult, error)
+
+// Lines renders r as key=value lines action=, root=, epoch=, path=,
+// folder=, message=, one per line, values stripped of C0/C1 controls (a
+// newline or tab becomes a space), empty for EnterNothing. The scripts
+// parse them without eval: a folder name never becomes shell code (D69).
+func (r EnterResult) Lines() string
 
 // Options configures Script.
 type Options struct {
@@ -4527,6 +4898,11 @@ type Options struct {
 > interfaces").
 
 ```go
+// ExitNotStarted is Run's code when the child never started; err says why
+// and cmd/precinto maps it with the API §5 table (e.g. sweep.ErrConflict →
+// 4, ipc codes → 3). Otherwise Run returns the child's own code.
+const ExitNotStarted = -1
+
 // HumanInput reports whether b contains human keystrokes after removing
 // sequences terminals send on their own (focus CSI I/O, mouse CSI M and
 // CSI < … M/m, cursor reports CSI … R, DA replies CSI ? … c, kitty replies
@@ -4545,7 +4921,8 @@ func ResetSequence(clear, iterm bool) []byte
 // forwarded to it, D57), RecordLaunch, register, subscribe, forward
 // activity, handle lock/unlock/end events, RestoreBackground, wait, reset
 // the terminal, plan.Finish, release the lease, SealAfterExit, print one
-// summary line. Returns the child's exit code.
+// summary line. Returns the child's exit code, or ExitNotStarted when the
+// child never started (err says why).
 func Run(ctx context.Context, o Options) (int, error)
 
 // Backend is everything the wrapper needs from the rest of precinto.
@@ -4563,8 +4940,10 @@ type Backend interface {
 	RestoreSync(ctx context.Context, plan harness.LaunchPlan, abort <-chan struct{}) (RestoreSummary, error)
 	// RestoreBackground restores plan.Background after exec (best effort).
 	RestoreBackground(ctx context.Context, plan harness.LaunchPlan, abort <-chan struct{})
-	// Daemon returns a connected client (autostarted) for register,
-	// subscribe, activity and unlock-from-overlay.
+	// Daemon returns a new connection on every call (autostarted); the
+	// wrapper keeps one for the subscription stream and one for requests
+	// (register, activity, unlock-from-overlay), and dials again after a
+	// loss.
 	Daemon(ctx context.Context) (Daemon, error)
 	// RecordLaunch writes the ledger "launch" event for a launch whose
 	// session id is known before exec (resume targets), carrying the lease
@@ -4637,6 +5016,9 @@ type Overlay struct {
 	Reason string // ui.Reason text
 	Factor string // "Mac password", "passphrase", "YubiKey"
 	Busy   bool   // show the busy line
+	// Harness is {harness} of C4.busy: the inventory display name
+	// ("Claude Code", "Codex").
+	Harness string
 }
 
 // Proxy runs a child on a PTY bound to the user's terminal.
@@ -4746,7 +5128,7 @@ type SealSummary struct {
 type TerminateOptions struct {
 	QuitKeys []byte        // sent through the PTY first (Codex: Ctrl-C twice, R20/HA19)
 	KeysWait time.Duration // wait after QuitKeys (3s)
-	Grace    time.Duration // SIGTERM→SIGKILL delay (agent.KillGrace)
+	Grace    time.Duration // SIGTERM→SIGKILL delay (harness.KillGrace; LaunchPlan.KillGrace)
 }
 ```
 
@@ -4788,6 +5170,11 @@ const (
 	// failpoints: cmd/precinto reads it here and calls failpoint.Set before
 	// dispatching (docs/TESTPLAN.md §4). Ignored by every other build.
 	EnvCrashpoint = "PRECINTO_CRASHPOINT"
+	// EnvTestAncestryStop ("PID:START") ends the harness-ancestry walk of
+	// ui.AgentContext and of the daemon's peer checks at that process, in
+	// -tags testing builds only (D64); read it with TestAncestryStop.
+	// Production builds never read it; hook mode and the shim ignore it.
+	EnvTestAncestryStop = "PRECINTO_TEST_ANCESTRY_STOP"
 
 	EnvClaudeConfigDir   = "CLAUDE_CONFIG_DIR"
 	EnvClaudeTmpDir      = "CLAUDE_CODE_TMPDIR"
@@ -4801,6 +5188,16 @@ const (
 	EnvCodexSQLiteHome   = "CODEX_SQLITE_HOME"
 	EnvXDGDataHome       = "XDG_DATA_HOME"
 	EnvXDGRuntimeDir     = "XDG_RUNTIME_DIR"
+)
+
+// Names fixed by the product (owner-revisable, OD-05).
+const (
+	// ServiceLabel is the LaunchAgent label; its plist is
+	// ~/Library/LaunchAgents/<label>.plist.
+	ServiceLabel = "com.github.precinto.sweep"
+	// ClaudePluginID is the Claude Code plugin id: plugin precinto of the
+	// marketplace precinto (SPEC §21).
+	ClaudePluginID = "precinto@precinto"
 )
 
 // MaxSocketPath is the exclusive upper bound on the socket path length
@@ -4840,6 +5237,15 @@ func LookPath(e Env, name string) (string, error)
 // is empty (D6). Hook mode never honours them (hooks run in agent
 // contexts).
 func OverridesAllowed(e Env) bool
+
+// TestAncestryStop returns the PID:START value of EnvTestAncestryStop in a
+// -tags testing build (ok=false when unset or malformed); ("", false) in
+// every other build, which never reads the variable (the reading code is
+// only in build_testing.go, D64). Callers end the harness-ancestry walk at
+// the process whose measured ProcID equals it: that process and its
+// ancestors are ignored, everything below is checked, and env markers and
+// the no-controlling-terminal rule still apply.
+func TestAncestryStop(e Env) (string, bool)
 
 // TestingBuild reports whether the binary was built with -tags testing.
 func TestingBuild() bool
@@ -4918,6 +5324,8 @@ type Layout struct {
 	QueueDir       string // state/queue/<req-id>.json
 	LocksDir       string // state/locks/*.lock (never deleted)
 	PolicyPinned   string // state/policy.pinned: policy confirmed at the last TTY unlock, with per-vault MACs (D48, D55)
+	HookDedupeDir  string // state/hookdedupe (HA21 duplicate suppression, content-free hashed names)
+	NotesIndex     string // state/notes.json (pending-notes index: absolute note paths per root, no content)
 	SweepRequested string // state/sweep.requested
 	SweepLast      string // state/sweep.last (heartbeat for status)
 
@@ -4928,6 +5336,11 @@ type Layout struct {
 	Socket    string // RunDir/agent.sock (len < 104 bytes)
 	AgentLock string // RunDir/agent.lock (held by the daemon for its lifetime, D6)
 }
+
+// HookLayout returns the default base and run dir for e, never honouring
+// PRECINTO_* overrides (hook mode, D6/D56), in every build; it fails like
+// NewLayout when the socket path is too long (ErrSocketPath).
+func HookLayout(e Env) (Layout, error)
 
 // LayoutAt derives a Layout for an explicit base and run directory (tests,
 // and the daemon after it has resolved its own layout). Both must be
@@ -4997,6 +5410,9 @@ const (
 	MDSealOnEnd  = "end"  // seal notes only when the sessions that wrote them end
 )
 
+// MaxFileBytes bounds config.toml, roots.list and state/policy.pinned.
+const MaxFileBytes = 1 << 20
+
 // MaxUnlockCap is the hard cap on policy.max_unlock and on any unlock TTL.
 const MaxUnlockCap = 24 * time.Hour
 
@@ -5030,8 +5446,8 @@ func Canonical(c Config) []byte
 func NewRootID() string
 
 // ReadRootsList reads a roots.list file (missing file: no roots); lines
-// that are not absolute clean paths are ignored. Implemented in the
-// scaffold.
+// that are not absolute clean paths are ignored. The file is opened like
+// Load's (regular, owned by the user, ≤ MaxFileBytes, else fsx.ErrUnsafe).
 func ReadRootsList(path string) ([]string, error)
 
 // Save validates c and writes it atomically with mode 0600. Implemented in
@@ -5073,8 +5489,11 @@ func Default() Config
 // Load parses path and validates it. A missing file yields Default().
 // Keys absent from the file keep their defaults (a [harness.<id>] table
 // without `enabled`/`min_version` keeps the built-in values); unknown keys
-// are rejected (ErrInvalid), so a typo never silently weakens policy.
-// Implemented in the scaffold.
+// are rejected (ErrInvalid), so a typo never silently weakens policy. The
+// file is opened O_RDONLY|O_NOFOLLOW|O_NONBLOCK and must be a regular file
+// owned by the user of at most MaxFileBytes; anything else (a symlink,
+// FIFO, directory, foreign or oversized file) is an error wrapping
+// fsx.ErrUnsafe, never a hang.
 func Load(path string) (Config, error)
 
 // Strictest merges a and b taking, per key, the more protective value; used
@@ -5155,8 +5574,9 @@ type Pinned struct {
 
 // LoadPinned reads state/policy.pinned (ok=false if it does not exist). It
 // does not verify MACs (the daemon does, with the vault keys); a file that
-// does not decode is an error (the daemon reports policy-tampered).
-// Implemented in the scaffold.
+// does not decode is an error (the daemon reports policy-tampered). It is
+// opened like Load's file: a FIFO or symlink planted at the path is an
+// error wrapping fsx.ErrUnsafe (policy-tampered), never a hang.
 func LoadPinned(path string) (p Pinned, ok bool, err error)
 
 // Policy is the [policy] table. TOML keys are the snake_case tags.
@@ -5223,11 +5643,24 @@ var ErrCancelled = errorString("ui: cancelled")
 // AgentContext reports whether the current process runs inside an AI agent
 // session: any paths.AgentMarkers, or an ancestor whose executable is a
 // known harness (claude, codex, droid, cursor-agent, copilot, gemini, kimi,
-// opencode). The returned string names the evidence (D7, D28). Callers of
-// content-revealing and destructive commands (cat --to, open, restore
-// --all, prune, forget, unprotect, vault repair) also treat a process
-// without a controlling terminal as an agent context (D59).
+// opencode), or no controlling terminal (D59). The returned string names
+// the evidence (D7, D28). An ancestor whose lookup fails for any reason
+// other than having exited (platform.ErrNoProcess) is an agent context
+// ("process ancestry unavailable"); an exited ancestor ends the walk (the
+// no-controlling-terminal rule covers reparented processes). In -tags
+// testing builds only, the walk also ends at the process named by
+// paths.TestAncestryStop (D64): it and its ancestors are ignored,
+// everything below is checked, and markers and the no-controlling-terminal
+// rule still apply.
 func AgentContext(e paths.Env, t platform.ProcTable) (bool, string)
+
+// FactorName names the first usable unlock factor of kinds (a folder's
+// enrolled factor kinds in unlock order, ipc.VaultStatus.Factors) for
+// {factor}: "Mac password" for "se" when a GUI dialog can appear (gui,
+// from platform.DetectUIContext), "security key" for "plugin", "precinto
+// passphrase" for "passphrase"; "" when none is usable (then callers use
+// the .plain variant of the message). "recovery" is never named.
+func FactorName(kinds []string, gui bool) string
 
 // Format renders a catalog message: every {placeholder} of the text is
 // replaced from v ({idle} and {limit} as "15 min" / "8 h", {until} as
@@ -5263,65 +5696,87 @@ type MsgID string
 // plus a final newline) and MsgShimFailed (the static block text of the
 // byte-frozen POSIX shims, D41).
 const (
-	MsgEnterNotify        MsgID = "C1.notify"       // precinto: {folder} is locked. It unlocks when you start claude or codex here, or run: precinto unlock
-	MsgEnterPrompt        MsgID = "C1.prompt"       // precinto: {folder} is locked. Unlock now with your Mac password? [Enter = yes · any other key = skip]
-	MsgEnterElsewhere     MsgID = "C1.elsewhere"    // precinto: {folder} is being unlocked in another terminal.
-	MsgUnlockSE           MsgID = "C2.se"           // precinto: unlock {folder} for {harness} ({tty}). Enter your Mac password in the system dialog. (Ctrl-C to cancel)
-	MsgUnlockHook         MsgID = "C2.hook"         // precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.
-	MsgUnlockPassphrase   MsgID = "C2.passphrase"   // precinto passphrase for {folder} (Ctrl-C to cancel):
-	MsgUnlockTouch        MsgID = "C2.touch"        // Touch your YubiKey...
-	MsgUnlockOK           MsgID = "C2.ok"           // precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
-	MsgUnlockCancelled    MsgID = "C2.cancelled"    // precinto: unlock cancelled. {folder} stays locked.
-	MsgUnlockNoGUI        MsgID = "C2.nogui"        // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
-	MsgUnlockPassFallback MsgID = "C2.passfallback" // Using your precinto passphrase instead.
-	MsgUnlockConfirmAll   MsgID = "C2.confirmall"   // precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type "unlock" to confirm:
-	MsgPromptBlocked      MsgID = "C3.blocked"      // precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.
-	MsgPromptUnlockCxl    MsgID = "C3.cancelled"    // precinto: unlock cancelled. Your message was not sent (press ↑ to get it back).
-	MsgAgentDown          MsgID = "C3.agentdown"    // precinto: the precinto agent isn't running, so {folder} stays locked. Run precinto unlock in a terminal.
-	MsgMovedFolder        MsgID = "C3.moved"        // precinto: this session moved into {other}, which is locked. Run precinto unlock --root {other}.
-	MsgToolDenied         MsgID = "C3.tooldenied"   // precinto: the user's project {folder} is locked. Do not retry this tool or use other tools. End your turn now with one short sentence asking the user to run "precinto unlock".
-	MsgCompactPaused      MsgID = "C3.compact"      // precinto: compaction is paused while {folder} is locked.
-	MsgStartLockedModel   MsgID = "C3.start.model"  // precinto: this project is locked. If precinto denies a tool, stop and ask the user to run "precinto unlock".
-	MsgStartLockedUser    MsgID = "C3.start.user"   // precinto: {folder} is locked. Your first message will ask you to unlock.
-	MsgCodexWrongHome     MsgID = "C3.codexhome"    // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
-	MsgOverlayTitle       MsgID = "C4.title"        // Locked by precinto
-	MsgOverlayLine        MsgID = "C4.line"         // {folder} · locked after {reason}
-	MsgOverlayPaused      MsgID = "C4.paused"       // Your session is paused, not closed. It continues where it was.
-	MsgOverlayKeys        MsgID = "C4.keys"         // Enter   unlock ({factor})          Ctrl-D   end session and seal it
-	MsgOverlayBusy        MsgID = "C4.busy"         // {harness} is finishing its current step. New messages wait until you unlock.
-	MsgOverlayEnding      MsgID = "C4.ending"       // Ending session... sealed.
-	MsgEnded              MsgID = "C5.ended"        // precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}
-	MsgSealedOK           MsgID = "C6.ok"           // precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.
-	MsgSealDeferred       MsgID = "C6.deferred"     // precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).
-	MsgSealFailed         MsgID = "C6.failed"       // precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.
-	MsgResumeOlder        MsgID = "C7.older"        // precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick
-	MsgResumeMiss         MsgID = "C7.miss"         // precinto: session {sid} is sealed. Resume it with: claude --resume {sid}
-	MsgResumeTwice        MsgID = "C7.twice"        // Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]
-	MsgResumeOld          MsgID = "C7.old"          // precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.
-	MsgExpiry             MsgID = "C8.expiry"       // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
-	MsgCodexUntrusted     MsgID = "C9.codex"        // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
-	MsgClaudeNoHooks      MsgID = "C9.claude"       // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
-	MsgBareWarning        MsgID = "C9.bare"         // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
-	MsgUngatedSession     MsgID = "C9.ungated"      // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
-	MsgCodexOutside       MsgID = "C9.codexoutside" // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
-	MsgCodexConsent       MsgID = "C10.consent"     // precinto keeps a separate, sealed Codex history for each protected folder. Codex started in a protected folder through precinto uses that folder's history; elsewhere Codex is unchanged. Protect Codex in {folder}? [Y/n]
-	MsgNoteConflict       MsgID = "C11.conflict"    // precinto: {file} changed while it was sealed. Kept both: {file} and {conflict}. Keep one with: precinto resolve {file}
-	MsgNoteRestored       MsgID = "C11.restored"    // precinto: restored {file} from the vault (its .md.precinto file had been deleted). To delete it for good: precinto forget {file}
-	MsgCodexConflict      MsgID = "C11.codex"       // precinto: Codex ran while its history was sealed: {n} new conversation(s) kept separately. Run: precinto doctor codex
-	MsgNoteMarker         MsgID = "C11.marker"      // This note is sealed by precinto. Run `precinto unlock` in this folder to open it.\nid: {unit}
-	MsgRefuseAgent        MsgID = "C12.agent"       // precinto: refusing to {action} {folder} from inside an AI agent session. Run precinto {command} yourself in a terminal.
-	MsgRefuseCodexLive    MsgID = "C12.codexlive"   // precinto: Codex is already running (pid {pid}) and its history is sealed. Quit it first.
-	MsgConfirmTyped       MsgID = "C12.typed"       // precinto: {action} can't be undone. Type "{command}" to confirm:
-	MsgPolicyPending      MsgID = "C13.policy"      // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
-	MsgPolicyTampered     MsgID = "C13.tampered"    // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
-	MsgVaultTampered      MsgID = "C14.tampered"    // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
-	MsgVaultRepairConfirm MsgID = "C14.confirm"     // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
-	MsgVaultRepaired      MsgID = "C14.repaired"    // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
-	MsgVaultNotGenuine    MsgID = "C14.notgenuine"  // precinto: the key you unlocked does not open {folder}'s older capsules, so its key files may have been replaced too. Nothing was changed. Use your recovery key: precinto vault repair --root {folder} --recovery
-	MsgInitRefuseAgent    MsgID = "B.refuse"        // precinto init must be run by you in your own terminal, not by an AI agent: the recovery key would end up in the agent's transcript and be sent to the model provider.
-	MsgInitNeedSE         MsgID = "B.needse"        // Unlocking with your Mac password needs age-plugin-se: brew install age-plugin-se, then run precinto init again. (Or use a passphrase only: precinto init --factor passphrase.)
-	MsgInitRemote         MsgID = "B.remote"        // precinto: you're in tmux, screen or SSH, where the Mac password dialog can't appear. Add a passphrase as a second way to unlock? [Y/n]
-	MsgShimFailed         MsgID = "D.shim"          // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
+	MsgEnterNotify        MsgID = "C1.notify"          // precinto: {folder} is locked. It unlocks when you start claude or codex here, or run: precinto unlock
+	MsgEnterPrompt        MsgID = "C1.prompt"          // precinto: {folder} is locked. Unlock now with your {factor}? [Enter = yes · any other key = skip]
+	MsgEnterPromptPlain   MsgID = "C1.prompt.plain"    // precinto: {folder} is locked. Unlock now? [Enter = yes · any other key = skip]
+	MsgEnterElsewhere     MsgID = "C1.elsewhere"       // precinto: {folder} is being unlocked in another terminal.
+	MsgUnlockSE           MsgID = "C2.se"              // precinto: unlock {folder} for {harness} ({tty}). Enter your Mac password in the system dialog. (Ctrl-C to cancel)
+	MsgUnlockHook         MsgID = "C2.hook"            // precinto: {harness} in {folder} asks to unlock it. Approve the system dialog, or cancel it to keep the folder locked.
+	MsgUnlockPassphrase   MsgID = "C2.passphrase"      // precinto passphrase for {folder} (Ctrl-C to cancel):
+	MsgUnlockTouch        MsgID = "C2.touch"           // Touch your YubiKey...
+	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
+	MsgUnlockCancelled    MsgID = "C2.cancelled"       // precinto: unlock cancelled. {folder} stays locked.
+	MsgUnlockBadSecret    MsgID = "C2.badsecret"       // precinto: that passphrase or recovery key is not right. {folder} stays locked.
+	MsgUnlockNoGUI        MsgID = "C2.nogui"           // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
+	MsgUnlockPassFallback MsgID = "C2.passfallback"    // Using your precinto passphrase instead.
+	MsgUnlockConfirmAll   MsgID = "C2.confirmall"      // precinto: unlock {n} folders ({folder} …)? Each asks for presence once. Type "unlock" to confirm:
+	MsgPromptBlocked      MsgID = "C3.blocked"         // precinto: {folder} is locked ({reason}). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.
+	MsgPromptUnlockCxl    MsgID = "C3.cancelled"       // precinto: unlock cancelled. Your message was not sent (press ↑ to get it back).
+	MsgAgentDown          MsgID = "C3.agentdown"       // precinto: the precinto agent isn't running, so {folder} stays locked. Run precinto unlock in a terminal.
+	MsgGateFailed         MsgID = "C3.failed"          // precinto: precinto could not check {folder}, so it stays locked. Run precinto unlock in a terminal, then precinto doctor if this repeats.
+	MsgToolStop           MsgID = "C3.stop"            // precinto: {folder} is locked
+	MsgMovedFolder        MsgID = "C3.moved"           // precinto: this session moved into {other}, which is locked. Run precinto unlock --root {other}.
+	MsgToolDenied         MsgID = "C3.tooldenied"      // precinto: the user's project {folder} is locked. Do not retry this tool or use other tools. End your turn now with one short sentence asking the user to run "precinto unlock".
+	MsgCompactPaused      MsgID = "C3.compact"         // precinto: compaction is paused while {folder} is locked.
+	MsgStartLockedModel   MsgID = "C3.start.model"     // precinto: this project is locked. If precinto denies a tool, stop and ask the user to run "precinto unlock".
+	MsgStartLockedUser    MsgID = "C3.start.user"      // precinto: {folder} is locked. Your first message will ask you to unlock.
+	MsgCodexWrongHome     MsgID = "C3.codexhome"       // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
+	MsgOverlayTitle       MsgID = "C4.title"           // Locked by precinto
+	MsgOverlayLine        MsgID = "C4.line"            // {folder} · locked after {reason}
+	MsgOverlayPaused      MsgID = "C4.paused"          // Your session is paused, not closed. It continues where it was.
+	MsgOverlayKeys        MsgID = "C4.keys"            // Enter   unlock ({factor})          Ctrl-D   end session and seal it
+	MsgOverlayKeysPlain   MsgID = "C4.keys.plain"      // Enter   unlock          Ctrl-D   end session and seal it
+	MsgOverlayBusy        MsgID = "C4.busy"            // {harness} is finishing its current step. New messages wait until you unlock.
+	MsgOverlayEnding      MsgID = "C4.ending"          // Ending session... sealed.
+	MsgEnded              MsgID = "C5.ended"           // precinto: locked {folder} and ended {n} session(s) after {reason}. Resume with: {resume}
+	MsgSealedOK           MsgID = "C6.ok"              // precinto: sealed this session ({sid} · {files} files · {size}). {folder} stays unlocked until {idle} idle.
+	MsgSealDeferred       MsgID = "C6.deferred"        // precinto: sealing this session as soon as {harness} finishes writing (usually under 2 min).
+	MsgSealFailed         MsgID = "C6.failed"          // precinto: WARNING: couldn't seal session {sid} ({cause}). Its files are still readable on disk. Run precinto doctor.
+	MsgResumeOlder        MsgID = "C7.older"           // precinto: Claude's list shows your {n} most recent sessions in this folder. Older ones: precinto resume --pick
+	MsgResumeMiss         MsgID = "C7.miss"            // precinto: session {sid} is sealed. Resume it with: claude --resume {sid}
+	MsgResumeTwice        MsgID = "C7.twice"           // Session {sid} is already open in another terminal (pid {pid}). Opening it twice can lose messages. Open a copy instead (--fork-session)? [Y/n]
+	MsgResumeOld          MsgID = "C7.old"             // precinto: Claude deletes sessions older than {days} days when it starts (cleanupPeriodDays). This session was restored with today's date so Claude keeps it; the sealed copy is safe either way.
+	MsgPurgeForget        MsgID = "C7.purge"           // precinto: also delete precinto's sealed copies of the sessions claude purge removes? [y/N]
+	MsgExpiry             MsgID = "C8.expiry"          // precinto: {folder} locks in 10 min ({limit} limit). Run precinto unlock --extend to keep working without interruption.
+	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
+	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks). Prompts weren't paused while locked; the session is sealed now.
+	MsgBareWarning        MsgID = "C9.bare"            // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
+	MsgUngatedSession     MsgID = "C9.ungated"         // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
+	MsgCodexOutside       MsgID = "C9.codexoutside"    // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
+	MsgSettingsKept       MsgID = "C9.settings"        // precinto: you passed your own --settings, so precinto did not add its settings that stop Claude compacting or summarizing while you are away. Add idleCompaction: false and awaySummaryEnabled: false to them.
+	MsgCodexConsent       MsgID = "C10.consent"        // precinto keeps a separate, sealed Codex history for each protected folder. Codex started in a protected folder through precinto uses that folder's history; elsewhere Codex is unchanged. Protect Codex in {folder}? [Y/n]
+	MsgNoteConflict       MsgID = "C11.conflict"       // precinto: {file} changed while it was sealed. Kept both: {file} and {conflict}. Keep one with: precinto resolve {file}
+	MsgNoteRestored       MsgID = "C11.restored"       // precinto: restored {file} from the vault (its .md.precinto file had been deleted). To delete it for good: precinto forget {file}
+	MsgCodexConflict      MsgID = "C11.codex"          // precinto: Codex ran while its history was sealed: {n} new conversation(s) kept separately. Run: precinto doctor codex
+	MsgNoteMarker         MsgID = "C11.marker"         // This note is sealed by precinto. Run `precinto unlock` in this folder to open it.\nid: {unit}
+	MsgRefuseAgent        MsgID = "C12.agent"          // precinto: refusing to {action} {folder} from inside an AI agent session. Run precinto {command} yourself in a terminal.
+	MsgRefuseCodexLive    MsgID = "C12.codexlive"      // precinto: Codex is already running (pid {pid}) and its history is sealed. Quit it first.
+	MsgConfirmTyped       MsgID = "C12.typed"          // precinto: {action} can't be undone. Type "{command}" to confirm:
+	MsgPolicyPending      MsgID = "C13.policy"         // precinto: config.toml changes that weaken protection are waiting for your confirmation ({n}). Review them at your next unlock in a terminal.
+	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
+	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
+	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
+	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
+	MsgVaultNotGenuine    MsgID = "C14.notgenuine"     // precinto: the key you unlocked does not open {folder}'s older capsules, so its key files may have been replaced too. Nothing was changed. Use your recovery key: precinto vault repair --root {folder} --recovery
+	MsgInitRefuseAgent    MsgID = "B.refuse"           // precinto init must be run by you in your own terminal, not by an AI agent: the recovery key would end up in the agent's transcript and be sent to the model provider.
+	MsgInitNeedSE         MsgID = "B.needse"           // Unlocking with your Mac password needs age-plugin-se: brew install age-plugin-se, then run precinto init again. (Or use a passphrase only: precinto init --factor passphrase.)
+	MsgInitRemote         MsgID = "B.remote"           // precinto: you're in tmux, screen or SSH, where the Mac password dialog can't appear. Add a passphrase as a second way to unlock? [Y/n]
+	MsgPassphraseNew      MsgID = "B.passphrase.new"   // Choose a precinto passphrase (at least 12 characters), or press Enter to get a generated one:
+	MsgPassphraseAgain    MsgID = "B.passphrase.again" // Type the passphrase again:
+	MsgPassphraseWeak     MsgID = "B.passphrase.weak"  // that passphrase is too weak (at least 12 characters and about 80 bits are needed). Try again.
+	MsgPassphraseDiff     MsgID = "B.passphrase.diff"  // the two passphrases differ. Try again.
+	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase:
+	MsgRecoveryHeader     MsgID = "B.recovery.header"  // Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.
+	MsgRecoveryAgain      MsgID = "B.recovery.again"   // The recovery key is shown only now. Show it again? [Y/n]
+	MsgRecoveryLost       MsgID = "B.recovery.lost"    // WARNING: the recovery key was not confirmed and cannot be shown again. Keep your other ways to unlock safe.
+	MsgRecoveryWritten    MsgID = "B.recovery.written" // recovery key written to {file}. Move it offline (it opens every sealed folder).
+	MsgRecoveryPrompt     MsgID = "B.recovery.prompt"  // precinto recovery key:
+	MsgServiceOffer       MsgID = "B.service"          // Seal in the background every 10 minutes (installs a LaunchAgent)? [Y/n]
+	MsgNotProtected       MsgID = "E.notprotected"     // {folder} is not inside a protected folder. Protect it with: precinto protect DIR
+	MsgNotInitialized     MsgID = "E.notinit"          // precinto is not set up yet. Run: precinto init
+	MsgAgentDownAll       MsgID = "E.agentdown"        // the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock
+	MsgNeedTerminal       MsgID = "E.needtty"          // {command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.
+	MsgShimFailed         MsgID = "D.shim"             // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
 )
 
 // Reason is why a folder is locked, as shown to users (SPEC §16.3 C3).
@@ -5335,6 +5790,7 @@ const (
 	ReasonManual Reason = "manual" // "locked by you"
 	ReasonSleep  Reason = "sleep"  // "computer slept"
 	ReasonStart  Reason = "start"  // never unlocked since the agent started
+	ReasonAgent  Reason = "agent"  // "the precinto agent stopped responding"
 )
 
 // TTY is an opened controlling terminal (/dev/tty), used for prompts that
@@ -5466,17 +5922,39 @@ const (
 	CheckExposed           = ipc.AttnExposed
 	CheckUngatedSession    = ipc.AttnUngatedSession
 	CheckConflict          = ipc.AttnConflict
+	// CheckPermissions: precinto's own directories and Claude's temp folder
+	// are not private (owner, mode, symlinks; S7, D6).
+	CheckPermissions = "permissions"
+	// CheckAgentSocket: the run directory or socket is unusable or unsafe
+	// (length, owner, mode, a non-socket; D6).
+	CheckAgentSocket = "agent-socket"
+	// CheckInterrupted: journal leftovers, abandoned restore staging and
+	// history hold links of interrupted operations (D12, D58).
+	CheckInterrupted = "interrupted"
+	// CheckPluginPin: a pinned plugin binary no longer matches its SHA-256;
+	// fix: precinto factor repin NAME (D75).
+	CheckPluginPin = "plugin-pin"
+	// CheckExperimentalVersion: an installed harness version outside an
+	// experimental inventory's verified_versions (SPEC §7.3).
+	CheckExperimentalVersion = "experimental-version"
 )
 
 // Codes lists every check code in display order.
 func Codes() []string
 
+// Render writes fs for `precinto doctor`: one line per finding
+// ("FAIL  code  message", the fix on the next line) and a summary line, or
+// with asJSON the v1 document {"v":1,"worst":sev,"findings":[{"code",
+// "severity","message","fix"}]}. Both sanitize every text again (a finding
+// may come from the agent).
+func Render(w io.Writer, fs []Finding, asJSON bool) error
+
 // Finding is one result.
 type Finding struct {
-	Code     string
-	Severity Severity
-	Message  string // one line, content-free
-	Fix      string // command or setting that fixes it
+	Code     string   `json:"code"`
+	Severity Severity `json:"severity"`
+	Message  string   `json:"message"`       // one line, content-free
+	Fix      string   `json:"fix,omitempty"` // command or setting that fixes it
 }
 
 // Run executes every applicable check.
@@ -5502,6 +5980,10 @@ const (
 	Warn Severity = "warn"
 	Fail Severity = "fail"
 )
+
+// Worst returns the most severe severity among fs (OK when empty). The CLI
+// exits 1 when it is Fail, 0 otherwise (SPEC §16.2; 2 is usage).
+func Worst(fs []Finding) Severity
 ```
 
 ### `internal/testkit`

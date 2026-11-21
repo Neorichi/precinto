@@ -83,6 +83,9 @@ func TestLayoutAt(t *testing.T) {
 	if l.Socket != "/r/agent.sock" || l.CapsuleLog != "/b/state/capsules.log" || l.PolicyPinned != "/b/state/policy.pinned" {
 		t.Fatalf("layout: %+v", l)
 	}
+	if l.HookDedupeDir != "/b/state/hookdedupe" || l.NotesIndex != "/b/state/notes.json" {
+		t.Fatalf("hook and notes state: %q %q", l.HookDedupeDir, l.NotesIndex)
+	}
 	if got := l.UnitCapsuleDir("claude-code", "k"); got != "/b/capsules/claude-code/k" {
 		t.Errorf("UnitCapsuleDir = %q", got)
 	}
@@ -126,5 +129,41 @@ func TestLookPath(t *testing.T) {
 	}
 	if _, err := paths.LookPath(e, "./sh"); err == nil {
 		t.Error("relative path with a slash accepted")
+	}
+}
+
+// HookLayout never honours PRECINTO_* in any build (hook mode, D6/D56).
+func TestHookLayoutIgnoresOverrides(t *testing.T) {
+	e := paths.FromMap(map[string]string{
+		"HOME": "/u", paths.EnvHome: "/b", paths.EnvRuntimeDir: "/r", paths.EnvDev: "1",
+		paths.EnvTestAncestryStop: "1:2", paths.EnvXDGDataHome: "/x", paths.EnvXDGRuntimeDir: "/run/user/7",
+	})
+	got, err := paths.HookLayout(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := paths.HookLayout(paths.FromMap(map[string]string{"HOME": "/u", paths.EnvXDGDataHome: "/x", paths.EnvXDGRuntimeDir: "/run/user/7"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want || got.Base == "/b" || got.RunDir == "/r" {
+		t.Fatalf("HookLayout honoured an override: %+v", got)
+	}
+	base, _ := paths.DefaultBase(e)
+	if got.Base != base {
+		t.Fatalf("HookLayout base %q, want the default %q", got.Base, base)
+	}
+	long := paths.FromMap(map[string]string{"HOME": "/" + strings.Repeat("h", 120)})
+	if _, err := paths.HookLayout(long); !errors.Is(err, paths.ErrSocketPath) {
+		t.Fatalf("long socket path: %v, want ErrSocketPath", err)
+	}
+	if _, err := paths.HookLayout(paths.FromMap(nil)); err == nil {
+		t.Fatal("HookLayout without HOME succeeded")
+	}
+}
+
+func TestProductNames(t *testing.T) {
+	if paths.ServiceLabel != "com.github.precinto.sweep" || paths.ClaudePluginID != "precinto@precinto" {
+		t.Fatalf("names %q %q (owner-revisable, OD-05: change docs and doctor together)", paths.ServiceLabel, paths.ClaudePluginID)
 	}
 }

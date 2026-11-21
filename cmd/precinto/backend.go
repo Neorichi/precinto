@@ -205,14 +205,14 @@ func (b *backend) SealAfterExit(ctx context.Context, plan harness.LaunchPlan, ch
 		sum.SID = plan.SealScope.SIDs[0]
 	}
 	scope := plan.SealScope
-	if len(scope.SIDs) == 0 && len(scope.RootIDs) == 0 {
-		// An empty scope means "every folder" to a scan: the launch's own
-		// folders bound it instead, and an unmanaged launch seals nothing.
-		if len(plan.Roots) == 0 {
-			return sum, nil
-		}
-		scope.RootIDs = rootIDs(plan.Roots)
+	if len(scope.SIDs) == 0 && len(scope.RootIDs) == 0 && len(plan.Roots) == 0 {
+		return sum, nil // an unmanaged launch seals nothing
 	}
+	// Only what the child owned (CC-21): the plan's scope narrowed to the
+	// sessions whose ledger owner is the child, never widened to the plan's
+	// folders, so other restored sessions of the same unlocked folder stay
+	// in place (R4).
+	scope.Procs = append(append([]platform.ProcID(nil), scope.Procs...), child)
 	waitFor := child
 	rep, err := b.eng.Seal(ctx, []harness.ID{plan.Harness}, scope, sweep.Options{
 		Scope:   scope,

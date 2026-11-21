@@ -322,7 +322,18 @@ func (d *osDir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 	if err := d.fs.failure("create", dir); err != nil {
 		return nil, "", &fs.PathError{Op: "open", Path: dir, Err: err}
 	}
-	f, err := os.CreateTemp(dir, pattern)
+	// fsx.Dir.CreateTemp semantics (CC-02), not os.CreateTemp's: the last
+	// '*' is replaced by a random string; a pattern without '*' is the
+	// exact name, created O_EXCL (fsx.ErrExist when it exists).
+	var f *os.File
+	if i := strings.LastIndexByte(pattern, '*'); i >= 0 {
+		f, err = os.CreateTemp(dir, pattern[:i]+"*"+pattern[i+1:])
+	} else {
+		f, err = os.OpenFile(filepath.Join(dir, pattern), os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			err = fmt.Errorf("%w: %s", fsx.ErrExist, pattern)
+		}
+	}
 	if err != nil {
 		return nil, "", err
 	}
@@ -483,6 +494,7 @@ type fakeCodec struct {
 	corrupt       bool  // flip a byte in the temporary: ErrVerify
 	stanzas       int   // header stanzas (default 3)
 	midTmp        func()
+	afterRename   func() // right after the commit rename (where Seal evaluates capsule.renamed)
 	duringExtract func(n int)
 	seals         int
 }
@@ -546,7 +558,7 @@ func sum(b []byte) string {
 func (c *fakeCodec) Seal(ctx context.Context, r sealRequest) (*capsule.Sealed, error) {
 	c.mu.Lock()
 	c.seals++
-	sealErr, tmpErr, corrupt, stanzas, between, mid := c.sealErr, c.tmpErr, c.corrupt, c.stanzas, c.betweenPasses, c.midTmp
+	sealErr, tmpErr, corrupt, stanzas, between, mid, renamed := c.sealErr, c.tmpErr, c.corrupt, c.stanzas, c.betweenPasses, c.midTmp, c.afterRename
 	c.mu.Unlock()
 	if stanzas == 0 {
 		stanzas = capsule.HeaderStanzas
@@ -601,7 +613,10 @@ func (c *fakeCodec) Seal(ctx context.Context, r sealRequest) (*capsule.Sealed, e
 		return nil, err
 	}
 	file := append(append([]byte(nil), header...), bb...)
-	tmp, name, err := r.Out.CreateTemp("", ".capsule-tmp-*")
+	// Like capsule.Seal: only Out/TmpName(Name), created O_EXCL (a leftover
+	// fails with fsx.ErrExist and is left), committed with a no-replace
+	// rename straight into Out.
+	tmp, name, err := r.Out.CreateTemp("", capsule.TmpName(r.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -665,6 +680,13 @@ func (c *fakeCodec) Seal(ctx context.Context, r sealRequest) (*capsule.Sealed, e
 	}
 	if err := r.Out.Rename(name, r.Name, fsx.NoReplace); err != nil {
 		_ = r.Out.Remove(name)
+		return nil, err
+	}
+	if renamed != nil {
+		renamed()
+	}
+	// The real Seal evaluates capsule.renamed here (SEAL-6).
+	if err := failpoint.Hit("capsule.renamed"); err != nil {
 		return nil, err
 	}
 	s := &capsule.Sealed{Name: r.Name, Path: filepath.Join(r.Out.Path(), r.Name), SHA256: sum(file), HeaderSHA256: sum(header),

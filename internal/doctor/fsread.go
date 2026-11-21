@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"sort"
 	"syscall"
 
+	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/inventories"
 )
@@ -52,6 +55,21 @@ func openRegular(path string) (*os.File, fs.FileInfo, error) {
 		return nil, nil, fmt.Errorf("%w: %s", errNotRegular, path)
 	}
 	return f, fi, nil
+}
+
+// sha256File hashes the regular file at path (plugin pins, D75); it never
+// follows a FIFO open and reads nothing else.
+func (e *env) sha256File(path string) (string, error) {
+	f, _, err := openRegular(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // readRegular reads a whole regular file of at most max bytes.
@@ -113,20 +131,14 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// readSalt reads state/name.salt without creating it (capsule.LoadSalt
-// would): nil when it does not exist.
+// readSalt reads state/name.salt without creating it (capsule.ReadSalt;
+// capsule.LoadSalt would create it): nil when it does not exist yet.
 func readSalt(path string) ([]byte, error) {
-	b, err := readRegular(path, 4096)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
+	salt, ok, err := capsule.ReadSalt(path)
+	if err != nil || !ok {
 		return nil, err
 	}
-	if len(b) < 16 {
-		return nil, fmt.Errorf("doctor: %s is too short", filepath.Base(path))
-	}
-	return b, nil
+	return salt, nil
 }
 
 // listDir returns the entries of dir sorted by name (at most

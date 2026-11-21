@@ -13,6 +13,7 @@ import (
 
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/platform"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 func init() {
@@ -32,7 +33,7 @@ func SetPromptUI(f func() (PromptUI, error)) (restore func()) {
 }
 
 // SetProcSeams replaces process identification and session signalling.
-func SetProcSeams(identify func(int) (platform.ProcID, error), session func(int, syscall.Signal) error) (restore func()) {
+func SetProcSeams(identify func(int) (platform.ProcID, error), session func(platform.ProcID, syscall.Signal) error) (restore func()) {
 	oldID, oldSess := identifyProc, signalSession
 	identifyProc, signalSession = identify, session
 	return func() { identifyProc, signalSession = oldID, oldSess }
@@ -84,11 +85,11 @@ func OverlayLines(o Overlay, harnessName, status string, ending bool) []string {
 	return overlayText{o: o, harness: harnessName, status: status, ending: ending}.lines()
 }
 
-// KillGrace and QuitKeys are the termination parameters per harness.
-func KillGrace(h harness.ID) time.Duration { return killGraceFor(h) }
+// TerminateOptionsFor returns the termination parameters Run uses for plan.
+func TerminateOptionsFor(plan harness.LaunchPlan) TerminateOptions { return terminateOptions(plan) }
 
-// QuitKeys returns the harness's quit keys.
-func QuitKeys(h harness.ID) []byte { return quitKeys(h) }
+// PlanVars maps LaunchPlan.MsgVars to ui.Vars.
+func PlanVars(m map[string]string) ui.Vars { return planVars(m) }
 
 // ClaudeSettings is the D32 settings JSON.
 const ClaudeSettings = claudeSettings

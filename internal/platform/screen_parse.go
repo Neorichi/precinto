@@ -308,3 +308,26 @@ func screenFromLoginctl(props map[string]string, now time.Time) ScreenState {
 	}
 	return s
 }
+
+// parseTMDestinations reads `tmutil destinationinfo`: configured reports a
+// destination; ok=false when the output is neither form.
+func parseTMDestinations(out string) (configured, ok bool) {
+	switch {
+	case strings.Contains(out, "No destinations configured"):
+		return false, true
+	case strings.Contains(out, "Name") && strings.Contains(out, ":"), strings.Contains(out, "ID") && strings.Contains(out, ":"):
+		return true, true
+	}
+	return false, false
+}
+
+// parseTMExcluded reads `tmutil isexcluded PATH`: "[Excluded]" or
+// "[Included]" before the path; ok=false otherwise.
+func parseTMExcluded(out string) (excluded, ok bool) {
+	ex := strings.Contains(out, "[Excluded]")
+	in := strings.Contains(out, "[Included]")
+	if ex == in {
+		return false, false
+	}
+	return ex, true
+}

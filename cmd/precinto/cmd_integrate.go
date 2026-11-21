@@ -25,7 +25,7 @@ import (
 // .agents/plugins/marketplace.json (Codex), both named "precinto".
 const (
 	marketplaceSource = "precinto/precinto"
-	pluginRef         = "precinto@precinto"
+	pluginRef         = paths.ClaudePluginID
 )
 
 // Hosts that load precinto's shared plugin directory but are experimental

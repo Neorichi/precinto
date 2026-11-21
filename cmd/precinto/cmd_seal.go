@@ -753,11 +753,10 @@ func cmdForget(a *app, args []string) int {
 	if err != nil {
 		return a.fail("forget", err)
 	}
-	n := 1
-	if rep != nil && len(rep.Units) > 0 {
-		n = len(rep.Units)
+	a.sayOut(textForgot, rep.Count(sweep.OutForgotten))
+	if err := rep.Err(); err != nil {
+		return a.fail("forget", err)
 	}
-	a.sayOut(textForgot, n)
 	return exitOK
 }
 
@@ -846,10 +845,10 @@ func cmdPrune(a *app, args []string) int {
 	units, gens := pruneCounts(plan)
 	// SPEC §11.7: list what will be deleted before asking.
 	for _, u := range plan.Units {
-		if u.Outcome == sweep.OutSkipped || u.Outcome == sweep.OutFailed {
+		if u.Outcome != sweep.OutPruned {
 			continue
 		}
-		a.sayOut(textPruneLine, u.Unit, u.Kind, u.Gen, ui.HumanBytes(u.Bytes))
+		a.sayOut(textPruneLine, u.Unit, u.Kind, u.Files, ui.HumanBytes(u.Bytes))
 	}
 	if *dryRun {
 		a.sayOut(textPruneDry, gens, units)
@@ -872,18 +871,18 @@ func cmdPrune(a *app, args []string) int {
 	return exitOK
 }
 
-// pruneCounts counts the units and generations a prune report names (one
-// UnitResult per generation to delete).
+// pruneCounts counts the units and capsules a prune report names: one
+// OutPruned result per unit, Files capsules each (CC-30).
 func pruneCounts(r *sweep.Report) (units, gens int) {
 	if r == nil {
 		return 0, 0
 	}
 	seen := map[string]bool{}
 	for _, u := range r.Units {
-		if u.Outcome == sweep.OutSkipped || u.Outcome == sweep.OutFailed {
+		if u.Outcome != sweep.OutPruned {
 			continue
 		}
-		gens++
+		gens += u.Files
 		if !seen[u.Unit] {
 			seen[u.Unit] = true
 			units++

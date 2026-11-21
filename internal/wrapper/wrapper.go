@@ -70,8 +70,10 @@ type Backend interface {
 	RestoreSync(ctx context.Context, plan harness.LaunchPlan, abort <-chan struct{}) (RestoreSummary, error)
 	// RestoreBackground restores plan.Background after exec (best effort).
 	RestoreBackground(ctx context.Context, plan harness.LaunchPlan, abort <-chan struct{})
-	// Daemon returns a connected client (autostarted) for register,
-	// subscribe, activity and unlock-from-overlay.
+	// Daemon returns a new connection on every call (autostarted); the
+	// wrapper keeps one for the subscription stream and one for requests
+	// (register, activity, unlock-from-overlay), and dials again after a
+	// loss.
 	Daemon(ctx context.Context) (Daemon, error)
 	// RecordLaunch writes the ledger "launch" event for a launch whose
 	// session id is known before exec (resume targets), carrying the lease
@@ -106,8 +108,14 @@ type Options struct {
 // forwarded to it, D57), RecordLaunch, register, subscribe, forward
 // activity, handle lock/unlock/end events, RestoreBackground, wait, reset
 // the terminal, plan.Finish, release the lease, SealAfterExit, print one
-// summary line. Returns the child's exit code.
+// summary line. Returns the child's exit code, or ExitNotStarted when the
+// child never started (err says why).
 func Run(ctx context.Context, o Options) (int, error) { return run(ctx, o) }
+
+// ExitNotStarted is Run's code when the child never started; err says why
+// and cmd/precinto maps it with the API §5 table (e.g. sweep.ErrConflict →
+// 4, ipc codes → 3). Otherwise Run returns the child's own code.
+const ExitNotStarted = -1
 
 // ProxyOptions configures the PTY proxy.
 type ProxyOptions struct {
@@ -137,6 +145,9 @@ type Overlay struct {
 	Reason string // ui.Reason text
 	Factor string // "Mac password", "passphrase", "YubiKey"
 	Busy   bool   // show the busy line
+	// Harness is {harness} of C4.busy: the inventory display name
+	// ("Claude Code", "Codex").
+	Harness string
 }
 
 // Lock stops forwarding input (keys are dropped, not queued), keeps
@@ -183,7 +194,7 @@ func (p *Proxy) OverlayKeys() <-chan byte {
 type TerminateOptions struct {
 	QuitKeys []byte        // sent through the PTY first (Codex: Ctrl-C twice, R20/HA19)
 	KeysWait time.Duration // wait after QuitKeys (3s)
-	Grace    time.Duration // SIGTERM→SIGKILL delay (agent.KillGrace)
+	Grace    time.Duration // SIGTERM→SIGKILL delay (harness.KillGrace; LaunchPlan.KillGrace)
 }
 
 // Terminate ends the child: optional quit keys, SIGTERM, wait Grace,

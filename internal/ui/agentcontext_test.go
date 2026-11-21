@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/precinto/precinto/internal/paths"
@@ -205,12 +206,70 @@ func TestAgentContextAncestryWalk(t *testing.T) {
 		t.Errorf("%d ancestors: AgentContext = %v (%q), want a fail-closed agent context", ui.MaxAncestors+1, got, evidence)
 	}
 
-	// A harness above an ancestor that cannot be looked up is out of sight;
-	// the walk stops there without failing.
+	// An ancestor that has exited (ErrNoProcess) ends the walk: a harness
+	// above it is out of sight (the no-controlling-terminal rule covers
+	// reparented processes).
 	gap, gapSelf := chain(2000, proc("/opt/homebrew/bin/claude", "claude"), login, zsh, self)
 	delete(gap, 2001)
 	if got, evidence := ui.AgentContextWith(paths.FromMap(nil), gap, noMarkers, gapSelf, withTTY); got {
-		t.Errorf("walk past a lookup error: agent context (%q)", evidence)
+		t.Errorf("walk ending at an exited ancestor: agent context (%q)", evidence)
+	}
+	// Any other lookup failure is an agent context (CC-54): ancestry that
+	// cannot be read proves nothing.
+	denied, deniedSelf := chain(2100, proc("/opt/homebrew/bin/claude", "claude"), login, zsh, self)
+	if got, evidence := ui.AgentContextWith(paths.FromMap(nil), errProcs{denied, 2101, syscall.EPERM}, noMarkers, deniedSelf, withTTY); !got || evidence != "process ancestry unavailable" {
+		t.Errorf("EPERM on an ancestor: AgentContext = %v (%q), want an agent context", got, evidence)
+	}
+}
+
+// errProcs fails Lookup of one pid with err.
+type errProcs struct {
+	fakeProcs
+	pid int
+	err error
+}
+
+func (e errProcs) Lookup(pid int) (platform.ProcInfo, error) {
+	if pid == e.pid {
+		return platform.ProcInfo{}, e.err
+	}
+	return e.fakeProcs.Lookup(pid)
+}
+
+// D64: in -tags testing builds the walk ends at the process named by
+// PRECINTO_TEST_ANCESTRY_STOP; production builds never read it.
+func TestAgentContextTestAncestryStop(t *testing.T) {
+	procs, selfPID := chain(3000, proc("/opt/homebrew/bin/claude", "claude"), zsh, proc("/usr/local/go/bin/go.test"), self)
+	stop := procs[3002].ID // the test process, below claude
+	env := paths.FromMap(map[string]string{paths.EnvTestAncestryStop: stop.String()})
+	got, evidence := ui.AgentContextWith(env, procs, noMarkers, selfPID, withTTY)
+	if paths.TestingBuild() {
+		if got {
+			t.Errorf("testing build: claude above the stop still counted (%q)", evidence)
+		}
+	} else if !got {
+		t.Error("production build honoured PRECINTO_TEST_ANCESTRY_STOP")
+	}
+	// A harness below the stop is still found.
+	below, belowSelf := chain(3100, zsh, proc("/usr/local/go/bin/go.test"), proc("/opt/homebrew/bin/codex", "codex"), self)
+	env = paths.FromMap(map[string]string{paths.EnvTestAncestryStop: below[3101].ID.String()})
+	if got, evidence := ui.AgentContextWith(env, below, noMarkers, belowSelf, withTTY); !got || !strings.Contains(evidence, "codex") {
+		t.Errorf("harness below the stop: AgentContext = %v (%q)", got, evidence)
+	}
+	// Markers and the no-controlling-terminal rule still apply.
+	env = paths.FromMap(map[string]string{paths.EnvTestAncestryStop: stop.String()})
+	if got, _ := ui.AgentContextWith(env, procs, markers("CLAUDECODE"), selfPID, withTTY); !got {
+		t.Error("an env marker was ignored with the stop set")
+	}
+	if got, evidence := ui.AgentContextWith(env, procs, noMarkers, selfPID, withoutTTY); !got || (paths.TestingBuild() && evidence != "no controlling terminal") {
+		t.Errorf("no controlling terminal with the stop set: %v (%q)", got, evidence)
+	}
+	// A stop naming another incarnation (a reused pid) stops nothing.
+	reused := stop
+	reused.StartUS++
+	env = paths.FromMap(map[string]string{paths.EnvTestAncestryStop: reused.String()})
+	if got, _ := ui.AgentContextWith(env, procs, noMarkers, selfPID, withTTY); !got {
+		t.Error("a stale stop hid the harness ancestor")
 	}
 }
 

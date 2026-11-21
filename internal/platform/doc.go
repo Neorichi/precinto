@@ -11,10 +11,15 @@
 // Files: platform.go (exported API, shared types), *_darwin.go, *_linux.go
 // (implementations), *_other.go (unsupported stubs so `go vet` builds).
 // darwin: sysctl kern.proc.pid (kp_proc.p_starttime, p_stat), kern.procargs2
-// (exe path), kqueue EVFILT_PROC NOTE_EXIT, getsockopt LOCAL_PEERCRED /
-// LOCAL_PEERPID, PT_DENY_ATTACH, `/usr/sbin/ioreg` polling (IOConsoleLocked,
-// HIDIdleTime), `lsof` for open-file holders. linux: /proc/<pid>/stat field
-// 22 + /proc/sys/kernel/random/boot_id, /proc/<pid>/exe, pidfd_open /
+// (exe path), proc_info(2) (proc_pidpath, PROC_PIDVNODEPATHINFO,
+// PROC_PIDLISTFDS + PROC_PIDFDVNODEPATHINFO) through syscall(2) for
+// executables, working directories and open-file holders, with `lsof` only
+// when proc_info is unavailable (ENOSYS); inspection-protected processes
+// (EPERM) are skipped like lsof does. kqueue EVFILT_PROC NOTE_EXIT,
+// getsockopt LOCAL_PEERCRED / LOCAL_PEERPID, PT_DENY_ATTACH,
+// `/usr/sbin/ioreg` polling (IOConsoleLocked, HIDIdleTime), `tmutil`
+// queries (read-only). linux: /proc/<pid>/stat field 22 (µs since boot,
+// D66) + /proc/sys/kernel/random/boot_id, /proc/<pid>/exe, pidfd_open /
 // pidfd_send_signal, SO_PEERCRED, PR_SET_DUMPABLE, `loginctl show-session`
 // (LockedHint, IdleSinceHint).
 //

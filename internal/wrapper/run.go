@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,13 +38,6 @@ const (
 	claudeSettings  = `{"idleCompaction":false,"awaySummaryEnabled":false,"precomputeCompactionEnabled":false}`
 	claudeAwayEnv   = "CLAUDE_CODE_ENABLE_AWAY_SUMMARY"
 	claudeConfigEnv = paths.EnvClaudeConfigDir
-)
-
-// SessionEnd hook budgets (docs/HOOKS-IO.md §1), for the SIGTERM→SIGKILL
-// grace of agent.KillGrace, which the wrapper must not import.
-const (
-	claudeSessionEndBudget = 1500 * time.Millisecond
-	codexSessionEndBudget  = 3 * time.Second
 )
 
 // abortCh is a channel closed once.
@@ -112,10 +106,10 @@ type runner struct {
 
 func run(ctx context.Context, o Options) (int, error) {
 	if o.Backend == nil {
-		return 1, errors.New("wrapper: no backend")
+		return ExitNotStarted, errors.New("wrapper: no backend")
 	}
 	if len(o.Argv) == 0 || o.Argv[0] == "" {
-		return 2, errNoCommand
+		return ExitNotStarted, errNoCommand
 	}
 	if o.Stdin == nil {
 		o.Stdin = os.Stdin
@@ -128,7 +122,7 @@ func run(ctx context.Context, o Options) (int, error) {
 	}
 	plan, err := o.Backend.Plan(ctx, o.Harness, o.Cwd, o.Argv)
 	if err != nil {
-		return exitCodeFor(err), err
+		return ExitNotStarted, err
 	}
 	r := newRunner(o, plan)
 	if plan.Mode == harness.LaunchPassthrough {
@@ -218,6 +212,21 @@ func (r *runner) reasonText(code ui.Reason) string {
 	return ui.ReasonText(code, d)
 }
 
+// planVars maps LaunchPlan.MsgVars (keys without braces) to ui.Vars.
+func planVars(m map[string]string) ui.Vars {
+	v := ui.Vars{Folder: m["folder"], Harness: m["harness"], SID: m["sid"], Other: m["other"], File: m["file"], Command: m["command"]}
+	if pid, err := strconv.Atoi(m["pid"]); err == nil {
+		v.PID = pid
+	}
+	if n, err := strconv.Atoi(m["n"]); err == nil {
+		v.N = n
+	}
+	if d, err := strconv.Atoi(m["days"]); err == nil {
+		v.Days = d
+	}
+	return v
+}
+
 func (r *runner) printNotices(lines []string) {
 	for _, l := range lines {
 		if l = strings.TrimSpace(string(ui.SanitizeTerminal([]byte(l)))); l != "" {
@@ -226,26 +235,10 @@ func (r *runner) printNotices(lines []string) {
 	}
 }
 
-// exitCodeFor maps an error that ended Run before the child ran to the
-// exit codes of SPEC §16.2 where the wrapper can tell; cmd/precinto maps
-// the rest (sweep errors) from the returned error itself.
-func exitCodeFor(err error) int {
-	var ie *ipc.Error
-	switch {
-	case err == nil:
-		return 0
-	case errors.As(err, &ie):
-		return ie.ExitCode()
-	case errors.Is(err, ui.ErrCancelled), errors.Is(err, context.Canceled):
-		return 3
-	}
-	return 1
-}
-
 func (r *runner) passthrough(ctx context.Context) (int, error) {
 	cmd, err := r.command(nil)
 	if err != nil {
-		return startErrorCode(err), err
+		return ExitNotStarted, err
 	}
 	cmd.Stdin, cmd.Stdout = r.o.Stdin, r.o.Stdout
 	cmd.Stderr = r.childStderr()
@@ -352,22 +345,28 @@ func (r *runner) sessionTTY() string {
 }
 
 func (r *runner) launch(parent context.Context) (int, error) {
-	r.printNotices(r.plan.Notices)
+	// Plan notices and the confirm question are ui.MsgID values with
+	// MsgVars (the adapter cannot import internal/ui, CC-20).
+	vars := planVars(r.plan.MsgVars)
+	for _, id := range r.plan.Notices {
+		r.printNotices([]string{ui.Format(ui.MsgID(id), vars)})
+	}
 	pre := &lazyUI{open: openPromptUI}
 	if r.plan.Confirm != "" {
-		ok, err := pre.YesNo(r.plan.Confirm, false)
+		question := ui.Format(ui.MsgID(r.plan.Confirm), vars)
+		ok, err := pre.YesNo(question, strings.Contains(question, "[Y/n]"))
 		if err == nil && !ok {
 			err = ui.ErrCancelled
 		}
 		if err != nil {
 			_ = pre.Close()
-			return exitCodeFor(err), err
+			return ExitNotStarted, err
 		}
 	}
 	if r.managed {
 		if err := r.b.EnsureUnlocked(parent, r.plan.Roots, pre); err != nil {
 			_ = pre.Close()
-			return exitCodeFor(err), err
+			return ExitNotStarted, err
 		}
 	}
 	_ = pre.Close()
@@ -380,19 +379,19 @@ func (r *runner) launch(parent context.Context) (int, error) {
 		// folder locks (abort), and nothing exposes plaintext yet.
 		d, ch, err := r.dialSub(ctx)
 		if err != nil {
-			return exitCodeFor(err), err
+			return ExitNotStarted, err
 		}
 		r.events = make(chan subMsg, eventBuffer)
 		go r.watchSub(ctx, d, ch)
 	}
 	if r.plan.Prepare != nil {
 		if err := r.plan.Prepare(ctx); err != nil {
-			return exitCodeFor(err), err
+			return ExitNotStarted, err
 		}
 	}
 	lease, err := r.b.AcquireLease(ctx, r.plan)
 	if err != nil {
-		return exitCodeFor(err), err
+		return ExitNotStarted, err
 	}
 	releaseLease := func() {
 		if lease != nil {
@@ -403,18 +402,18 @@ func (r *runner) launch(parent context.Context) (int, error) {
 	sum, err := r.restoreSync(ctx)
 	if r.lost || len(r.locked) > 0 {
 		releaseLease()
-		return 3, &ipc.Error{Code: ipc.CodeLocked, Msg: ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: r.folder})}
+		return ExitNotStarted, &ipc.Error{Code: ipc.CodeLocked, Msg: ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: r.folder})}
 	}
 	if err != nil {
 		releaseLease()
-		return exitCodeFor(err), err
+		return ExitNotStarted, err
 	}
 	r.printNotices(sum.Notices)
 
 	cmd, err := r.command(lease)
 	if err != nil {
 		releaseLease()
-		return startErrorCode(err), err
+		return ExitNotStarted, err
 	}
 	r.tty = r.sessionTTY()
 	if r.managed {
@@ -422,7 +421,7 @@ func (r *runner) launch(parent context.Context) (int, error) {
 	}
 	if err := r.startChild(cmd); err != nil {
 		releaseLease()
-		return startErrorCode(err), err
+		return ExitNotStarted, err
 	}
 	if lease != nil {
 		_ = lease.SetChild(r.child)
@@ -511,7 +510,6 @@ func (r *runner) startChild(cmd *exec.Cmd) error {
 		if err != nil {
 			return err
 		}
-		px.s.setHarness(r.harnessName)
 		r.px, r.child, r.pid = px, px.s.child, px.s.pid
 		return nil
 	}
@@ -647,9 +645,11 @@ func contains(list []string, s string) bool {
 }
 
 func (r *runner) overlay() Overlay {
-	o := Overlay{Folder: r.folder, Reason: r.lockReason, Factor: r.factor, Busy: r.busy}
+	o := Overlay{Folder: r.folder, Reason: r.lockReason, Factor: r.factor, Busy: r.busy, Harness: r.harnessName}
 	if r.lost {
-		o.Reason, o.Busy = "", false
+		// The subscription is gone: the overlay says why (CC-38), and no
+		// unlock can be in flight through a daemon that is not answering.
+		o.Reason, o.Busy = r.reasonText(ui.ReasonAgent), false
 	}
 	return o
 }
@@ -746,11 +746,7 @@ func (r *runner) startEnd(code ui.Reason) {
 		}
 		r.px.s.setEnding()
 	}
-	opts := TerminateOptions{
-		QuitKeys: quitKeys(r.plan.Harness),
-		KeysWait: defaultKeysWt,
-		Grace:    killGraceFor(r.plan.Harness),
-	}
+	opts := terminateOptions(r.plan)
 	px, dc := r.px, r.dc
 	go func() {
 		var err error
@@ -763,33 +759,16 @@ func (r *runner) startEnd(code ui.Reason) {
 	}()
 }
 
-// quitKeys are the keys that make a harness exit cleanly (Codex: Ctrl-C
-// twice; it installs no SIGTERM handler, HA19).
-func quitKeys(h harness.ID) []byte {
-	if h == harness.Codex {
-		return []byte{0x03, 0x03}
+// terminateOptions are the termination parameters of a plan: the adapter
+// knows its harness, so its quit keys (Codex: Ctrl-C twice) and its
+// harness.KillGrace come from the plan (CC-24); a plan without a grace
+// gets the 8 s floor.
+func terminateOptions(plan harness.LaunchPlan) TerminateOptions {
+	grace := plan.KillGrace
+	if grace <= 0 {
+		grace = defaultGrace
 	}
-	return nil
-}
-
-// killGraceFor mirrors agent.KillGrace: max(8 s, SessionEnd budget + 6 s),
-// capped at 70 s (R20).
-func killGraceFor(h harness.ID) time.Duration {
-	budget := time.Duration(0)
-	switch h {
-	case harness.ClaudeCode:
-		budget = claudeSessionEndBudget
-	case harness.Codex:
-		budget = codexSessionEndBudget
-	}
-	g := budget + 6*time.Second
-	if g < 8*time.Second {
-		g = 8 * time.Second
-	}
-	if g > 70*time.Second {
-		g = 70 * time.Second
-	}
-	return g
+	return TerminateOptions{QuitKeys: plan.QuitKeys, KeysWait: defaultKeysWt, Grace: grace}
 }
 
 // afterExit is SPEC §15.1 step 9 after the child was reaped.

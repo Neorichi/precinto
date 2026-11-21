@@ -190,7 +190,6 @@ func (e *env) unloggedCapsules() []Finding {
 func checkUnsealed(e *env) []Finding {
 	var out []Finding
 	out = append(out, e.part(CheckUnsealed, e.lockedPlaintext)...)
-	out = append(out, e.part(CheckUnsealed, e.interrupted)...)
 	out = append(out, e.part(CheckUnsealed, e.queuedSeals)...)
 	if len(out) == 0 {
 		out = append(out, ok(CheckUnsealed, "no plaintext of a locked folder was found"))
@@ -240,7 +239,7 @@ func (e *env) lockedPlaintext() []Finding {
 func (e *env) interrupted() []Finding {
 	pending, err := e.journalPending()
 	if err != nil {
-		return []Finding{info(CheckUnsealed, "could not read the operation journal ("+errClass(err)+")", "")}
+		return []Finding{info(CheckInterrupted, "could not read the operation journal ("+errClass(err)+")", "")}
 	}
 	kinds := map[string]int{}
 	n := 0
@@ -258,7 +257,7 @@ func (e *env) interrupted() []Finding {
 	for _, k := range sortedKeys(kinds) {
 		ks = append(ks, fmt.Sprintf("%s %d", k, kinds[k]))
 	}
-	return []Finding{warn(CheckUnsealed, plural(n, "interrupted operation", "interrupted operations")+" ("+strings.Join(ks, ", ")+") "+verb(n, "waits", "wait")+" for recovery: the files involved may still be readable on disk (I9)",
+	return []Finding{warn(CheckInterrupted, plural(n, "interrupted operation", "interrupted operations")+" ("+strings.Join(ks, ", ")+") "+verb(n, "waits", "wait")+" for recovery: the files involved may still be readable on disk (I9)",
 		"precinto sweep")}
 }
 
@@ -322,10 +321,28 @@ func checkHoldCapped(e *env) []Finding {
 	return []Finding{ok(CheckHoldCapped, "no unit is kept unsealed by weak signs of activity alone")}
 }
 
+// checkInterrupted reports what interrupted operations left: journal
+// records waiting for recovery, abandoned restore staging and history hold
+// links (D12, D58).
+func checkInterrupted(e *env) []Finding {
+	var out []Finding
+	out = append(out, e.part(CheckInterrupted, e.interrupted)...)
+	out = append(out, e.part(CheckInterrupted, e.staleStaging)...)
+	out = append(out, e.part(CheckInterrupted, func() []Finding {
+		var fs []Finding
+		for _, d := range e.claudeConfigDirs() {
+			fs = append(fs, e.holdLinks(d)...)
+		}
+		return fs
+	})...)
+	if len(out) == 0 {
+		out = append(out, ok(CheckInterrupted, "no interrupted operation left anything behind"))
+	}
+	return out
+}
+
 func checkResidue(e *env) []Finding {
 	var out []Finding
-	out = append(out, e.part(CheckResidue, e.staleStaging)...)
-	out = append(out, e.part(CheckResidue, e.claudeTmpPermissions)...)
 	out = append(out, e.part(CheckResidue, e.staleShellSnapshots)...)
 	if e.o.Leaks {
 		out = append(out, e.part(CheckResidue, e.leakResidue)...)
@@ -367,7 +384,7 @@ func (e *env) staleStaging() []Finding {
 			}
 			return nil
 		})
-		out = append(out, warn(CheckResidue, e.show(p)+" is an abandoned restore staging folder with "+plural(files, "decrypted file", "decrypted files")+" (D12)",
+		out = append(out, warn(CheckInterrupted, e.show(p)+" is an abandoned restore staging folder with "+plural(files, "decrypted file", "decrypted files")+" (D12)",
 			"rm -r "+e.arg(p)))
 	}
 	return out
@@ -383,7 +400,7 @@ func (e *env) claudeTmpPermissions() []Finding {
 	var out []Finding
 	for _, d := range e.claudeTmpDirs() {
 		if p := dirProblem(d, e.d.EUID); p.text != "" {
-			out = append(out, warn(CheckResidue, "Claude's temp folder "+e.show(d)+" "+p.text+": other users may read session scratch files, and precinto does not restore sessions there (S7)",
+			out = append(out, warn(CheckPermissions, "Claude's temp folder "+e.show(d)+" "+p.text+": other users may read session scratch files, and precinto does not restore sessions there (S7)",
 				p.fix(e, d, true)))
 		}
 	}

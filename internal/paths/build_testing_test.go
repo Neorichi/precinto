@@ -22,3 +22,19 @@ func TestTestingBuild(t *testing.T) {
 		t.Fatalf("NewLayout = %+v, %v", l, err)
 	}
 }
+
+// Testing builds read PRECINTO_TEST_ANCESTRY_STOP and accept only PID:START.
+func TestTestingAncestryStop(t *testing.T) {
+	for v, want := range map[string]bool{
+		"123:456": true, "1:0": true, "": false, "123": false, ":456": false, "123:": false,
+		"0:5": false, "-1:5": false, "12:3x": false, " 12:3": false, "12:3:4": false,
+	} {
+		got, ok := paths.TestAncestryStop(paths.FromMap(map[string]string{paths.EnvTestAncestryStop: v}))
+		if ok != want || (ok && got != v) {
+			t.Errorf("TestAncestryStop(%q) = %q %v, want ok=%v", v, got, ok, want)
+		}
+	}
+	if _, ok := paths.TestAncestryStop(paths.FromMap(nil)); ok {
+		t.Error("unset variable reported")
+	}
+}

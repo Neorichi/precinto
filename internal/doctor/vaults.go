@@ -147,6 +147,48 @@ func checkRecoveryTested(e *env) []Finding {
 // minScryptLogN is the passphrase work-factor floor (D3).
 const minScryptLogN = 19
 
+// checkPluginPin reports plugin-backed factors whose pinned binary no
+// longer matches its SHA-256 (unlock with that factor fails, exit 5) and
+// names the command that re-pins it (D75). It only hashes the binary.
+func checkPluginPin(e *env) []Finding {
+	type pin struct{ path, sha string }
+	seen := map[string]pin{}
+	var names []string
+	for _, id := range e.vaultIDs() {
+		vi := e.vault(id)
+		if vi.v == nil {
+			continue
+		}
+		for _, f := range vi.v.Meta.Factors {
+			if (f.Kind != vault.FactorSE && f.Kind != vault.FactorPlugin) || f.PluginPath == "" {
+				continue
+			}
+			if _, ok := seen[f.Name]; !ok {
+				names = append(names, f.Name)
+				seen[f.Name] = pin{f.PluginPath, f.PluginSHA256}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	var out []Finding
+	for _, n := range names {
+		p := seen[n]
+		sum, err := e.sha256File(p.path)
+		switch {
+		case err != nil:
+			out = append(out, warn(CheckPluginPin, "the "+n+" unlock method's plugin "+e.show(p.path)+" could not be checked ("+errClass(err)+"): unlocking with it may fail", "precinto factor repin "+n))
+		case sum != p.sha:
+			out = append(out, fail(CheckPluginPin, "the "+n+" unlock method's plugin "+e.show(p.path)+" changed since it was pinned (an upgrade?): unlocking with it fails until it is re-pinned", "precinto factor repin "+n))
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, ok(CheckPluginPin, "every pinned plugin matches its recorded hash"))
+	}
+	return out
+}
+
 func checkPassphraseFactor(e *env) []Finding {
 	var with, weak []string
 	read := false

@@ -67,7 +67,7 @@ func withRoot(e *env, args []string) []string {
 func destructiveEnv(t *testing.T, unit string) *env {
 	e := newEnv(t)
 	e.eng.gens[unit] = []sweep.Generation{{Gen: 1, Size: 10}, {Gen: 2, Size: 12}}
-	e.eng.pruneRep = &sweep.Report{Units: []sweep.UnitResult{{Unit: unit, Gen: 1}}}
+	e.eng.pruneRep = &sweep.Report{Units: []sweep.UnitResult{{Unit: unit, Outcome: sweep.OutPruned, Files: 1}}}
 	e.eng.units = []sweep.UnitInfo{{Unit: unit, RootIDs: []string{"root-acme"}}}
 	return e
 }

@@ -132,13 +132,35 @@ func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) 
 }
 
 // ancestry returns the peer's ancestors (nearest first) from the daemon's
-// process table; unknown ancestry is empty.
+// process table; unknown ancestry is empty. In a -tags testing daemon the
+// walk ends at the process named by paths.TestAncestryStop of the daemon's
+// own environment (D64): it and its ancestors are ignored, so a suite run
+// inside an agent session still exercises the human paths below it.
+// Production builds never read the variable.
 func (d *daemon) ancestry(peer platform.Peer) []platform.ProcInfo {
 	anc, err := platform.Ancestors(d.procs, peer.PID, maxAncestry)
 	if err != nil {
 		return nil
 	}
+	if stop, ok := testAncestryStop(d.o.Env); ok {
+		for i, a := range anc {
+			if a.ID.PID == stop.PID && a.ID.StartUS == stop.StartUS && (a.ID.BootID == "" || stop.BootID == "" || a.ID.BootID == stop.BootID) {
+				return anc[:i]
+			}
+		}
+	}
 	return anc
+}
+
+// testAncestryStop parses paths.TestAncestryStop (D64; ok=false outside
+// -tags testing builds).
+func testAncestryStop(e paths.Env) (platform.ProcID, bool) {
+	v, ok := paths.TestAncestryStop(e)
+	if !ok {
+		return platform.ProcID{}, false
+	}
+	id, err := platform.ParseProcID(v)
+	return id, err == nil
 }
 
 // sessionRoots returns the folders of the session an agent-context peer

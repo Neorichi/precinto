@@ -598,6 +598,13 @@ func TestPlanLaunchCodex(t *testing.T) {
 	if plan.Confirm != "C10.consent" {
 		t.Errorf("first use must ask for consent, got %q", plan.Confirm)
 	}
+	if plan.MsgVars["folder"] == "" {
+		t.Errorf("C10.consent without {folder}: %v", plan.MsgVars)
+	}
+	// CC-24: Ctrl-C twice (Codex has no SIGTERM handler), 3 s + 6 s.
+	if string(plan.QuitKeys) != "\x03\x03" || plan.KillGrace != 9*time.Second {
+		t.Errorf("termination %q %v", plan.QuitKeys, plan.KillGrace)
+	}
 	if plan.HookCheck.Event != "UserPromptSubmit" || !plan.HookCheck.OnInput || plan.HookCheck.Within != 5*time.Second {
 		t.Errorf("hook check %+v", plan.HookCheck)
 	}

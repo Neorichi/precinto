@@ -41,6 +41,10 @@ var (
 	ErrNotFound          = errors.New("vault: no such vault")
 	ErrLocked            = errors.New("vault: vault is locked")
 	ErrNeedRecovery      = errors.New("vault: the recovery recipient differs from the verified copy; repair needs the recovery key") // D53
+	// ErrBadSecret: a wrong passphrase or recovery key (exit 3). It counts
+	// toward the D27 prompt rate limit like a cancel and is never a tamper
+	// alert (never ErrWrongIdentity).
+	ErrBadSecret = errors.New("vault: incorrect passphrase or recovery key")
 )
 
 // FactorKind is how a vault identity is wrapped (SPEC §4.3).
@@ -109,14 +113,20 @@ type UI interface {
 // FactorSpec describes a factor to enroll.
 type FactorSpec struct {
 	Kind            FactorKind
-	Name            string                 // default: kind, or plugin name
-	Recipient       string                 // se/plugin: from keygen output, never from `recipients` (S10)
-	IdentityStub    string                 // se/plugin handle
-	PluginPath      string                 // absolute; hashed and pinned
-	SEAccessControl string                 // default "any-biometry-or-passcode"; biometry-only and "none" rejected
-	Passphrase      *memguard.LockedBuffer // passphrase factor; consumed
-	ScryptLogN      int                    // 0 = calibrate
-	NoPresenceAck   bool                   // accept a plugin factor without a known presence policy (S10)
+	Name            string // default: kind, or plugin name
+	Recipient       string // se/plugin: from keygen output, never from `recipients` (S10)
+	IdentityStub    string // se/plugin handle
+	PluginPath      string // absolute; hashed and pinned
+	SEAccessControl string // se only: default "any-biometry-or-passcode"; biometry-only and "none" rejected
+	// PresencePolicy is for plugin factors: "touch-always" | "touch-cached" |
+	// "pin-always" | "pin-once" | "tpm-pin"; "" requires NoPresenceAck
+	// (S10); se keeps SEAccessControl. Recorded as Factor.PresencePolicy.
+	PresencePolicy string
+	// Passphrase is consumed (destroyed) by AddFactor, Init and Create:
+	// pass a fresh copy per vault.
+	Passphrase    *memguard.LockedBuffer
+	ScryptLogN    int  // 0 = calibrate
+	NoPresenceAck bool // accept a plugin factor without a known presence policy (S10)
 }
 
 // Store is the set of vaults under <base>/vaults plus the tripwire copies
@@ -177,9 +187,31 @@ func (s *Store) Verify(v *Vault, identity *memguard.LockedBuffer) error {
 	return s.verify(v, identity)
 }
 
-// Remove deletes vaults/<id> and its verified copy (unprotect, after every
-// capsule of the root was restored or explicitly forgotten).
+// Remove deletes vaults/<id> and its verified copy. Unused in v0.2:
+// unprotect keeps the vault and every capsule (D74).
 func (s *Store) Remove(id string) error { return s.remove(id) }
+
+// MarkAudited sets last_audit of vault id after the daemon audited every
+// capsule sealed since the previous last_audit (D5). It never moves
+// last_audit backwards (an older at is a no-op) and refuses an at later
+// than now; vault.toml is rewritten atomically under the vault's lock
+// file, outside the recipients MAC. Readers treat a last_audit later than
+// now as zero (audit everything).
+func (s *Store) MarkAudited(id string, at time.Time) error { return s.markAudited(id, at) }
+
+// MarkRecoveryVerified records recovery_verified_at = at in every
+// vault.toml after `precinto recover --verify` succeeded (SPEC §4.7). Like
+// MarkAudited it never moves the time backwards and refuses the future.
+func (s *Store) MarkRecoveryVerified(at time.Time) error { return s.markRecoveryVerified(at) }
+
+// RepinPlugin re-pins factor name in every vault to the binary now at its
+// pinned path, which must be a regular file (not a symlink) owned by root
+// or the user and not group- or other-writable. It returns the previous
+// and the new SHA-256. The caller showed both hashes and obtained the
+// typed word on a TTY (D75); ErrNotFound when no vault has the factor.
+func (s *Store) RepinPlugin(name string) (oldSHA, newSHA string, err error) {
+	return s.repinPlugin(name)
+}
 
 // RepairOptions configures Store.Repair (D53).
 type RepairOptions struct {
@@ -283,6 +315,14 @@ func (k *Keyring) WithIdentity(id string, fn func(age.Identity, *memguard.Locked
 	return k.withIdentity(id, fn)
 }
 
+// WithIdentityBuffer runs fn with the locked identity of vault id (factor
+// enrollment by the daemon, which cannot import age); fn must not retain,
+// copy or log it. The buffer is destroyed when fn returns. ErrLocked if the
+// vault is not unlocked.
+func (k *Keyring) WithIdentityBuffer(id string, fn func(identity *memguard.LockedBuffer) error) error {
+	return k.withIdentityBuffer(id, fn)
+}
+
 // ParseRecoveryKey reads a recovery identity (AGE-SECRET-KEY-1…, optionally
 // grouped with spaces or dashes) from a locked buffer.
 func ParseRecoveryKey(b *memguard.LockedBuffer) (age.Identity, error) {
@@ -295,8 +335,9 @@ func VerifyRecovery(recovery *memguard.LockedBuffer, header []byte) error {
 	return verifyRecovery(recovery, header)
 }
 
-// Diceware generates a passphrase of words from the embedded EFF list
-// (7 words ≈ 90 bits; S9).
+// Diceware generates a passphrase of words from the embedded 7776-word
+// list (7 words ≈ 90 bits; S9). The list file (wordlist.txt) is swappable
+// without a code change (OD-01).
 func Diceware(words int) (*memguard.LockedBuffer, error) { return diceware(words) }
 
 // EstimateBits estimates the entropy of a user-chosen passphrase; the

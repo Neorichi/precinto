@@ -33,13 +33,14 @@ _precinto_prompt_command() {
   fi
   local prev=${_precinto_pwd-}
   _precinto_pwd=$PWD
-  local out line action= root= epoch= msg=
+  local out line action= root= epoch= dir= msg=
   out=$(command '/opt/precinto/bin/precinto' shell-hook --shell bash --pwd "$PWD" --prev "$prev" --skip "${_PRECINTO_SKIP-}" ${first:+"$first"} 2>/dev/null) || return $rc
   while IFS= read -r line; do
     case $line in
       action=*) action=${line#action=} ;;
       root=*) root=${line#root=} ;;
       epoch=*) epoch=${line#epoch=} ;;
+      path=*) dir=${line#path=} ;;
       message=*) msg=${line#message=} ;;
     esac
   done <<<"$out"
@@ -50,8 +51,8 @@ _precinto_prompt_command() {
     local key=
     IFS= read -r -s -n 1 key || { printf '\n'; return $rc; }
     printf '\n'
-    if [ -z "$key" ]; then
-      command '/opt/precinto/bin/precinto' unlock
+    if [ -z "$key" ] && [ -n "$dir" ]; then
+      command '/opt/precinto/bin/precinto' unlock --root "$dir"
     fi
   else
     printf '%s\n' "$msg"

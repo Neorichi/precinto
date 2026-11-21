@@ -2,7 +2,10 @@ package vaulttest
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -82,6 +85,49 @@ func New(t testing.TB, dir, rootID string) *Fixture {
 		t.Fatalf("vaulttest.New: %v", err)
 	}
 	return &Fixture{Store: store, RootID: rootID, Identity: rootIdentity, Recovery: recoveryID, Keyring: kr}
+}
+
+// TamperRecipient replaces the vault recipient of vaultID in its vault.toml
+// (or, with recovery, the recovery recipient) with a fresh foreign X25519
+// recipient, as a one-shot writer would (SEC-9, SEC-26), and returns it.
+// Only the top-level key is edited, byte for byte, so the recipients MAC
+// and the verified copy no longer match.
+func (f *Fixture) TamperRecipient(t testing.TB, vaultID string, recovery bool) string {
+	t.Helper()
+	foreign, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("vaulttest: %v", err)
+	}
+	key := "recipient"
+	if recovery {
+		key = "recovery_recipient"
+	}
+	path := filepath.Join(f.Store.VaultsDir, vaultID, "vault.toml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("vaulttest: TamperRecipient: %v", err)
+	}
+	lines := strings.Split(string(b), "\n")
+	replaced := false
+	for i, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "[") {
+			break // factors and other tables follow the top-level keys
+		}
+		name, _, ok := strings.Cut(trimmed, "=")
+		if ok && strings.TrimSpace(name) == key {
+			lines[i] = key + " = " + strconv.Quote(foreign.Recipient().String())
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		t.Fatalf("vaulttest: TamperRecipient: %s has no top-level %s", path, key)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatalf("vaulttest: TamperRecipient: %v", err)
+	}
+	return foreign.Recipient().String()
 }
 
 func parse(t testing.TB, b *memguard.LockedBuffer) *age.X25519Identity {

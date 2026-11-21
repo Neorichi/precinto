@@ -88,7 +88,7 @@ func cmdUnlock(a *app, args []string) int {
 		// D40: typed confirmation on a TTY; without one only the folder
 		// of the working directory can be unlocked (SPEC §12.8).
 		if t == nil {
-			a.say(textNeedTerminal, "precinto unlock --all")
+			a.line(ui.MsgNeedTerminal, ui.Vars{Command: "precinto unlock --all"})
 			return exitLocked
 		}
 		prompt := ui.Format(ui.MsgUnlockConfirmAll, ui.Vars{N: len(targets), Folder: a.display(targets[0].Path)})

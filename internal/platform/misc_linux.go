@@ -91,6 +91,9 @@ func dmCrypt(dir string, depth int) bool {
 // excludeFromBackup is a no-op on linux (no system backup to configure).
 func excludeFromBackup(context.Context, string) error { return nil }
 
+// backupExcluded: there is no system backup to ask on linux.
+func backupExcluded(context.Context, string) (bool, bool, error) { return false, false, nil }
+
 // spotlightIndexed: there is no Spotlight on linux.
 func spotlightIndexed(context.Context, string) (indexed, known bool, err error) {
 	return false, false, nil

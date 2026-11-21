@@ -43,6 +43,11 @@ type run struct {
 	forced map[string]string
 	// markers caches each root's markers by unit key (one scan per run).
 	markers map[string]map[string][]string
+
+	// quietMu serializes the D63 quiet-window wait; quietTried makes it
+	// happen at most once per run.
+	quietMu    sync.Mutex
+	quietTried bool
 }
 
 // wallClock is used when Env.Clock is nil.
@@ -64,6 +69,9 @@ func newRun(e Env, p ports) *run {
 	}
 	if r.clock == nil {
 		r.clock = wallClock{origin: processStart}
+	}
+	if e.Sleep != nil {
+		r.p.sleep = e.Sleep
 	}
 	if r.p.sleep == nil {
 		r.p.sleep = sleepCtx
@@ -124,28 +132,6 @@ func storeOf(h harness.ID, k capsule.Kind) string {
 // logPathOf is a capsule path relative to CapsulesDir, slash-separated.
 func logPathOf(store, unit string, rel ...string) string {
 	return path.Join(append([]string{store, unit}, rel...)...)
-}
-
-// opDirName is the private per-operation directory a capsule is written in
-// before its no-replace rename into the unit directory. It is journaled as
-// Record.Tmp at PhasePrepared, so recovery removes whatever temporaries
-// the capsule writer left there, whatever names it chose (D58).
-func opDirName(recID string) string { return ".op-" + recID }
-
-// isOpDir reports whether name is an operation directory.
-func isOpDir(name string) bool { return strings.HasPrefix(name, ".op-") }
-
-// encodeBase stores a base id and its absolute directory in journal.File.Base
-// ("<id>|<abs>"): recovery needs both and runs without the adapters.
-func encodeBase(id capsule.BaseID, abs string) string { return string(id) + "|" + abs }
-
-// decodeBase splits a journal.File.Base.
-func decodeBase(s string) (capsule.BaseID, string) {
-	id, abs, ok := strings.Cut(s, "|")
-	if !ok {
-		return capsule.BaseID(s), ""
-	}
-	return capsule.BaseID(id), abs
 }
 
 // ensurePrivateDir creates dir (0700, with parents) if missing and
@@ -293,26 +279,27 @@ func readAllBounded(dir dirHandle, rel string, max int64) ([]byte, fsx.Stat, err
 	return b, st, nil
 }
 
-// removeOpDir removes an operation directory and the temporaries in it
-// (it never holds subdirectories).
-func removeOpDir(unitDir dirHandle, name string) error {
-	ents, err := unitDir.ReadDir(name)
+// removeTmp removes a journaled capsule temporary (Record.Tmp: the
+// capsule.TmpName of the final name, relative to the unit directory). Only
+// a regular file named like one is removed; anything else is left alone.
+func removeTmp(unitDir dirHandle, rel string) error {
+	if base := path.Base(rel); !strings.HasPrefix(base, ".") || !strings.HasSuffix(base, ".tmp") {
+		return nil
+	}
+	st, err := unitDir.Lstat(rel)
 	if isMissing(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	var errs []error
-	for _, e := range ents {
-		if err := unitDir.Remove(path.Join(name, e.Name)); err != nil && !isMissing(err) {
-			errs = append(errs, err)
-		}
+	if !st.IsRegular() {
+		return nil
 	}
-	if err := unitDir.Remove(name); err != nil && !isMissing(err) {
-		errs = append(errs, err)
+	if err := unitDir.Remove(rel); err != nil && !isMissing(err) {
+		return err
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // dedupe returns s without repeated values, keeping the first occurrence.

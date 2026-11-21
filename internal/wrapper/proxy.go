@@ -41,7 +41,7 @@ const (
 	repaintPause  = 50 * time.Millisecond // between the cols−1 and cols resizes (D30)
 	quitKeyGap    = 150 * time.Millisecond
 	defaultKeysWt = 3 * time.Second // TerminateOptions.KeysWait default (R20)
-	defaultGrace  = 8 * time.Second // TerminateOptions.Grace default: agent.KillGrace's floor
+	defaultGrace  = 8 * time.Second // TerminateOptions.Grace default: harness.KillGrace's floor
 	killWait      = 5 * time.Second // after SIGKILL
 	contWait      = time.Second     // longest wait for SIGCONT after stopping ourselves
 	flushWait     = 500 * time.Millisecond
@@ -641,6 +641,7 @@ func (s *proxyState) lock(o Overlay) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ov.o = o
+	s.ov.harness = o.Harness
 	if s.overlayOn {
 		return s.writeOutErr(s.overlayBytes(s.editor != nil))
 	}
@@ -739,12 +740,6 @@ func (s *proxyState) setEnding() {
 	defer s.mu.Unlock()
 	s.ov.ending = true
 	s.redraw(false)
-}
-
-func (s *proxyState) setHarness(name string) {
-	s.mu.Lock()
-	s.ov.harness = name
-	s.mu.Unlock()
 }
 
 // prompt reads one line on the lock screen: into locked memory for a
@@ -852,7 +847,7 @@ func (s *proxyState) terminate(o TerminateOptions) error {
 	recent := !s.reaped || time.Since(s.exitedAt) < sessionKillWindow
 	s.sigMu.Unlock()
 	if recent {
-		killSession(s.pid)
+		killSession(s.child)
 	}
 	if !s.isExited() {
 		return errStillAlive
@@ -866,12 +861,13 @@ func (s *proxyState) terminate(o TerminateOptions) error {
 // free again, so a late Terminate leaves it alone.
 const sessionKillWindow = 2 * time.Second
 
-// killSession SIGKILLs what remains of the session a wrapper child leads.
-func killSession(pid int) {
-	if err := signalSession(pid, sigKill); err != nil && !errors.Is(err, platform.ErrNoProcess) {
+// killSession SIGKILLs what remains of the session a wrapper child leads
+// (platform.SignalGroup verifies the leader identity, CC-13).
+func killSession(leader platform.ProcID) {
+	if err := signalSession(leader, sigKill); err != nil && !errors.Is(err, platform.ErrNoProcess) {
 		// The child's process group is the part of its session the
 		// wrapper can always name.
-		_ = killGroup(pid, sigKill)
+		_ = killGroup(leader.PID, sigKill)
 	}
 }
 

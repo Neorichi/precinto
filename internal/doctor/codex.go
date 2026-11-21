@@ -98,6 +98,13 @@ var knownCodexTop = map[string]bool{
 	"shell_snapshots": true, "precinto-tmp": true, "log": true, "plugins": true, "skills": true,
 }
 
+// checkExperimentalVersion is SPEC §7.3's warning for an installed
+// experimental harness outside its inventory's verified_versions. Doctor
+// has no version probe for the experimental inventories yet (it never runs
+// a harness to ask), so it reports nothing until one exists; the code is
+// reserved in the vocabulary (CC-44).
+func checkExperimentalVersion(e *env) []Finding { return nil }
+
 func checkCodexVersion(e *env) []Finding {
 	if !e.codexPresent() {
 		return nil
@@ -227,25 +234,20 @@ func checkCodexWrongHome(e *env) []Finding {
 		}
 		return nil
 	}
-	files, err := e.rolloutFiles(home)
+	// Only folders that protect Codex count (D72); the first-line reader is
+	// the codex adapter's (CC-18).
+	cfg := e.o.Cfg
+	cfg.Roots = nil
+	for _, r := range e.o.Cfg.Roots {
+		if rootProtects(r, harness.Codex) {
+			cfg.Roots = append(cfg.Roots, r)
+		}
+	}
+	counts, err := codex.WrongHomeRollouts(e.ctx, home, cfg)
 	if err != nil && e.ctx.Err() == nil {
 		return []Finding{info(CheckCodexWrongHome, "could not list the conversations in "+e.show(home)+" ("+errClass(err)+")", "")}
 	}
-	counts := map[string]int{}
-	unknown := 0
-	for _, f := range files {
-		if e.ctx.Err() != nil {
-			break
-		}
-		cwd, ok := sessionMetaCwd(f)
-		if !ok {
-			unknown++
-			continue
-		}
-		if r, in := e.rootFor(cwd, harness.Codex); in {
-			counts[r.ID]++
-		}
-	}
+	unknown := counts[""]
 	var out []Finding
 	for _, r := range e.o.Cfg.Roots {
 		if n := counts[r.ID]; n > 0 {

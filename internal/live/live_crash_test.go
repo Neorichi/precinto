@@ -174,8 +174,11 @@ func TestLIVE5And8And9AdapterEvidenceIsPartOfTheUnion(t *testing.T) {
 	}
 }
 
-// CODX-6: the lease file is unlinked and recreated during the probe, or
-// the file system does not support flock: both are treated as held.
+// CODX-6: a lease file unlinked and recreated during the probe, or a file
+// system without flock: both are treated as held. The swap itself is
+// detected by fsx.ProbeHeld (TestProbeHeldUnsupportedAndRecreated); here
+// live.Probe must take every "held" or failed answer of that one probe as
+// a held lease, and the engine must read it as live.
 func TestCODX6ProbeInodeSwapAndUnsupportedLocks(t *testing.T) {
 	dir := t.TempDir()
 	key := "swap"
@@ -184,36 +187,41 @@ func TestCODX6ProbeInodeSwapAndUnsupportedLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Release()
-	restore := live.SetProbeHook(func(path string) {
+	// fsx.ProbeHeld reports a file swapped during the probe as held.
+	restore := live.SetProbeHeld(func(path string) (bool, error) {
 		os.Remove(path)
 		os.WriteFile(path, nil, 0o600)
+		return true, nil
 	})
 	held, _, err := live.Probe(dir, key)
 	restore()
-	if !held || err == nil {
+	if !held || err != nil {
 		t.Fatalf("inode swap during probe: held %v err %v, want held", held, err)
 	}
 	if held, _, err := live.Probe(dir, key); held || err != nil {
 		t.Fatalf("after the swap settled: %v %v", held, err)
 	}
-	restore = live.SetTryLock(func(string, bool) (*fsx.Lock, error) {
-		return nil, &os.PathError{Op: "flock", Path: "x", Err: syscall.ENOTSUP}
-	})
+	enotsup := func(string) (bool, error) {
+		return true, &os.PathError{Op: "flock", Path: "x", Err: syscall.ENOTSUP}
+	}
+	restore = live.SetProbeHeld(enotsup)
 	held, _, err = live.Probe(dir, key)
-	_, aerr := live.Acquire(dir, []string{"other"}, live.Lease{})
 	restore()
 	if !held || !errors.Is(err, syscall.ENOTSUP) {
 		t.Fatalf("ENOTSUP: held %v err %v", held, err)
 	}
-	if aerr == nil {
-		t.Fatal("Acquire succeeded without flock support")
-	}
-	// The engine reads a failed probe as a held lease.
-	clock := fakeplatform.NewClock(time.Now())
-	e := &live.Engine{Procs: fakeplatform.NewProcs(), Clock: clock, LeasesDir: dir, Observer: live.NewObserver(clock), Quiet: quiet}
 	restore = live.SetTryLock(func(string, bool) (*fsx.Lock, error) {
 		return nil, &os.PathError{Op: "flock", Path: "x", Err: syscall.ENOTSUP}
 	})
+	_, aerr := live.Acquire(dir, []string{"other"}, live.Lease{})
+	restore()
+	if aerr == nil {
+		t.Fatal("Acquire succeeded without flock support")
+	}
+	// The engine reads a failed or held probe as a held lease.
+	clock := fakeplatform.NewClock(time.Now())
+	e := &live.Engine{Procs: fakeplatform.NewProcs(), Clock: clock, LeasesDir: dir, Observer: live.NewObserver(clock), Quiet: quiet}
+	restore = live.SetProbeHeld(enotsup)
 	defer restore()
 	v, err := e.Decide(context.Background(), live.Subject{Key: key, WriterExited: true}, nil)
 	if err != nil || !v.Live || !reasons(v)[live.ReasonLease] {

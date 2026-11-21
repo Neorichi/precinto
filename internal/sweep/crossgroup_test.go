@@ -61,10 +61,12 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 	led := ledger.Open(h.Layout.SessionsDir)
+	// D63: the engine needs two looks a quiet window apart; the run's single
+	// wait advances the fake clock (Env.Sleep) instead of sleeping.
 	eng := &live.Engine{Procs: h.Procs, Clock: h.Clock, LeasesDir: h.Layout.LeasesDir, Observer: live.NewObserver(h.Clock),
-		Quiet: 0, HoldCap: 24 * time.Hour}
+		Quiet: 10 * time.Second, HoldCap: 24 * time.Hour}
 	cfg := h.Cfg
-	cfg.Policy.QuietWindow = config.Duration(0)
+	cfg.Policy.QuietWindow = config.Duration(10 * time.Second)
 	henv := harness.Env{Cfg: cfg, Layout: h.Layout, Ledger: led,
 		Index: func(id string) *ledger.Index { return ledger.OpenIndex(h.Layout.ProjectsDir, id) },
 		Live:  eng, Procs: h.Procs, Clock: h.Clock, Salt: salt, Host: h.Env}
@@ -73,7 +75,11 @@ func newStack(t *testing.T) *stack {
 	s.e = sweep.Env{Cfg: cfg, Harness: henv, Adapters: []harness.Adapter{claude.New(), codex.New()}, Vaults: fx.Store,
 		Log: capslog.Open(h.Layout.CapsuleLog), Journal: journal.Open(h.Layout.JournalDir), Live: eng, Procs: h.Procs,
 		Clock: h.Clock, Grants: func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil },
-		Floor: fsx.Floor{}, Sealer: "precinto crossgroup", Parallel: 2}
+		Floor: fsx.Floor{}, Sealer: "precinto crossgroup", Parallel: 2,
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			h.Clock.Advance(d)
+			return ctx.Err()
+		}}
 	return s
 }
 

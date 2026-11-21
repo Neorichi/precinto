@@ -699,7 +699,7 @@ func (f *fakeEngine) Forget(ctx context.Context, unit string) (*sweep.Report, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.forgot = append(f.forgot, unit)
-	return &sweep.Report{Units: []sweep.UnitResult{{Unit: unit}}}, nil
+	return &sweep.Report{Units: []sweep.UnitResult{{Unit: unit, Outcome: sweep.OutForgotten, Files: 1}}}, nil
 }
 
 func (f *fakeEngine) Prune(ctx context.Context, o sweep.PruneOptions) (*sweep.Report, error) {
@@ -819,6 +819,7 @@ type fakeVaults struct {
 	metas       map[string]vault.Meta
 	removed     []string
 	removeErr   error
+	verifiedAt  []time.Time
 }
 
 func newFakeVaults() *fakeVaults {
@@ -860,6 +861,15 @@ func (v *fakeVaults) Meta(id string) (vault.Meta, error) {
 		return vault.Meta{}, vault.ErrNotFound
 	}
 	return m, nil
+}
+
+func (v *fakeVaults) MarkRecoveryVerified(at time.Time) error {
+	v.verifiedAt = append(v.verifiedAt, at)
+	for id, m := range v.metas {
+		m.RecoveryVerifiedAt = at
+		v.metas[id] = m
+	}
+	return nil
 }
 
 func (v *fakeVaults) RemoveFactor(id, name string) error {

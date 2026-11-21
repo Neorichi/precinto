@@ -27,40 +27,6 @@ func metaLine(cwd string) string {
 	return `{"timestamp":"2026-11-21T09:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"00000000-0000-7000-8000-000000000001","id":"00000000-0000-7000-8000-000000000001","cwd":"` + cwd + `","originator":"codex_cli_rs","cli_version":"0.154.0"}}`
 }
 
-func TestSessionMetaCwd(t *testing.T) {
-	dir := t.TempDir()
-	big := strings.Repeat("x", 70<<10)
-	cases := []struct {
-		name, content string
-		want          string
-		ok            bool
-	}{
-		{"session_meta", metaLine("/u/work/acme") + "\n{\"type\":\"turn_context\"}\n", "/u/work/acme", true},
-		{"rest of the file is never parsed", metaLine("/u/work/acme") + "\n\x00\x01 not json at all", "/u/work/acme", true},
-		{"no newline", metaLine("/u/work/acme"), "/u/work/acme", true},
-		{"payload before type", `{"payload":{"cwd":"/u/a","instructions":"x"},"type":"session_meta"}` + "\n", "/u/a", true},
-		{"cwd before a long line's cut", `{"type":"session_meta","payload":{"cwd":"/u/a","instructions":"` + big + `"}}` + "\n", "/u/a", true},
-		{"cwd after the 64 KiB cut", `{"type":"session_meta","payload":{"instructions":"` + big + `","cwd":"/u/a"}}` + "\n", "", false},
-		{"another record type", `{"type":"turn_context","payload":{"cwd":"/u/a"}}` + "\n", "", false},
-		{"cwd not a string", `{"type":"session_meta","payload":{"cwd":42}}` + "\n", "", false},
-		{"relative cwd", `{"type":"session_meta","payload":{"cwd":"work/acme"}}` + "\n", "", false},
-		{"no payload", `{"type":"session_meta"}` + "\n", "", false},
-		{"not JSON", "garbage\n", "", false},
-		{"empty", "", "", false},
-		{"nested values are skipped", `{"type":"session_meta","payload":{"git":{"a":[1,{"b":"c"}]},"cwd":"/u/n"}}` + "\n", "/u/n", true},
-	}
-	for i, c := range cases {
-		p := writeFile(t, filepath.Join(dir, "rollout-"+string(rune('a'+i))+".jsonl"), c.content, 0o600)
-		got, ok := doctor.SessionMetaCwd(p)
-		if got != c.want || ok != c.ok {
-			t.Errorf("%s: SessionMetaCwd = %q, %v; want %q, %v", c.name, got, ok, c.want, c.ok)
-		}
-	}
-	if _, ok := doctor.SessionMetaCwd(filepath.Join(dir, "missing.jsonl")); ok {
-		t.Error("a missing file has a cwd")
-	}
-}
-
 // userCodexHome writes a synthetic Codex home of the user whose sessions
 // ran in ~/work/codextest-workspace, protects that folder and points
 // CODEX_HOME at the home.

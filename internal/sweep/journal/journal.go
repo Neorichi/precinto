@@ -64,7 +64,10 @@ const (
 
 // File is one source or target recorded in a journal (no content).
 type File struct {
-	Base string   `json:"base"`
+	Base string `json:"base"` // base id (capsule.BaseID)
+	// Dir is the absolute, realpath'd base directory, for keyless recovery
+	// (recovery runs without the adapters).
+	Dir  string   `json:"dir"`
 	Rel  string   `json:"rel"`
 	Snap fsx.Stat `json:"snap"`
 	Done bool     `json:"done,omitempty"` // unlinked / placed
@@ -95,10 +98,15 @@ type Record struct {
 	// size of the rewritten history.jsonl right after the rename (tail
 	// appends skip kept lines already present after it, so a re-run never
 	// appends a line twice).
-	Offset  int64    `json:"offset,omitempty"`
-	Pending int64    `json:"pending,omitempty"`
-	NewBase int64    `json:"new_base,omitempty"`
-	Notes   []string `json:"notes,omitempty"` // content-free diagnostics
+	Offset  int64 `json:"offset,omitempty"`
+	Pending int64 `json:"pending,omitempty"`
+	NewBase int64 `json:"new_base,omitempty"`
+	// LedgerSID and LedgerN name the ledger snapshot sealed into the
+	// capsule (S13): after a committed seal, recovery archives that many
+	// bytes of the session's ledger (ledger.Archive).
+	LedgerSID string   `json:"ledger_sid,omitempty"`
+	LedgerN   int64    `json:"ledger_n,omitempty"`
+	Notes     []string `json:"notes,omitempty"` // content-free diagnostics
 }
 
 // Journal is the directory state/journal.

@@ -40,6 +40,7 @@ const (
 var (
 	fsx       = "internal/fsx"
 	failpoint = "internal/fsx/failpoint"
+	fsxtest   = "internal/fsx/fsxtest"
 	paths     = "internal/paths"
 	platform  = "internal/platform"
 	fakeplat  = "internal/platform/fakeplatform"
@@ -87,6 +88,8 @@ var Packages = []Package{
 		Tests: "unit: arming/disarming, nth-hit counting, errno specs, bad specs panic, crash point SIGKILLs a child process (failpoint_on_test.go); compiled out without -tags failpoints (failpoint_off_test.go)"},
 	{Path: fsx, Owner: G1, Layer: 0, Internal: []string{failpoint}, External: []string{unix},
 		Tests: "unit: no-follow walking (symlink parents, swapped components), RenameNoReplace, UnlinkIfUnchanged (inode swap, same size+mtime), hazards (FIFO, socket, nlink>1), staging on same device, free-space floor, Classify table; race test flipping a parent to a symlink 10k times (TESTPLAN SEC-6); scaffold-implemented leaf helpers (Lstat, AppendLine, WriteFileAtomic, TryLock/WaitLock) have tests in fsx_leaf_test.go"},
+	{Path: fsxtest, Owner: G1, Layer: 1, TestOnly: true, Internal: []string{fsx, failpoint},
+		Tests: "self-tests (-tags failpoints): an unsynced rename, create, unlink or write is absent from the strict image and present in the full one, synced operations and everything they depend on are present in every image, identical images are merged"},
 	{Path: paths, Owner: G7, Layer: 1, Internal: []string{fsx},
 		Tests: "unit: layouts per OS, override rules with/without -tags testing and PRECINTO_DEV + agent markers (D6), socket length limit, Within component-wise and case-folded, LookPath ignores relative PATH entries (scaffold helpers tested in paths_test.go)"},
 	{Path: platform, Owner: G2, Layer: 1, Internal: []string{paths, fsx}, External: []string{unix},
@@ -131,9 +134,9 @@ var Packages = []Package{
 		Tests: "used by G3/G4/G7 tests"},
 	{Path: sweep, Owner: G4, Layer: 7, Internal: []string{capsule, vault, harness, claude, codex, generic, live, ledger, config, paths, fsx, failpoint, platform, journal, capslog, queue, invs}, External: []string{memg},
 		Tests: "unit+crash-injection: the full matrix SEAL-*, REST-*, HIST-*, CODX-*, NOTE-*, CONC-*, PERF-* (docs/TESTPLAN.md §4) with -tags failpoints; placement table golden tests; lineage/generation tests incl. receipts rewritten after commit; provenance (forged capsules quarantined, crash leftovers never quarantined); manifest unit id authenticated against the logged unit key (SEC-2)"},
-	{Path: agent, Owner: G2, Layer: 7, Internal: []string{ipc, vault, capsule, capslog, queue, journal, config, paths, platform, fsx, ledger, harness, claude, ui}, External: []string{memg},
+	{Path: agent, Owner: G2, Layer: 7, Internal: []string{ipc, vault, capsule, capslog, queue, journal, config, paths, platform, fsx, ledger, harness, claude, ui, invs}, External: []string{memg},
 		Tests: "unit: Machine exhaustively with a fake clock (idle only on verified human input: wrapper Input/Enter with FromWrapper, Prompt with a recorded human origin; unknown origin never; busy grace, screen-lock hard-after, max_unlock, sleep jump, background exemption, automated prompts never prompt, ungated scan sessions); integration with agenttest: gate fail-closed, activity from a non-wrapper peer dropped, key release scope and provenance, TTL clamp, policy pinning across a daemon restart, vault repair, rate limits, single-flight unlock"},
-	{Path: agentt, Owner: G2, Layer: 8, TestOnly: true, Internal: []string{agent, ipc, paths, platform, fakeplat, config},
+	{Path: agentt, Owner: G2, Layer: 8, TestOnly: true, Internal: []string{agent, ipc, paths, platform, fakeplat, config}, External: []string{memg},
 		Tests: "used by G2/G5/G6/G7 tests"},
 	{Path: hook, Owner: G5, Layer: 8, Internal: []string{ipc, ledger, config, paths, platform, fsx, ui, harness, codex, queue}, External: []string{memg},
 		Tests: "golden: synthetic payloads per host/version/event → exact stdout/stderr/exit (HOOKS-IO.md), Codex outputs decoded with deny_unknown_fields structs; unit: host detection (label default, every gate event without CLAUDE_PID, Codex SessionStart/SessionEnd without turn_id), fail-closed on every error path, deadline, panic recovery; shim tests (shellcheck, exit-code table, PRECINTO_* ignored, failed run inside/outside roots)"},

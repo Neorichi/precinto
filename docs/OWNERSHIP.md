@@ -3,12 +3,12 @@
 Eight groups implement precinto in parallel against the frozen contract in `docs/API.md`. Directories are disjoint: each file has exactly one owner. "Lead" means the lead/architect (contract owner).
 
 ## 1. Rules
-1. **Own directory only.** Implementers may add unexported code, new files and new test files in their own directories, and change unexported fields of their own types. Helper programs for tests (a scripted TUI child, fake harness executables, fake daemons) are `main` packages under the owner's `testdata/` directory, which `internal/archtest` skips; any other new package needs a lead contract change.
+1. **Own directory only.** Implementers may add unexported code, new files and new test files in their own directories, and change unexported fields of their own types. Helper programs for tests (a scripted TUI child, fake harness executables, fake daemons) are `main` packages under the owner's `testdata/` directory, which `internal/archtest` skips; any other new package needs a lead contract change. Helper programs take a lifeline (an inherited pipe or stdin) and exit when it closes, and every test kills and reaps every process it starts, including their sessions and descendants (TESTPLAN §1).
 2. **Never edit another group's files**, and never change an exported identifier (signature, struct field, constant, variable, type) — not even in your own package — without a lead-approved contract change.
 3. **Need something else? Adapt locally and report.** If another package lacks a function or behaves differently from the contract, implement an adapter or helper inside your own package (unexported), keep your tests green against the contract, and report the request to the lead with: package, identifier, proposed signature, why, and the adapter you used meanwhile. The lead updates the scaffold, `internal/archtest/allowlist.go` and `docs/API.md` (`make api-doc`) in one change.
 4. **No new dependencies.** `go.mod`/`go.sum` are pinned (G7 owns them; changes need the lead). Every allowed third-party import is already pinned by a `deps.go` blank import in the package that may use it.
 5. **Imports follow `internal/archtest/allowlist.go`.** `go test ./internal/archtest` must pass at every commit. Only `internal/paths` reads the environment.
-6. **Shared generated or normative files are lead-only**: `docs/SPEC.md`, `docs/API.md` (generated part via `make api-doc` only), `docs/HOOKS-IO.md`, `docs/TESTPLAN.md` (including its failpoint registry), `docs/DECISIONS.md`, `docs/OWNERSHIP.md`, `internal/archtest/allowlist.go`, `LICENSE`, `NOTICE`, `.gitignore`. Shared vocabularies are contract too and change only through the lead: `capsule.Kind` and `capsule.BaseID` values, the unit-key parts of SPEC §6.2 (`harness.UnitKeyFor`), `ipc.Attn*` codes, `ui.MsgID` values, failpoint names.
+6. **Shared generated or normative files are lead-only**: `docs/SPEC.md`, `docs/API.md` (generated part via `make api-doc` only), `docs/HOOKS-IO.md`, `docs/TESTPLAN.md` (including its failpoint registry), `docs/DECISIONS.md`, `docs/OWNERSHIP.md`, `internal/archtest/allowlist.go`, `LICENSE`, `NOTICE`, `.gitignore`. Shared vocabularies are contract too and change only through the lead: `capsule.Kind` and `capsule.BaseID` values, the unit-key parts of SPEC §6.2 (`harness.UnitKeyFor`), `ipc.Attn*` codes, `doctor.Check*` codes, `ui.MsgID` values, failpoint names.
 7. **Commits are made by the lead.** Groups hand over working trees; nobody pushes.
 8. Before handing over: `make fmt-check vet arch api-check`, `go build ./...`, `CGO_ENABLED=0 go build ./...`, `GOOS=linux go build ./...`, and your package tests (`make test`, plus `make test-crash` for G1/G3/G4).
 
@@ -17,6 +17,7 @@ Eight groups implement precinto in parallel against the frozen contract in `docs
 |---|---|---|
 | `internal/fsx/` (`doc.go`, `fsx.go`, `deps.go`, `sys_unix.go`, `sys_darwin.go`, `sys_linux.go`, `sys_other.go`) | **G1** | safe file ops: dir-fd O_NOFOLLOW walking, atomic writes, no-replace renames, staging, perms, free space, locks (leaf helpers implemented in the scaffold) |
 | `internal/fsx/failpoint/` | **G1** | fault injection (`-tags failpoints`) |
+| `internal/fsx/fsxtest/` | **G1** | test-only power-loss recorder and image builder (`-tags failpoints`; `fsxtest.Record`, TESTPLAN §4) |
 | `internal/capsule/` | **G1** | capsule v1, two-pass seal + ephemeral verify, extract, unit keys |
 | `internal/vault/` | **G1** | per-root vaults, factors, MAC/tripwire, Keyring |
 | `internal/vault/vaulttest/` | **G1** | test helper |

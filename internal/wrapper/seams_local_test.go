@@ -14,5 +14,5 @@ import (
 // real platform.Identify and platform.SignalGroup).
 func init() {
 	identifyProc = func(pid int) (platform.ProcID, error) { return platform.ProcID{PID: pid, StartUS: 1}, nil }
-	signalSession = func(sid int, sig syscall.Signal) error { return killGroup(sid, sig) }
+	signalSession = func(leader platform.ProcID, sig syscall.Signal) error { return killGroup(leader.PID, sig) }
 }

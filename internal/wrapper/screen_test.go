@@ -113,20 +113,22 @@ func TestFilterReplayKeepsControlsOfDroppedSequences(t *testing.T) {
 	}
 }
 
+// Terminate uses the plan's values (CC-24): the adapter's quit keys and
+// harness.KillGrace; a plan without them gets the 8 s floor and no keys.
 func TestTerminationParameters(t *testing.T) {
-	if g := wrapper.KillGrace(harness.ClaudeCode); g != 8*time.Second {
-		t.Errorf("claude grace = %v, want max(8 s, 1.5 s + 6 s) = 8 s", g)
+	codex := wrapper.TerminateOptionsFor(harness.LaunchPlan{Harness: harness.Codex, QuitKeys: []byte{3, 3}, KillGrace: harness.KillGrace(3 * time.Second)})
+	if codex.Grace != 9*time.Second || string(codex.QuitKeys) != "\x03\x03" {
+		t.Errorf("codex plan: %+v, want 9 s and Ctrl-C twice", codex)
 	}
-	if g := wrapper.KillGrace(harness.Codex); g != 9*time.Second {
-		t.Errorf("codex grace = %v, want 3 s + 6 s = 9 s", g)
+	claude := wrapper.TerminateOptionsFor(harness.LaunchPlan{Harness: harness.ClaudeCode, KillGrace: harness.KillGrace(1500 * time.Millisecond)})
+	if claude.Grace != 8*time.Second || len(claude.QuitKeys) != 0 {
+		t.Errorf("claude plan: %+v, want 8 s and no keys", claude)
 	}
-	if g := wrapper.KillGrace("generic"); g != 8*time.Second {
-		t.Errorf("generic grace = %v, want 8 s", g)
+	if g := wrapper.TerminateOptionsFor(harness.LaunchPlan{Harness: "generic"}); g.Grace != 8*time.Second || len(g.QuitKeys) != 0 {
+		t.Errorf("plan without values: %+v, want the 8 s floor", g)
 	}
-	if k := wrapper.QuitKeys(harness.Codex); string(k) != "\x03\x03" {
-		t.Errorf("codex quit keys = %q, want Ctrl-C twice", k)
-	}
-	if k := wrapper.QuitKeys(harness.ClaudeCode); len(k) != 0 {
-		t.Errorf("claude quit keys = %q, want none", k)
+	v := wrapper.PlanVars(map[string]string{"sid": "s1", "pid": "42", "folder": "~/w"})
+	if v.SID != "s1" || v.PID != 42 || v.Folder != "~/w" {
+		t.Errorf("PlanVars = %+v", v)
 	}
 }

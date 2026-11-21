@@ -22,8 +22,8 @@ import (
 const (
 	leaseExt = ".lease"
 	// leaseWait bounds how long Acquire waits for a shared lease while a
-	// sealer probes the lease (it holds the exclusive lock for a moment).
-	leaseWait = 5 * time.Second
+	// prober holds its momentary exclusive lock (SPEC §9.3).
+	leaseWait = 2 * time.Second
 	// maxLeaseFile bounds what Probe reads of the descriptions.
 	maxLeaseFile = 1 << 20
 	// relockRounds bounds retries when a lease file is replaced under us.
@@ -35,19 +35,15 @@ var (
 	errLeaseKey = errors.New("live: bad lease key")
 	// errReleased: the Held set was released.
 	errReleased = errors.New("live: leases already released")
-	// errLeaseSwapped: the lease path no longer names the probed inode
-	// (unlinked and recreated during the probe): treated as held (R17).
-	errLeaseSwapped = errors.New("live: lease file replaced during probe")
-
-	leaseKeyRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	leaseKeyRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
 // Seams for crash and race tests (export_test.go): how lease files are
-// locked, and a hook run between the probe's lock and its inode check.
+// locked and probed.
 var (
 	tryLock   = fsx.TryLock
 	waitLock  = fsx.WaitLock
-	probeHook func(path string)
+	probeHeld = fsx.ProbeHeld
 )
 
 func leasePath(dir, key string) (string, error) {
@@ -252,45 +248,23 @@ func (h *Held) release() error {
 	return errors.Join(errs...)
 }
 
-// probe implements Probe (SPEC §9.3, R17): a non-blocking exclusive flock
-// that is released at once, then a check that the path still names the
-// probed inode. A missing lease file means the unit was never leased; any
-// other failure, a held lock or a replaced file reports held=true.
+// probe implements Probe (SPEC §9.3, R17) with fsx.ProbeHeld, the one
+// probe implementation for leases: a missing lease file means the unit was
+// never leased; a held lock, a replaced file or any failure reports
+// held=true. Descriptions are read only while the lease is held.
 func probe(dir, key string) (bool, []Lease, error) {
 	path, err := leasePath(dir, key)
 	if err != nil {
 		return true, nil, err
 	}
-	st, err := fsx.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil, nil
-	}
+	held, err := probeHeld(path)
 	if err != nil {
 		return true, nil, err
 	}
-	if !st.IsRegular() {
-		return true, nil, fmt.Errorf("%w: %s is not a regular file", fsx.ErrUnsafe, filepath.Base(path))
+	if !held {
+		return false, nil, nil
 	}
-	lk, err := tryLock(path, false)
-	switch {
-	case errors.Is(err, fsx.ErrLocked):
-		return true, readDescriptions(path), nil
-	case err != nil:
-		return true, nil, err // ENOTSUP, EACCES…: treated as held
-	}
-	fst, ferr := fsx.Fstat(lk.File())
-	if probeHook != nil {
-		probeHook(path)
-	}
-	lk.Unlock()
-	cur, cerr := fsx.Lstat(path)
-	if ferr != nil {
-		return true, nil, ferr
-	}
-	if cerr != nil || !fst.SameFile(st) || !fst.SameFile(cur) {
-		return true, nil, errLeaseSwapped
-	}
-	return false, nil, nil
+	return true, readDescriptions(path), nil
 }
 
 // readDescriptions returns the newest description of each holder process

@@ -24,6 +24,7 @@ func TestReasonTexts(t *testing.T) {
 		{ui.ReasonManual, 0, "locked by you"},
 		{ui.ReasonSleep, 0, "computer slept"},
 		{ui.ReasonStart, 0, "not unlocked yet"},
+		{ui.ReasonAgent, 0, "the precinto agent stopped responding"},
 		{ui.Reason("other"), 0, "other"},
 	} {
 		if got := ui.ReasonText(c.r, c.d); got != c.want {
@@ -76,5 +77,34 @@ func TestFormatShortSIDIsRuneSafe(t *testing.T) {
 		if !utf8.ValidString(got) || !strings.Contains(got, "session "+want+" is sealed") {
 			t.Errorf("SID %q: %q, want the short sid %q", sid, got, want)
 		}
+	}
+}
+
+// FactorName names the first factor usable in the caller's context (CC-40).
+func TestFactorName(t *testing.T) {
+	for _, c := range []struct {
+		kinds []string
+		gui   bool
+		want  string
+	}{
+		{[]string{"se", "passphrase"}, true, "Mac password"},
+		{[]string{"se", "passphrase"}, false, "precinto passphrase"}, // SSH, tmux, linux
+		{[]string{"se"}, false, ""},
+		{[]string{"plugin", "passphrase"}, false, "security key"},
+		{[]string{"passphrase"}, true, "precinto passphrase"},
+		{[]string{"recovery"}, true, ""},
+		{nil, true, ""},
+		{[]string{"unknown", "passphrase"}, false, "precinto passphrase"},
+	} {
+		if got := ui.FactorName(c.kinds, c.gui); got != c.want {
+			t.Errorf("FactorName(%v, %v) = %q, want %q", c.kinds, c.gui, got, c.want)
+		}
+	}
+	// The prompt with a factor, and its plain variant.
+	if got := ui.Format(ui.MsgEnterPrompt, ui.Vars{Folder: "~/w", Factor: "precinto passphrase"}); !strings.Contains(got, "Unlock now with your precinto passphrase?") {
+		t.Errorf("C1.prompt = %q", got)
+	}
+	if got := ui.Format(ui.MsgEnterPromptPlain, ui.Vars{Folder: "~/w"}); strings.Contains(got, "Mac password") || !strings.Contains(got, "Unlock now?") {
+		t.Errorf("C1.prompt.plain = %q", got)
 	}
 }

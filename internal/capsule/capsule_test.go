@@ -36,7 +36,7 @@ func TestSealRoundTrip(t *testing.T) {
 	rels := []string{"projects/P/00000000-0000-4000-8000-000000000001.jsonl", "projects/P/00000000-0000-4000-8000-000000000001/subagents/a.jsonl", "todos/empty.json"}
 	in := u.inputs(rels...)
 	in[0].Append = true
-	dirs := []capsule.Entry{{Base: capsule.BaseClaudeConfig, Rel: "file-history/00000000-0000-4000-8000-000000000001", Mode: 0o755}}
+	dirs := []capsule.Entry{{Base: capsule.BaseClaudeConfig, Rel: "file-history/00000000-0000-4000-8000-000000000001", Dir: true, Mode: 0o755}}
 	s, err := seal(t, u, k, "g000001.pcap", in, dirs, nil)
 	if err != nil {
 		t.Fatal(err)

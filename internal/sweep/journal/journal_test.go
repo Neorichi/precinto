@@ -251,3 +251,32 @@ func TestBeginRefusesAPublicDirectory(t *testing.T) {
 		t.Fatalf("Begin in a 0755 directory: %v", err)
 	}
 }
+
+// CC-25: a file's base id and its absolute directory are separate fields,
+// and the ledger snapshot of a seal round-trips for keyless recovery.
+func TestFileDirAndLedgerRoundTrip(t *testing.T) {
+	j := newJournal(t)
+	r, err := j.Begin(journal.KindSeal, "claude-code", "uu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Files = []journal.File{{Base: "claude_config", Dir: "/abs/with|pipe/claude", Rel: "projects/P/s.jsonl"}}
+	r.LedgerSID, r.LedgerN = "00000000-0000-4000-8000-000000000001", 4096
+	if err := j.Save(r); err != nil {
+		t.Fatal(err)
+	}
+	disk := readOnDisk(t, j, r.ID)
+	if len(disk.Files) != 1 || disk.Files[0].Base != "claude_config" || disk.Files[0].Dir != "/abs/with|pipe/claude" ||
+		disk.LedgerSID != r.LedgerSID || disk.LedgerN != 4096 {
+		t.Fatalf("record on disk: %+v", disk)
+	}
+	b, err := os.ReadFile(filepath.Join(j.Dir, r.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"dir":`, `"ledger_sid":`, `"ledger_n":`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("record lacks %s", key)
+		}
+	}
+}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
 )
@@ -36,7 +37,7 @@ func TestServiceRunningSocket(t *testing.T) {
 	if err := os.Chmod(f.h.RunDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := want(t, f.run(), doctor.CheckServiceRunning, doctor.Fail, "socket folder", "mode 0755")
+	got := want(t, f.run(), doctor.CheckAgentSocket, doctor.Fail, "socket folder", "mode 0755")
 	if got.Fix != "chmod 700 "+f.h.RunDir {
 		t.Errorf("fix %q", got.Fix)
 	}
@@ -46,7 +47,7 @@ func TestServiceRunningSocket(t *testing.T) {
 
 	// A regular file squatting the socket path.
 	writeFile(t, f.h.Layout.Socket, "", 0o600)
-	want(t, f.run(), doctor.CheckServiceRunning, doctor.Fail, "is not a socket")
+	want(t, f.run(), doctor.CheckAgentSocket, doctor.Fail, "is not a socket")
 	os.Remove(f.h.Layout.Socket)
 
 	// A socket nobody listens on: stale, replaced at the next start.
@@ -59,11 +60,11 @@ func TestServiceRunningSocket(t *testing.T) {
 	if err := os.Chmod(f.h.Layout.Socket, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want(t, f.run(), doctor.CheckServiceRunning, doctor.Fail, "can be used by other users")
+	want(t, f.run(), doctor.CheckAgentSocket, doctor.Fail, "can be used by other users")
 	if err := os.Chmod(f.h.Layout.Socket, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want(t, f.run(), doctor.CheckServiceRunning, doctor.Info, "stale agent socket")
+	want(t, f.run(), doctor.CheckAgentSocket, doctor.Info, "stale agent socket")
 }
 
 func TestServiceRunningPermissions(t *testing.T) {
@@ -86,14 +87,14 @@ func TestServiceRunningPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs := f.run()
-	got := want(t, fs, doctor.CheckServiceRunning, doctor.Warn, f.h.Layout.StateDir+" can be read by other users (mode 0755)")
+	got := want(t, fs, doctor.CheckPermissions, doctor.Warn, f.h.Layout.StateDir+" can be read by other users (mode 0755)")
 	if got.Fix != "chmod 700 "+state {
 		t.Errorf("fix %q", got.Fix)
 	}
-	want(t, fs, doctor.CheckServiceRunning, doctor.Fail, f.h.Layout.CapsulesDir+" can be changed by other users (mode 0777)")
-	want(t, fs, doctor.CheckServiceRunning, doctor.Warn, "config.toml can be read by other users (mode 0644)")
-	want(t, fs, doctor.CheckServiceRunning, doctor.Warn, vfile+" can be read by other users")
-	got = want(t, fs, doctor.CheckServiceRunning, doctor.Fail, f.h.Layout.LocksDir+" is a symbolic link")
+	want(t, fs, doctor.CheckPermissions, doctor.Fail, f.h.Layout.CapsulesDir+" can be changed by other users (mode 0777)")
+	want(t, fs, doctor.CheckPermissions, doctor.Warn, "config.toml can be read by other users (mode 0644)")
+	want(t, fs, doctor.CheckPermissions, doctor.Warn, vfile+" can be read by other users")
+	got = want(t, fs, doctor.CheckPermissions, doctor.Fail, f.h.Layout.LocksDir+" is a symbolic link")
 	if !strings.HasPrefix(got.Fix, "move ") {
 		t.Errorf("fix %q", got.Fix)
 	}
@@ -106,7 +107,11 @@ func TestServiceRunningSweeps(t *testing.T) {
 	if got.Fix != "precinto service install" {
 		t.Errorf("fix %q", got.Fix)
 	}
+	// Only precinto's own label counts (paths.ServiceLabel, CC-37): another
+	// plist whose name mentions precinto is not the service.
 	writeFile(t, filepath.Join(f.h.HomeDir, "Library", "LaunchAgents", "dev.precinto.sweep.plist"), "<plist/>", 0o644)
+	want(t, f.run(), doctor.CheckServiceRunning, doctor.Info, "background sealing is not installed")
+	writeFile(t, filepath.Join(f.h.HomeDir, "Library", "LaunchAgents", paths.ServiceLabel+".plist"), "<plist/>", 0o644)
 	want(t, f.run(), doctor.CheckServiceRunning, doctor.Warn, "never completed a sweep")
 	writeFile(t, f.h.Layout.SweepLast, "", 0o600)
 	setMtime(t, f.h.Layout.SweepLast, 2*time.Hour)
@@ -146,7 +151,7 @@ func TestServiceTCC(t *testing.T) {
 	docs := f.h.Protect(t, "Documents/notes")
 	f.o.Cfg = f.h.Cfg
 	none(t, f.run(), doctor.CheckServiceTCC) // no LaunchAgent: nothing runs outside the terminal
-	writeFile(t, filepath.Join(f.h.HomeDir, "Library", "LaunchAgents", "dev.precinto.sweep.plist"), "<plist/>", 0o644)
+	writeFile(t, filepath.Join(f.h.HomeDir, "Library", "LaunchAgents", paths.ServiceLabel+".plist"), "<plist/>", 0o644)
 	fs := f.run()
 	want(t, fs, doctor.CheckServiceTCC, doctor.Warn, f.tilde(docs.Path)+" (in Documents)")
 	for _, x := range of(fs, doctor.CheckServiceTCC) {

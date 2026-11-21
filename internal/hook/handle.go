@@ -388,7 +388,7 @@ func gate(ctx context.Context, d Deps, p Payload, s *session) Decision {
 	defer cancel()
 	cl, err := dialDaemon(gctx, d)
 	if err != nil {
-		return failDecision(p.Event, s.folder)
+		return failDecision(p.Event, s.folder, daemonDown(err))
 	}
 	defer cl.Close()
 	req := gateRequest(p, s)
@@ -399,7 +399,7 @@ func gate(ctx context.Context, d Deps, p Payload, s *session) Decision {
 			// A refusal by error code is still a locked folder.
 			return blocked(p, s, ipc.GateResp{Verdict: ipc.VerdictBlock, State: "locked"})
 		}
-		return failDecision(p.Event, s.folder)
+		return failDecision(p.Event, s.folder, false)
 	}
 	switch resp.Verdict {
 	case ipc.VerdictAllow:
@@ -412,7 +412,13 @@ func gate(ctx context.Context, d Deps, p Payload, s *session) Decision {
 		return blocked(p, s, resp)
 	}
 	// An unknown verdict is no allow.
-	return failDecision(p.Event, s.folder)
+	return failDecision(p.Event, s.folder, false)
+}
+
+// daemonDown reports a dial error meaning no usable daemon: none listens,
+// or the one listening is not precinto's (C3.agentdown, not C3.failed).
+func daemonDown(err error) bool {
+	return errors.Is(err, ipc.ErrNoDaemon) || errors.Is(err, ipc.ErrUntrustedServer)
 }
 
 // allowed reports the activity that follows an allowed gate event.
@@ -466,7 +472,7 @@ func blocked(p Payload, s *session, resp ipc.GateResp) Decision {
 	if model == "" {
 		model = ui.Format(ui.MsgToolDenied, v)
 	}
-	return Decision{Verdict: ipc.VerdictDeny, UserMessage: lockedLine(folder), ModelMessage: model}
+	return Decision{Verdict: ipc.VerdictDeny, UserMessage: ui.Format(ui.MsgToolStop, ui.Vars{Folder: folder}), ModelMessage: model}
 }
 
 // unlockAllowed reports whether a blocked prompt may raise a GUI unlock
@@ -512,7 +518,7 @@ func unlockOnPrompt(ctx context.Context, d Deps, p Payload, s *session, req ipc.
 	}, headlessUI{})
 	if err != nil {
 		var ie *ipc.Error
-		if errors.As(err, &ie) && ie.Code == ipc.CodeCancelled {
+		if errors.As(err, &ie) && (ie.Code == ipc.CodeCancelled || ie.Code == ipc.CodeBadSecret) {
 			return Decision{Verdict: ipc.VerdictBlock, UserMessage: ui.Format(ui.MsgPromptUnlockCxl, ui.Vars{})}
 		}
 		return blocked(p, s, resp)
@@ -550,7 +556,7 @@ func sessionStart(ctx context.Context, d Deps, p Payload, s *session) Decision {
 	}
 	maybeSweep(d, p, s)
 	if locked {
-		return failDecision(SessionStart, s.folder)
+		return failDecision(SessionStart, s.folder, false)
 	}
 	return Decision{Verdict: ipc.VerdictAllow}
 }

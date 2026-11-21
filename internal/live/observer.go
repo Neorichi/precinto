@@ -66,6 +66,7 @@ type holdState struct {
 type look struct {
 	stable    bool
 	first     bool   // no earlier observation to compare with
+	pending   bool   // unchanged since the last observation, but not yet for q
 	timesOnly bool   // only file times changed since the last observation
 	future    string // a path whose mtime lies in the future
 }
@@ -119,6 +120,7 @@ func (o *Observer) look(key string, paths []string, q time.Duration) (look, erro
 	case sameObservation(h.snap, snap):
 		h.last = now
 		res.stable = now-h.since >= q
+		res.pending = !res.stable
 	default:
 		res.timesOnly = onlyTimesChanged(h.snap, snap)
 		o.units[key] = &history{snap: snap, since: now, last: now}

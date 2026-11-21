@@ -49,10 +49,11 @@ func verifyIncarnation(id ProcID) error {
 	return nil
 }
 
-// signalGroup implements SignalGroup. Besides the documented contract it
-// refuses the caller's own session (that is the user's terminal session for
-// a wrapper or CLI, R11, D57), sid ≤ 1, and never signals the caller.
-func signalGroup(sid int, sig syscall.Signal) error {
+// signalGroup implements SignalGroup: it refuses a replaced leader pid, the
+// caller's own session (that is the user's terminal session for a wrapper
+// or CLI, R11, D57) and sid ≤ 1, and never signals the caller.
+func signalGroup(leader ProcID, sig syscall.Signal) error {
+	sid := leader.PID
 	if sid <= 1 {
 		return fmt.Errorf("platform: refusing to signal session %d", sid)
 	}
@@ -66,6 +67,13 @@ func signalGroup(sid int, sig syscall.Signal) error {
 		return err
 	}
 	me := os.Getpid()
+	for _, p := range procs {
+		if p.ID.PID == sid && (p.ID.StartUS != leader.StartUS || p.ID.BootID != leader.BootID) {
+			// The pid now names another incarnation: its session id is not
+			// the one this caller created (D57).
+			return fmt.Errorf("%w: session leader %d was replaced", ErrNotSame, sid)
+		}
+	}
 	var firstErr error
 	for _, p := range procs {
 		if p.SID != sid || p.ID.PID == me || p.State == StateZombie {
