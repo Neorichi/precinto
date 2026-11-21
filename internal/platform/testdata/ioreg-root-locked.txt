@@ -1,0 +1,5 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 43>
+    {
+      "IOConsoleLocked" = No
+      "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"CGSSessionScreenIsLocked"=Yes,"CGSSessionScreenLockedTime"=1700000000,"kCGSSessionUserNameKey"="fixture","kCGSSessionUserIDKey"=501,"kCGSSessionIDKey"=257})
+    }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/awnumar/memguard"
@@ -48,7 +49,7 @@ type Options struct {
 // state/policy.pinned (D55); spawn one recovery+full sweep worker;
 // bootstrap sessions from the ledger and the harness registries; then serve
 // requests and triggers until ctx ends or the idle-exit rule fires.
-func Run(ctx context.Context, o Options) error { panic("unimplemented: agent.Run") }
+func Run(ctx context.Context, o Options) error { return run(ctx, o) }
 
 // VaultState is the key state of one vault (UX16: two independent state
 // machines, vault key state and session state).
@@ -213,12 +214,17 @@ type SessionSnapshot struct {
 // Machine is the pure lock state machine. Not safe for concurrent use; the
 // daemon serializes inputs and publishes Snapshots.
 type Machine struct {
-	policy config.Policy
-	clock  platform.Clock
+	policy   config.Policy
+	clock    platform.Clock
+	vaults   map[string]*vaultState
+	sessions map[string]*sessionState
+	origins  map[originKey]originRec
+	screen   screenState
+	start    instant // daemon start: the idle origin of folders never unlocked
 }
 
 // NewMachine builds a machine with every vault locked.
-func NewMachine(p config.Policy, c platform.Clock) *Machine { panic("unimplemented: agent.NewMachine") }
+func NewMachine(p config.Policy, c platform.Clock) *Machine { return newMachine(p, c) }
 
 // Apply consumes one input and returns the actions to perform, in order.
 // Rules (SPEC §12): lock transitions are immediate; only verified human
@@ -228,58 +234,56 @@ func NewMachine(p config.Policy, c platform.Clock) *Machine { panic("unimplement
 // up to busy_grace (D24, UX2); background sessions are never signalled
 // (D25); automated prompts never raise unlock dialogs (D26); no OS event
 // unlocks (I6).
-func (m *Machine) Apply(in Input) []Action { panic("unimplemented: agent.Machine.Apply") }
+func (m *Machine) Apply(in Input) []Action { return m.apply(in) }
 
 // Gate decides a query against the current state.
-func (m *Machine) Gate(q GateQuery) ipc.GateResp { panic("unimplemented: agent.Machine.Gate") }
+func (m *Machine) Gate(q GateQuery) ipc.GateResp { return m.gate(q) }
 
 // Snapshot returns the current state.
-func (m *Machine) Snapshot() Snapshot { panic("unimplemented: agent.Machine.Snapshot") }
+func (m *Machine) Snapshot() Snapshot { return m.snapshot() }
 
 // NextDeadline is the earliest time Apply(InTick) must run.
-func (m *Machine) NextDeadline() (time.Time, bool) {
-	panic("unimplemented: agent.Machine.NextDeadline")
-}
+func (m *Machine) NextDeadline() (time.Time, bool) { return m.nextDeadline() }
 
 // GateFromSnapshot answers a gate query from a published snapshot (what
 // the connection handlers use).
 func GateFromSnapshot(s *Snapshot, p config.Policy, q GateQuery) ipc.GateResp {
-	panic("unimplemented: agent.GateFromSnapshot")
+	return gateFromSnapshot(s, p, q)
 }
 
 // ClampTTL returns min(ttl, policy.max_unlock, 24h); ttl<=0 means max_unlock (S8).
-func ClampTTL(p config.Policy, ttl time.Duration) time.Duration {
-	panic("unimplemented: agent.ClampTTL")
-}
+func ClampTTL(p config.Policy, ttl time.Duration) time.Duration { return clampTTL(p, ttl) }
 
 // KillGrace returns the SIGTERM→SIGKILL delay for a harness given its
 // SessionEnd budget (R20).
-func KillGrace(sessionEndBudget time.Duration) time.Duration {
-	panic("unimplemented: agent.KillGrace")
-}
+func KillGrace(sessionEndBudget time.Duration) time.Duration { return killGrace(sessionEndBudget) }
 
 // RateLimiter enforces at most n unlock prompts per minute, a backoff after
 // a cancel, and a per-root hook cooldown (D27). Unlock is single-flight per
 // vault: concurrent requesters share the result.
 type RateLimiter struct {
-	perMinute int
+	mu          sync.Mutex
+	perMinute   int
+	backoff     time.Duration
+	cooldown    time.Duration
+	clock       platform.Clock
+	prompts     map[string][]time.Duration
+	lastCancel  map[string]time.Duration
+	lastHookCxl map[string]time.Duration
+	flights     map[string]*flight
 }
 
 // NewRateLimiter returns a limiter from policy.
-func NewRateLimiter(p config.Policy, c platform.Clock) *RateLimiter {
-	panic("unimplemented: agent.NewRateLimiter")
-}
+func NewRateLimiter(p config.Policy, c platform.Clock) *RateLimiter { return newRateLimiter(p, c) }
 
 // Allow reports whether a prompt for vault may be raised now (fromHook
 // applies the hook cooldown after a cancel).
 func (r *RateLimiter) Allow(vault string, fromHook bool) (bool, time.Duration) {
-	panic("unimplemented: agent.RateLimiter.Allow")
+	return r.check(vault, fromHook, true)
 }
 
 // Cancelled records a cancel for vault.
-func (r *RateLimiter) Cancelled(vault string, fromHook bool) {
-	panic("unimplemented: agent.RateLimiter.Cancelled")
-}
+func (r *RateLimiter) Cancelled(vault string, fromHook bool) { r.cancelled(vault, fromHook) }
 
 // Authorize applies the agent-context rules (D28, D59). A peer is in an
 // agent context when an ancestor's executable is a known harness or its
@@ -295,5 +299,5 @@ func (r *RateLimiter) Cancelled(vault string, fromHook bool) {
 // purpose is ipc.KeysReq.Purpose for OpKeys, "" otherwise. A nil result
 // means allowed (possibly after the presence prompt the caller raises).
 func Authorize(peer platform.Peer, ancestry []platform.ProcInfo, op ipc.Op, purpose string, rootIDs []string, sessionRoots []string) *ipc.Error {
-	panic("unimplemented: agent.Authorize")
+	return authorize(peer, ancestry, op, purpose, rootIDs, sessionRoots, idFolder)
 }

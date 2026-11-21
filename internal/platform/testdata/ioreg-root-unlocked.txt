@@ -1,0 +1,8 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 43>
+    {
+      "IOKitBuildVersion" = "Darwin Kernel Version 99.0.0: fixture; root:xnu-fixture/RELEASE_ARM64"
+      "OS Build Version" = "99A999"
+      "IOConsoleLocked" = No
+      "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kSCSecuritySessionID"=100000,"kCGSSessionUserNameKey"="fixture","kCGSessionLongUserNameKey"="Fixture, User {test}","kCGSSessionGroupIDKey"=20,"kCGSSessionUserIDKey"=501,"kCGSSessionIDKey"=257,"kCGSessionLoginDoneKey"=Yes,"kCGSSessionSystemSafeBoot"=No,"kCGSSessionAuditIDKey"=100001,"CGSSessionUniqueSessionUUID"="00000000-0000-4000-8000-000000000001"})
+      "IORegistryPlanes" = {"IOService"="IOService","IOPower"="IOPower"}
+    }

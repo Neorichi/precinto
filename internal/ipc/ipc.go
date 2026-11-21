@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"sync"
 	"time"
 
 	"github.com/awnumar/memguard"
 
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 )
@@ -34,13 +37,13 @@ const (
 
 // WriteFrame writes one frame.
 func WriteFrame(w io.Writer, kind FrameKind, payload []byte) error {
-	panic("unimplemented: ipc.WriteFrame")
+	return writeFrame(w, kind, payload)
 }
 
 // ReadFrame reads one frame into buf (grown up to MaxFrame) and returns the
 // payload slice aliasing buf; callers wipe buf after secret frames.
 func ReadFrame(r io.Reader, buf []byte) (FrameKind, []byte, error) {
-	panic("unimplemented: ipc.ReadFrame")
+	return readFrame(r, buf)
 }
 
 // Op names a request.
@@ -565,144 +568,200 @@ type DialOptions struct {
 
 // Client is a connection to the daemon. Not safe for concurrent requests.
 type Client struct {
-	conn any
+	mu     sync.Mutex
+	opts   DialOptions
+	w      *wire // nil once closed or broken
+	nextID uint64
+	hello  HelloResp
+	subs   map[*wire]struct{}
+	closed bool
 }
 
 // Dial authenticates the daemon (D6) and performs Hello. With Autostart it
 // starts the daemon under run/agent.lock when absent and waits for it.
-func Dial(ctx context.Context, o DialOptions) (*Client, error) { panic("unimplemented: ipc.Dial") }
+func Dial(ctx context.Context, o DialOptions) (*Client, error) { return dial(ctx, o) }
 
 // Close closes the connection.
-func (c *Client) Close() error { panic("unimplemented: ipc.Client.Close") }
+func (c *Client) Close() error { return c.close() }
 
 // Status returns the daemon status.
 func (c *Client) Status(ctx context.Context) (StatusResp, error) {
-	panic("unimplemented: ipc.Client.Status")
+	resp, err := c.simple(ctx, Request{Op: OpStatus})
+	if err != nil {
+		return StatusResp{}, err
+	}
+	if resp.Status == nil {
+		return StatusResp{}, errProtocol("status response without status")
+	}
+	return *resp.Status, nil
 }
 
 // Gate asks for a gate decision (answered from an in-memory snapshot).
 func (c *Client) Gate(ctx context.Context, r GateReq) (GateResp, error) {
-	panic("unimplemented: ipc.Client.Gate")
+	resp, err := c.simple(ctx, Request{Op: OpGate, Gate: &r})
+	if err != nil {
+		return GateResp{}, err
+	}
+	if resp.Gate == nil {
+		return GateResp{}, errProtocol("gate response without decision")
+	}
+	return *resp.Gate, nil
 }
 
 // Activity reports activity.
 func (c *Client) Activity(ctx context.Context, r ActivityReq) error {
-	panic("unimplemented: ipc.Client.Activity")
+	_, err := c.simple(ctx, Request{Op: OpActivity, Activity: &r})
+	return err
 }
 
 // Register announces a harness process.
 func (c *Client) Register(ctx context.Context, r RegisterReq) error {
-	panic("unimplemented: ipc.Client.Register")
+	_, err := c.simple(ctx, Request{Op: OpRegister, Register: &r})
+	return err
 }
 
 // Unregister removes a wrapper registration.
 func (c *Client) Unregister(ctx context.Context, r UnregisterReq) error {
-	panic("unimplemented: ipc.Client.Unregister")
+	_, err := c.simple(ctx, Request{Op: OpUnregister, Unregister: &r})
+	return err
 }
 
 // Unlock requests an unlock and relays UI prompts to ui until the final
 // response.
 func (c *Client) Unlock(ctx context.Context, r UnlockReq, ui UIHandler) (UnlockResp, error) {
-	panic("unimplemented: ipc.Client.Unlock")
+	resp, sec, err := c.do(ctx, Request{Op: OpUnlock, Unlock: &r}, nil, ui)
+	destroyAll(sec)
+	if err != nil {
+		return UnlockResp{}, err
+	}
+	if resp.Unlock == nil {
+		return UnlockResp{}, errProtocol("unlock response without result")
+	}
+	return *resp.Unlock, nil
 }
 
 // Lock locks folders (and optionally ends sessions).
 func (c *Client) Lock(ctx context.Context, r LockReq) (LockResp, error) {
-	panic("unimplemented: ipc.Client.Lock")
+	resp, err := c.simple(ctx, Request{Op: OpLock, Lock: &r})
+	if err != nil {
+		return LockResp{}, err
+	}
+	if resp.Lock == nil {
+		return LockResp{}, errProtocol("lock response without result")
+	}
+	return *resp.Lock, nil
 }
 
 // KeySet holds released file keys in locked buffers. It implements
 // sweep.FileKeys directly (asserted in cmd/precinto).
 type KeySet struct {
+	mu   sync.Mutex
 	keys map[string]*memguard.LockedBuffer
 }
 
 // Key returns the file key of a capsule path relative to CapsulesDir.
-func (k *KeySet) Key(path string) (*memguard.LockedBuffer, bool) {
-	panic("unimplemented: ipc.KeySet.Key")
-}
+func (k *KeySet) Key(path string) (*memguard.LockedBuffer, bool) { return k.key(path) }
 
 // Destroy wipes every key (also called on any lock event).
-func (k *KeySet) Destroy() { panic("unimplemented: ipc.KeySet.Destroy") }
+func (k *KeySet) Destroy() { k.destroy() }
 
 // Keys requests file keys; denied capsules are listed in the response.
 func (c *Client) Keys(ctx context.Context, r KeysReq) (*KeySet, KeysResp, error) {
-	panic("unimplemented: ipc.Client.Keys")
+	return c.keys(ctx, r)
 }
 
 // Subscribe streams events; the channel closes on disconnect, which
 // wrappers treat as a lock (SPEC §15.3).
 func (c *Client) Subscribe(ctx context.Context, r SubscribeReq) (<-chan Event, error) {
-	panic("unimplemented: ipc.Client.Subscribe")
+	return c.subscribe(ctx, r)
 }
 
 // VaultCreate creates the per-root vault (UI may be relayed for
 // passphrase factors).
 func (c *Client) VaultCreate(ctx context.Context, r VaultCreateReq, ui UIHandler) error {
-	panic("unimplemented: ipc.Client.VaultCreate")
+	_, sec, err := c.do(ctx, Request{Op: OpVaultCreate, VaultCreate: &r}, nil, ui)
+	destroyAll(sec)
+	return err
 }
 
 // FactorAdd enrolls a factor in every vault.
 func (c *Client) FactorAdd(ctx context.Context, r FactorAddReq, ui UIHandler) error {
-	panic("unimplemented: ipc.Client.FactorAdd")
+	_, sec, err := c.do(ctx, Request{Op: OpFactorAdd, FactorAdd: &r}, nil, ui)
+	destroyAll(sec)
+	return err
 }
 
 // VaultRepair repairs a tampered vault (D53). recovery, when r.UseRecovery
 // is set, is sent in one 'S' frame and destroyed by the caller afterwards;
 // factor prompts are relayed to ui.
 func (c *Client) VaultRepair(ctx context.Context, r VaultRepairReq, recovery *memguard.LockedBuffer, ui UIHandler) (VaultRepairResp, error) {
-	panic("unimplemented: ipc.Client.VaultRepair")
+	return c.vaultRepair(ctx, r, recovery, ui)
 }
 
 // Policy lists or confirms pending weakening changes.
 func (c *Client) Policy(ctx context.Context, r PolicyReq) (PolicyResp, error) {
-	panic("unimplemented: ipc.Client.Policy")
+	resp, err := c.simple(ctx, Request{Op: OpPolicy, Policy: &r})
+	if err != nil {
+		return PolicyResp{}, err
+	}
+	if resp.Policy == nil {
+		return PolicyResp{}, nil
+	}
+	return *resp.Policy, nil
 }
 
 // Shutdown asks the daemon to wipe keys and exit.
-func (c *Client) Shutdown(ctx context.Context) error { panic("unimplemented: ipc.Client.Shutdown") }
+func (c *Client) Shutdown(ctx context.Context) error {
+	_, err := c.simple(ctx, Request{Op: OpShutdown})
+	return err
+}
 
 // Listener is the daemon side: it owns run/agent.lock for its lifetime.
 type Listener struct {
-	lock any
+	mu     sync.Mutex
+	lock   *fsx.Lock
+	ln     *net.UnixListener
+	socket string
+	closed bool
 }
 
 // Listen verifies RunDir (fsx.CheckPrivateDir), takes an exclusive flock on
 // AgentLock (ErrLocked if another daemon runs), unlinks a stale socket only
 // while holding it, and binds under umask 0177 (socket mode 0600).
-func Listen(l paths.Layout) (*Listener, error) { panic("unimplemented: ipc.Listen") }
+func Listen(l paths.Layout) (*Listener, error) { return listen(l) }
 
 // Accept waits for a connection and verifies the peer uid.
-func (l *Listener) Accept() (*Conn, error) { panic("unimplemented: ipc.Listener.Accept") }
+func (l *Listener) Accept() (*Conn, error) { return l.accept() }
 
 // Close unlinks the socket (still holding the lock) and releases the lock.
-func (l *Listener) Close() error { panic("unimplemented: ipc.Listener.Close") }
+func (l *Listener) Close() error { return l.close() }
 
 // Conn is one accepted connection.
 type Conn struct {
 	peer platform.Peer
+	w    *wire
 }
 
 // Peer returns the verified peer credentials.
-func (c *Conn) Peer() platform.Peer { panic("unimplemented: ipc.Conn.Peer") }
+func (c *Conn) Peer() platform.Peer { return c.peer }
 
 // PeerSameExecutable reports whether the peer runs this binary (dev+inode,
 // D6). Required for keys, unlock, vault_create, factor_add, vault_repair,
 // policy confirmation, wrapper registrations and Input/Enter activity
 // (SPEC §13.2, D39, D54).
-func (c *Conn) PeerSameExecutable() bool { panic("unimplemented: ipc.Conn.PeerSameExecutable") }
+func (c *Conn) PeerSameExecutable() bool { return c.peerSameExecutable() }
 
 // ReadRequest reads the next JSON request and its secret frames into
 // locked buffers.
 func (c *Conn) ReadRequest() (Request, []*memguard.LockedBuffer, error) {
-	panic("unimplemented: ipc.Conn.ReadRequest")
+	return c.readRequest()
 }
 
 // WriteResponse writes a response followed by its secret frames (each
 // buffer is written then left for the caller to destroy).
 func (c *Conn) WriteResponse(r Response, secrets ...*memguard.LockedBuffer) error {
-	panic("unimplemented: ipc.Conn.WriteResponse")
+	return c.writeResponse(r, secrets)
 }
 
 // Close closes the connection.
-func (c *Conn) Close() error { panic("unimplemented: ipc.Conn.Close") }
+func (c *Conn) Close() error { return c.w.close() }

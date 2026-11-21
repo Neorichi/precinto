@@ -1,0 +1,6 @@
++-o IOHIDSystem  <class IOHIDSystem, id 0x100000200, registered, matched, active, busy 0 (0 ms), retain 20>
+    {
+      "IOClass" = "IOHIDSystem"
+      "HIDIdleTime" = 4250000000
+      "HIDParameters" = {"HIDClickTime"=500000000}
+    }

@@ -35,10 +35,10 @@ type ProcID struct {
 func (id ProcID) IsZero() bool { return id.PID == 0 && id.StartUS == 0 && id.BootID == "" }
 
 // String formats "PID:START" (the --wait-pid syntax).
-func (id ProcID) String() string { panic("unimplemented: platform.ProcID.String") }
+func (id ProcID) String() string { return formatProcID(id) }
 
 // ParseProcID parses "PID:START".
-func ParseProcID(s string) (ProcID, error) { panic("unimplemented: platform.ParseProcID") }
+func ParseProcID(s string) (ProcID, error) { return parseProcID(s) }
 
 // ProcState is the scheduler state of a process.
 type ProcState string
@@ -89,13 +89,13 @@ type ProcTable interface {
 }
 
 // System returns the real process table.
-func System() ProcTable { panic("unimplemented: platform.System") }
+func System() ProcTable { return systemTable{} }
 
 // Self returns the identity of the current process.
-func Self() ProcID { panic("unimplemented: platform.Self") }
+func Self() ProcID { return self() }
 
 // Identify measures the ProcID of a live pid.
-func Identify(pid int) (ProcID, error) { panic("unimplemented: platform.Identify") }
+func Identify(pid int) (ProcID, error) { return identify(pid) }
 
 // Ancestors returns up to max ancestors of pid, nearest first, by walking
 // PPIDs with t.Lookup; the walk stops at pid 0/1, at a lookup error or at a
@@ -163,7 +163,7 @@ type Holder struct {
 // Signal sends sig to id after re-verifying (pid, start time) immediately
 // before kill(2) (linux: pidfd_send_signal). ErrNotSame if the process
 // changed (S14).
-func Signal(id ProcID, sig syscall.Signal) error { panic("unimplemented: platform.Signal") }
+func Signal(id ProcID, sig syscall.Signal) error { return signalProc(id, sig) }
 
 // SignalGroup sends sig to every remaining process whose session id is sid.
 // Only for sessions precinto created itself — the wrapper's PTY child or a
@@ -171,11 +171,11 @@ func Signal(id ProcID, sig syscall.Signal) error { panic("unimplemented: platfor
 // an unwrapped harness, whose session is the user's terminal session (its
 // login shell and every other job of that tab) (R11, D57). Callers pass the
 // child's pid, which is the session id.
-func SignalGroup(sid int, sig syscall.Signal) error { panic("unimplemented: platform.SignalGroup") }
+func SignalGroup(sid int, sig syscall.Signal) error { return signalGroup(sid, sig) }
 
 // WaitExit blocks until id has exited (zombie counts as exited) or ctx ends;
 // darwin kqueue EVFILT_PROC/NOTE_EXIT, linux pidfd poll, fallback polling.
-func WaitExit(ctx context.Context, id ProcID) error { panic("unimplemented: platform.WaitExit") }
+func WaitExit(ctx context.Context, id ProcID) error { return waitExit(ctx, id) }
 
 // SpawnOptions configures a detached child.
 type SpawnOptions struct {
@@ -186,17 +186,15 @@ type SpawnOptions struct {
 
 // Spawn starts argv detached (Setsid, stdin /dev/null) and does not wait.
 // argv[0] must be absolute.
-func Spawn(argv []string, o SpawnOptions) (ProcID, error) { panic("unimplemented: platform.Spawn") }
+func Spawn(argv []string, o SpawnOptions) (ProcID, error) { return spawn(argv, o) }
 
 // Executable returns the absolute path and Stat-like identity of the running
 // binary (os.Executable resolved once at startup).
-func Executable() (path string, dev, ino uint64, err error) {
-	panic("unimplemented: platform.Executable")
-}
+func Executable() (path string, dev, ino uint64, err error) { return executable() }
 
 // SameExecutable reports whether pid runs the same file (dev+inode) as the
 // current binary (D6 mutual authentication).
-func SameExecutable(pid int) (bool, error) { panic("unimplemented: platform.SameExecutable") }
+func SameExecutable(pid int) (bool, error) { return sameExecutable(pid) }
 
 // Peer holds the verified credentials of a Unix-socket peer.
 type Peer struct {
@@ -207,17 +205,17 @@ type Peer struct {
 
 // PeerOf returns the peer credentials of c (darwin LOCAL_PEERCRED +
 // LOCAL_PEERPID; linux SO_PEERCRED).
-func PeerOf(c *net.UnixConn) (Peer, error) { panic("unimplemented: platform.PeerOf") }
+func PeerOf(c *net.UnixConn) (Peer, error) { return peerOf(c) }
 
 // Harden must be the first call of every subcommand that may hold secrets or
 // plaintext (agent, unlock, hook, run, seal, sweep, restore, open, cat,
 // recover): refuse uid 0, setrlimit(RLIMIT_CORE, 0), PT_DENY_ATTACH (darwin)
 // or prctl(PR_SET_DUMPABLE, 0) (linux) (SPEC §4.6, S15).
-func Harden() error { panic("unimplemented: platform.Harden") }
+func Harden() error { return harden() }
 
 // CheckLoaderEnv returns ErrUnsafeEnv if environ contains DYLD_* or LD_*
 // variables; the daemon refuses to start (or re-execs with a clean env).
-func CheckLoaderEnv(environ []string) error { panic("unimplemented: platform.CheckLoaderEnv") }
+func CheckLoaderEnv(environ []string) error { return checkLoaderEnv(environ) }
 
 // Clock is wall time plus a monotonic reading. Deadlines are evaluated
 // against both (R16, IM15): a deadline expires if either clock says so.
@@ -229,7 +227,7 @@ type Clock interface {
 }
 
 // SystemClock returns the real clock.
-func SystemClock() Clock { panic("unimplemented: platform.SystemClock") }
+func SystemClock() Clock { return systemClock{} }
 
 // ScreenState is one observation of the console.
 type ScreenState struct {
@@ -243,9 +241,7 @@ type ScreenState struct {
 // ReadScreen polls the console once (darwin: `/usr/sbin/ioreg -n Root -d1`
 // IOConsoleLocked and IOHIDSystem HIDIdleTime, ~25 ms; linux: loginctl
 // LockedHint and IdleSinceHint).
-func ReadScreen(ctx context.Context) (ScreenState, error) {
-	panic("unimplemented: platform.ReadScreen")
-}
+func ReadScreen(ctx context.Context) (ScreenState, error) { return readScreen(ctx) }
 
 // Jump is a detected wall-vs-monotonic discontinuity (sleep/wake or clock
 // step).
@@ -258,7 +254,7 @@ type Jump struct {
 // WatchJumps ticks every interval and sends a Jump whenever wall time moved
 // more than threshold beyond monotonic time (D24 sleep/wake ⇒ lock at wake).
 func WatchJumps(ctx context.Context, c Clock, every, threshold time.Duration, out chan<- Jump) {
-	panic("unimplemented: platform.WatchJumps")
+	watchJumps(ctx, c, every, threshold, out)
 }
 
 // UIContext describes where an unlock prompt could appear (D27).
@@ -272,7 +268,7 @@ type UIContext struct {
 // DetectUIContext inspects e and the current process (D27): SE dialogs are
 // impossible in SSH and detached tmux/screen sessions.
 func DetectUIContext(e paths.Env, stdin, stdout *os.File) UIContext {
-	panic("unimplemented: platform.DetectUIContext")
+	return detectUIContext(e, stdin, stdout)
 }
 
 // ScrubOptions controls TTY scrubbing after a harness has exited.
@@ -285,27 +281,27 @@ type ScrubOptions struct {
 // ScrubTTY opens tty with O_WRONLY|O_NOCTTY (only if owned by the current
 // uid) and writes the reset sequence of SPEC §15.4, then runs `stty sane`
 // on it (darwin -f, linux -F).
-func ScrubTTY(tty string, o ScrubOptions) error { panic("unimplemented: platform.ScrubTTY") }
+func ScrubTTY(tty string, o ScrubOptions) error { return scrubTTY(tty, o) }
 
 // DiskEncryption reports FileVault (darwin `fdesetup status`) or an
 // encrypted home (linux, best effort); known=false if undeterminable.
 func DiskEncryption(ctx context.Context) (on, known bool, err error) {
-	panic("unimplemented: platform.DiskEncryption")
+	return diskEncryption(ctx)
 }
 
 // ExcludeFromBackup adds a sticky Time Machine exclusion (`tmutil
 // addexclusion`, no root needed); no-op on linux.
 func ExcludeFromBackup(ctx context.Context, path string) error {
-	panic("unimplemented: platform.ExcludeFromBackup")
+	return excludeFromBackup(ctx, path)
 }
 
 // CloudSynced reports whether path is inside a known cloud-synced location
 // (~/Library/Mobile Documents, ~/Library/CloudStorage, iCloud Desktop &
 // Documents, Dropbox, OneDrive).
-func CloudSynced(path string) bool { panic("unimplemented: platform.CloudSynced") }
+func CloudSynced(path string) bool { return cloudSynced(path) }
 
 // SpotlightIndexed reports whether Spotlight indexes path (`mdfind -onlyin
 // <path> -count 'kMDItemFSName == *.md'` > 0); known=false off darwin.
 func SpotlightIndexed(ctx context.Context, path string) (indexed, known bool, err error) {
-	panic("unimplemented: platform.SpotlightIndexed")
+	return spotlightIndexed(ctx, path)
 }

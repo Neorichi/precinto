@@ -1,0 +1,5 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 43>
+    {
+      "IOConsoleLocked" = Yes
+      "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kCGSSessionUserIDKey"=501})
+    }
