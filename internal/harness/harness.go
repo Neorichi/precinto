@@ -312,6 +312,11 @@ type Selector struct {
 	MaxAge     time.Duration // skip units whose last activity is older (D14: cleanupPeriodDays − 2 days); 0 = no limit
 	MtimeNow   bool          // explicit resume of an old session: clamp mtimes to now − 1 day (D14)
 	MaxBytes   int64         // budget for this selector; 0 = policy.restore_max_bytes
+	// SkipEntrypoints drops units whose ledger (in the manifest) records
+	// one of these entrypoints for the session's start, e.g. the sdk-*
+	// entrypoints Claude's interactive --continue skips (D102); a unit
+	// that records none is kept.
+	SkipEntrypoints []string
 }
 
 // LaunchPlan is what the wrapper executes for one harness invocation.

@@ -155,12 +155,13 @@ func TestTestdataHygiene(t *testing.T) {
 	}
 }
 
-// D41, D78: plugins/codex/ is byte-identical across releases (Codex's
-// trust hash covers every file of the plugin root). Its SHA-256 list is
-// recorded in testdata/codex-plugin.sha256 ("<hex>  <path relative to
-// plugins/codex>" per line, "#" comments): any drift fails, so a change to
-// the root is a deliberate edit of the list in the same change until E2E-9
-// freezes the root (D61), and impossible after that.
+// D41, D78, D104: plugins/codex/ is byte-identical across releases (newer
+// Codex versions hash every file of the plugin root for hook trust; Codex
+// 0.154 hashes the hook declarations, pinned in codex-trust.sha256). Its
+// SHA-256 list is recorded in testdata/codex-plugin.sha256 ("<hex>  <path
+// relative to plugins/codex>" per line, "#" comments): any drift fails, so
+// a change to the root is a deliberate edit of the list in the same change
+// until E2E-9 freezes the root (D61), and impossible after that.
 func TestCodexPluginByteStable(t *testing.T) {
 	root := moduleRoot(t)
 	list := filepath.Join("testdata", "codex-plugin.sha256")
@@ -202,12 +203,12 @@ func TestCodexPluginByteStable(t *testing.T) {
 	}
 	for rel, sum := range want {
 		if got[rel] != sum {
-			t.Errorf("plugins/codex/%s changed (or is missing): the Codex trust hash would break (D41)", rel)
+			t.Errorf("plugins/codex/%s changed (or is missing): Codex hook trust would break (D41, D104)", rel)
 		}
 	}
 	for rel := range got {
 		if _, ok := want[rel]; !ok {
-			t.Errorf("plugins/codex/%s is new: the Codex trust hash would break (D41)", rel)
+			t.Errorf("plugins/codex/%s is new: Codex hook trust would break (D41, D104)", rel)
 		}
 	}
 }

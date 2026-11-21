@@ -68,7 +68,23 @@ var (
 	continueFlags = []string{"--continue", "-c"}
 	forkFlags     = []string{"--fork-session"}
 	jobCommands   = []string{"attach", "respawn"}
+	printFlags    = []string{"-p", "--print"}
 )
+
+// sdkEntrypoints are the CLAUDE_CODE_ENTRYPOINT values of sessions that
+// Claude Code 2.1.329's interactive --continue skips: claude -p (sdk-cli)
+// and the Agent SDKs (D102).
+var sdkEntrypoints = []string{"sdk-cli", "sdk-ts", "sdk-py"}
+
+// printMode reports whether the launch is claude -p / --print.
+func printMode(args []string) bool {
+	for _, f := range printFlags {
+		if hasArg(args, f) {
+			return true
+		}
+	}
+	return false
+}
 
 // resumeFlagsOf returns the resume flag lists of the inventory, falling
 // back to the built-in ones.

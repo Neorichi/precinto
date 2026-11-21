@@ -1,0 +1,47 @@
+# Codex 0.154 hook trust hashes of plugins/codex/hooks/codex.json (D98), one line
+# per hook: "<event key label>:<group>:<handler>  <hash>", the tail of its trust key
+# [hooks.state."precinto@<marketplace>:hooks/codex.json:<event>:<group>:<handler>"].
+# Codex runs a hook only when that entry's trusted_hash equals the hash below; any
+# other stored hash is "Modified" and the hook does not run
+# (codex-rs/hooks/src/engine/discovery.rs hook_trust_status). HooksTrusted reports
+# a home trusted only for these hashes.
+#
+# Derivation (rust-v0.154.0: hooks/src/engine/discovery.rs hook_hash and
+# normalize_command_hook, config/src/fingerprint.rs version_for_toml): the identity
+#   {"event_name": <event key label>, "matcher": <matcher>, "hooks": [<handler>]}
+# with the handler {"type", "command", "timeout", "async", "statusMessage",
+# "additionalContextLimit"} where the command is exactly as written ($PLUGIN_ROOT is
+# never expanded in it), the timeout is normalized (SessionEnd and Interrupt: default
+# 1, clamped to 1..3; every other event: default 600, at least 1), async is as
+# written, statusMessage and additionalContextLimit appear only when set, the
+# matcher only for events that dispatch on one (not UserPromptSubmit, Stop,
+# Interrupt), and absent values are omitted (TOML has no null). It is written as JSON
+# with object keys sorted bytewise at every level, no whitespace and serde_json's
+# string escaping; the hash is "sha256:" and the lowercase hex SHA-256 of those
+# bytes. The comment above each line is that JSON, so
+#   printf '%s' '<json>' | shasum -a 256
+# reproduces the hash. These values were computed by an implementation independent
+# of internal/harness/codex/trust.go; TestTrustHashesGolden requires trust.go to
+# derive the same hashes from the shipped hooks file. A change to the declarations
+# of hooks/codex.json updates this list (and codex-plugin.sha256) in the same
+# reviewed change.
+# {"event_name":"session_start","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex SessionStart","timeout":10,"type":"command"}],"matcher":"*"}
+session_start:0:0  sha256:36d098b0440abc4aa57e3b29f1944ced8e5000a3f9eac8aeb2ca7d0e3b1866d6
+# {"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex UserPromptSubmit","timeout":90,"type":"command"}]}
+user_prompt_submit:0:0  sha256:dd46ac68c674c89fe14276fbdafc955969db4dc05522ed7bb18701be24c3963d
+# {"event_name":"pre_tool_use","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PreToolUse","timeout":10,"type":"command"}],"matcher":"*"}
+pre_tool_use:0:0  sha256:35b21c4159e243a741e19f5f4fd4929f13821a69365eb89663caf6c0cbb7b951
+# {"event_name":"permission_request","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PermissionRequest","timeout":10,"type":"command"}],"matcher":"*"}
+permission_request:0:0  sha256:90b6817b158235ff7fd1f4c51b9a55de87b7d82bad9cd7443bd95f9003bc285b
+# {"event_name":"post_tool_use","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PostToolUse","timeout":10,"type":"command"}],"matcher":"apply_patch|Edit|Write"}
+post_tool_use:0:0  sha256:921aaa6494d68f3f4e074c0442b8657abe1727f0615fa4a27b4458f695f05713
+# {"event_name":"pre_compact","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PreCompact","timeout":10,"type":"command"}],"matcher":"*"}
+pre_compact:0:0  sha256:0573e1f0411d0dc3ff532bdb385fcc7726ac6097b1769c1e3735b1dc7e71dee1
+# {"event_name":"post_compact","hooks":[{"async":true,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex PostCompact","timeout":600,"type":"command"}],"matcher":"*"}
+post_compact:0:0  sha256:412f7f8f2e3dd7d9b159b2baed4a65033d440b55d99aace054110d7f262e48f1
+# {"event_name":"stop","hooks":[{"async":true,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex Stop","timeout":600,"type":"command"}]}
+stop:0:0  sha256:1b33a3dcc4d8c2afba360875738f78e8917aab4a77b75d7fa7f5b1a7a0e9549a
+# {"event_name":"interrupt","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex Interrupt","timeout":3,"type":"command"}]}
+interrupt:0:0  sha256:b1465731face9f8da79e8d4914f2a2c6e4d9c53f349642bd34466466ab1c2b53
+# {"event_name":"session_end","hooks":[{"async":false,"command":"sh \"$PLUGIN_ROOT/scripts/precinto-hook\" codex SessionEnd","timeout":3,"type":"command"}]}
+session_end:0:0  sha256:473bff866c1a9e3b6efdeece4f3f492aebecbef4aef8a37795c806fa27ac4edc

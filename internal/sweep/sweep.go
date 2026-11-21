@@ -142,7 +142,7 @@ type RestoreRequest struct {
 	// placed (the wrapper adds it to its launch lease, SPEC §9.3).
 	BeforePlace func(unit string) error
 	Budget      int64 // bytes; 0 = policy.restore_max_bytes
-	MtimeNow    bool  // explicit resume of a session older than cleanupPeriodDays−2 (D14)
+	MtimeNow    bool  // Units only: explicit resume of a session older than cleanupPeriodDays−2 (D14); a selector's units follow its own MtimeNow (D102)
 	Purpose     string
 	StopOnErr   bool
 	// Abort is closed by the caller on any lock event (R6, D58): file keys

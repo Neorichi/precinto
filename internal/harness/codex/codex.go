@@ -40,13 +40,19 @@ type Seed struct {
 
 // PrepareHome creates RootHome 0700 if missing and seeds it: copies
 // config.toml once (or again with ForceConfig), removing sqlite_home and
-// log_dir keys; synchronizes auth.json from UserHome when newer; and
-// symlinks plugins/ and skills/ to UserHome. It never touches content
-// files.
+// log_dir keys, and at every call adds the [marketplaces.*] and
+// [plugins.*] tables of the user's config.toml that RootHome's lacks
+// (D99); synchronizes auth.json from UserHome when newer, never into a
+// home that logged out, removing the other copy of logged-out credentials,
+// and only with a UserHome that exists (D100); and symlinks plugins/ and
+// skills/ to UserHome, moving a real directory Codex created there to
+// <RootHome>.displaced/ first (never deleted, D99). It never touches
+// content files.
 func PrepareHome(ctx context.Context, s Seed) error { return prepareHome(ctx, s) }
 
 // SyncAuthBack copies RootHome/auth.json to UserHome/auth.json atomically
-// when it is newer and differs (token refresh), after the child exited.
+// when it is newer and differs (token refresh), after the child exited; a
+// logout on either side is never undone (D100).
 func SyncAuthBack(ctx context.Context, s Seed) error { return syncAuthBack(ctx, s) }
 
 // LaunchEnv returns the environment additions for a managed launch:
@@ -54,8 +60,18 @@ func SyncAuthBack(ctx context.Context, s Seed) error { return syncAuthBack(ctx, 
 // so hook-output spills are sealed with the home, D44).
 func LaunchEnv(rootHome string) []string { return launchEnv(rootHome) }
 
-// HooksTrusted reports, read-only, whether config.toml of home has a
-// [hooks.state."…"] trusted_hash entry for every precinto hook (UX10).
+// HooksTrusted reports, read-only, whether Codex 0.154 runs precinto's
+// hooks in home (UX10): config.toml enables a precinto plugin installed in
+// home's plugins/cache, and has a [hooks.state."…"] entry for every hook of
+// plugins/codex/hooks/codex.json whose trusted_hash equals the hash Codex
+// computes for that hook's declaration and that is not disabled (D98).
+// When the state is known but not trusted, err tells why: ErrPluginMissing
+// (no such plugin) or ErrHooksModified (trusted for other declarations:
+// Codex 0.154 skips them until reviewed again); nil means some hook is not
+// trusted yet. known is false (with trusted false) when config.toml cannot
+// be read or parsed — a read failure is also returned in err — and when
+// entries with other hashes were written by a Codex newer than 0.154
+// (they carry trusted_content_hash: that Codex may hash another way).
 func HooksTrusted(home string) (trusted bool, known bool, err error) {
 	return hooksTrusted(home)
 }

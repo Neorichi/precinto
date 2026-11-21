@@ -3,10 +3,12 @@
 # Usage: sh precinto-hook HARNESS EVENT, with the hook payload on stdin.
 #
 # plugin/scripts/precinto-hook and plugins/codex/scripts/precinto-hook are
-# byte-identical and frozen: Codex's trust hash covers every byte of its
-# plugin (D41), so an edit disables precinto's Codex hooks until the user
-# trusts them again. The shim reads no variable of the PRECINTO_ family:
-# hooks run inside an agent session, whose settings can inject them (D56).
+# byte-identical and frozen (D41, D104): newer Codex versions hash every
+# file of a plugin for hook trust, so an edit would turn precinto's Codex
+# hooks off until the user trusts them again (Codex 0.154 hashes only the
+# hook declarations of hooks/codex.json). The shim reads no variable of the
+# PRECINTO_ family: hooks run inside an agent session, whose settings can
+# inject them (D56).
 # It forks once, for the binary, and never prints an OS error.
 
 # D.shim (ui.MsgShimFailed), frozen with these bytes.

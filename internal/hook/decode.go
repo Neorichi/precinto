@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness/codex"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
@@ -181,10 +184,74 @@ func decode(host Host, label string, ev Event, raw []byte, env paths.Env, procs 
 		}
 	default:
 		p.ConfigDir = claudeConfigOf(p.TranscriptPath, env)
-		p.HarnessVersion = versionOf(env.Get(envClaudeExecPath))
+		if host == HostClaude {
+			p.HarnessVersion = claudeVersion(env, p.ConfigDir)
+		}
 		p.HarnessPID, p.HarnessProc = claudeProcess(env, procs)
 	}
 	return p, nil
+}
+
+// maxRegistryEntry bounds the registry entry read for the version (Claude
+// writes a few hundred bytes).
+const maxRegistryEntry = 64 << 10
+
+// maxVersionLen bounds a version string ("2.1.329").
+const maxVersionLen = 32
+
+// claudeVersion returns the Claude Code version (D103): the `version` key of
+// the live-session registry entry <config>/sessions/<CLAUDE_PID>.json, which
+// Claude writes for its own process before SessionStart and removes before
+// SessionEnd; else the basename of CLAUDE_CODE_EXECPATH, which Claude
+// 2.1.329 sets only for its Bash-tool processes, never for hooks
+// (HOOKS-IO §2.3). Informational only (ledger, registration, status).
+func claudeVersion(env paths.Env, configDir string) string {
+	if v := registryVersion(env, configDir); v != "" {
+		return v
+	}
+	return versionOf(env.Get(envClaudeExecPath))
+}
+
+// registryVersion reads the version of Claude's registry entry for
+// CLAUDE_PID: a regular file (never through a symlink, never blocking on a
+// FIFO) whose pid, when present, is that pid.
+func registryVersion(env paths.Env, configDir string) string {
+	pid, err := strconv.Atoi(env.Get(paths.EnvClaudePID))
+	if err != nil || pid <= 1 || configDir == "" || !filepath.IsAbs(configDir) {
+		return ""
+	}
+	path := filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json")
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := fsx.Fstat(f)
+	if err != nil || !st.IsRegular() {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRegistryEntry+1))
+	if err != nil || len(data) > maxRegistryEntry {
+		return ""
+	}
+	var entry struct {
+		PID     *json.Number `json:"pid"`
+		Version *string      `json:"version"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if dec.Decode(&entry) != nil || entry.Version == nil {
+		return ""
+	}
+	if entry.PID != nil {
+		if n, err := entry.PID.Int64(); err != nil || n != int64(pid) {
+			return "" // another process's entry
+		}
+	}
+	if len(*entry.Version) > maxVersionLen {
+		return ""
+	}
+	return versionString(*entry.Version)
 }
 
 func str(s *string) string {
@@ -349,8 +416,16 @@ func codexHomeOf(codexHome, transcript string, env paths.Env) string {
 // versionOf returns the Claude version from CLAUDE_CODE_EXECPATH, whose
 // basename is the version for the native installer (HOOKS-IO §2.3).
 func versionOf(execPath string) string {
-	v := filepath.Base(execPath)
-	if execPath == "" || v == "" || !strings.ContainsRune(v, '.') {
+	if execPath == "" {
+		return ""
+	}
+	return versionString(filepath.Base(execPath))
+}
+
+// versionString returns v when it is a dotted version of digits ("2.1.329"),
+// else "".
+func versionString(v string) string {
+	if v == "" || !strings.ContainsRune(v, '.') {
 		return ""
 	}
 	for _, c := range v {

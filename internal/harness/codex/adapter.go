@@ -26,8 +26,10 @@ import (
 const (
 	harnessName = string(harness.Codex)
 	// Catalog ids carried by launch plans (rendered by the wrapper).
-	msgConsent   = "C10.consent" // first use of a folder's sealed Codex history
-	msgUntrusted = "C9.codex"    // precinto's hooks are not trusted in the home
+	msgConsent       = "C10.consent"      // first use of a folder's sealed Codex history
+	msgUntrusted     = "C9.codex"         // precinto's hooks are not trusted in the home
+	msgModified      = "C9.codexmodified" // trusted for other hook declarations: Codex 0.154 skips them (D98)
+	msgPluginMissing = "C9.codexplugin"   // the home does not load precinto's plugin (D99)
 	// hookPresenceWithin is Codex's UserPromptSubmit window after the first
 	// Enter (SPEC §14.4).
 	hookPresenceWithin = 5 * time.Second
@@ -505,6 +507,10 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		}
 		return syncAuthBack(ctx, seed)
 	}
+	folder := root.Path
+	if h, err := paths.UserHome(e.Host); err == nil {
+		folder = paths.Tilde(h, root.Path)
+	}
 	switch {
 	case !managesCodex(root):
 		// D72: consent is per folder, in config. A folder that does not
@@ -512,15 +518,22 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		// caller; no starts nothing, CC-20); a missing home is only the
 		// first launch of a folder that consented.
 		plan.Confirm = msgConsent
-		folder := root.Path
-		if h, err := paths.UserHome(e.Host); err == nil {
-			folder = paths.Tilde(h, root.Path)
-		}
 		plan.MsgVars = map[string]string{"folder": folder}
 	case homeExists(home):
 		// Prepare seeds a new home from the user's config; an existing one
-		// is checked for precinto's hook trust (UX10).
-		if trusted, known, _ := hooksTrusted(home); known && !trusted {
+		// is checked for precinto's hooks as Prepare will leave it (the
+		// plugin tables it adds and the plugins/ link, D99), before the
+		// question is asked (UX10): the plugin must load, and its hooks be
+		// trusted for their current declarations (D98).
+		switch st, _ := homeTrust(home, user); st {
+		case trustPluginMissing:
+			plan.Confirm = msgPluginMissing
+			plan.MsgVars = map[string]string{"folder": folder}
+		case trustModified:
+			// Codex 0.154 skips them; precinto cannot tell the version
+			// here, so the question is worded conditionally (D98).
+			plan.Confirm = msgModified
+		case trustUntrusted:
 			plan.Confirm = msgUntrusted
 		}
 	}

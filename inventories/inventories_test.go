@@ -72,7 +72,7 @@ func TestCodexNeverTouchMatchesSpec(t *testing.T) {
 		"auth.json", "config.toml", "hooks.json", "plugins/**", "skills/**", "cache/**",
 		"packages/**", "models_cache.json", "installation_id", "version.json",
 		".tmp/**", "tmp/**", "thread-writer-locks/**", "app-server-control/**", "log/**",
-		"rollout-maintenance.lock", "*-shm",
+		"rollout-maintenance.lock", "*-shm", ".precinto-auth",
 	}
 	if len(inv.NeverTouch) != len(want) {
 		t.Fatalf("never_touch = %v, want %v", inv.NeverTouch, want)
