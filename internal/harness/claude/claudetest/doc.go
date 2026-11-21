@@ -4,6 +4,7 @@
 // under a fake CLAUDE_CONFIG_DIR / CLAUDE_CODE_TMPDIR. Never copies real
 // user data (SPEC §20, S13).
 //
-// Owner: G3 (harness adapters). Imports: stdlib, internal/platform.
+// Owner: G3 (harness adapters). Imports: stdlib, internal/harness/claude
+// (RegistryEntry), internal/platform.
 // Test-only.
 package claudetest

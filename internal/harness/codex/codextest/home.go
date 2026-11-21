@@ -61,11 +61,18 @@ func newHome(t testing.TB, dir string, o Options) *Home {
 	if o.Rollouts < 0 {
 		t.Fatalf("codextest: Options.Rollouts=%d is negative", o.Rollouts)
 	}
+	cwd := filepath.Join(filepath.Dir(home), "codextest-workspace")
+	if o.Cwd != "" {
+		if !filepath.IsAbs(o.Cwd) {
+			t.Fatalf("codextest: Options.Cwd must be absolute (Codex records absolute cwds), got %q", o.Cwd)
+		}
+		cwd = filepath.Clean(o.Cwd)
+	}
 	g := &generator{
 		t:    t,
 		home: home,
 		o:    o,
-		cwd:  filepath.Join(filepath.Dir(home), "codextest-workspace"),
+		cwd:  cwd,
 		last: time.Now().Add(-o.RolloutAge).UTC().Truncate(time.Millisecond),
 	}
 	mkdirs(t, home, home, homePerm)

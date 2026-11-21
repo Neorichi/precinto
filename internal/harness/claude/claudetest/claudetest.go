@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/precinto/precinto/internal/harness/claude"
 )
 
 // Layout is a fake Claude installation.
@@ -70,6 +72,12 @@ func (l *Layout) AppendFragment(t testing.TB, s Session, lines int) string {
 func (l *Layout) WriteRegistry(t testing.TB, pid int, sid, cwd, status string, valid bool) string {
 	t.Helper()
 	return writeRegistry(t, l, pid, sid, cwd, status, valid)
+}
+
+// WriteRegistryEntry writes sessions/<pid>.json with every field of e and returns its path.
+func (l *Layout) WriteRegistryEntry(t testing.TB, e claude.RegistryEntry) string {
+	t.Helper()
+	return writeRegistryEntry(t, l, e)
 }
 
 // WriteHistory appends history.jsonl lines for (project, sid).

@@ -63,11 +63,11 @@ type Ledger struct {
 }
 
 // Open returns the ledger rooted at dir.
-func Open(dir string) *Ledger { panic("unimplemented: ledger.Open") }
+func Open(dir string) *Ledger { return &Ledger{Dir: dir} }
 
 // Append writes e (V and T filled if zero) with fsx.AppendLine. It creates
 // the session file on the first event.
-func (l *Ledger) Append(e Event) error { panic("unimplemented: ledger.Ledger.Append") }
+func (l *Ledger) Append(e Event) error { return l.appendEvent(e) }
 
 // Session is the folded view of one session's events.
 type Session struct {
@@ -97,30 +97,32 @@ type Session struct {
 }
 
 // Managed reports whether the session has at least one managed root.
-func (s Session) Managed() bool { panic("unimplemented: ledger.Session.Managed") }
+func (s Session) Managed() bool { return len(s.RootIDs) > 0 }
 
 // Warm reports whether the session is non-current for a process that may
 // still be alive: its latest end has reason clear|resume, or that process
 // has a newer start (D20). Such a unit becomes sealable once stable.
-func (s Session) Warm() bool { panic("unimplemented: ledger.Session.Warm") }
+func (s Session) Warm() bool {
+	return s.Ended && (s.EndReason == "clear" || s.EndReason == "resume")
+}
 
 // Get folds the ledger of one session.
-func (l *Ledger) Get(harness, sid string) (Session, error) { panic("unimplemented: ledger.Ledger.Get") }
+func (l *Ledger) Get(harness, sid string) (Session, error) { return l.get(harness, sid) }
 
 // List folds every session ledger of harness.
-func (l *Ledger) List(harness string) ([]Session, error) { panic("unimplemented: ledger.Ledger.List") }
+func (l *Ledger) List(harness string) ([]Session, error) { return l.list(harness) }
 
 // ByProc returns the sessions whose CurrentProc is id (D20: a process that
 // moved to another session no longer owns the old one).
 func (l *Ledger) ByProc(harness string, id platform.ProcID) ([]Session, error) {
-	panic("unimplemented: ledger.Ledger.ByProc")
+	return l.byProc(harness, id)
 }
 
 // Snapshot returns the raw ledger bytes of a session and their length n,
 // read once without modifying the file, for capsule.Manifest.Ledger before
 // the seal (SPEC §10.3 step 4).
 func (l *Ledger) Snapshot(harness, sid string) (raw []byte, n int64, err error) {
-	panic("unimplemented: ledger.Ledger.Snapshot")
+	return l.snapshot(harness, sid)
 }
 
 // Archive is called after the generation holding a Snapshot of length n is
@@ -129,7 +131,7 @@ func (l *Ledger) Snapshot(harness, sid string) (raw []byte, n int64, err error) 
 // atomically keeps only the bytes after n (they go into the next
 // generation), so no event is lost.
 func (l *Ledger) Archive(harness, sid string, n int64) error {
-	panic("unimplemented: ledger.Ledger.Archive")
+	return l.archive(harness, sid, n)
 }
 
 // Taint computes the roots a set of directories and paths touch: every root
@@ -157,15 +159,15 @@ type Index struct {
 }
 
 // OpenIndex returns the index file of harness under dir.
-func OpenIndex(dir, harness string) *Index { panic("unimplemented: ledger.OpenIndex") }
+func OpenIndex(dir, harness string) *Index { return openIndex(dir, harness) }
 
 // Put merges p into the index atomically.
-func (x *Index) Put(p Project) error { panic("unimplemented: ledger.Index.Put") }
+func (x *Index) Put(p Project) error { return x.put(p) }
 
 // All returns every project.
-func (x *Index) All() ([]Project, error) { panic("unimplemented: ledger.Index.All") }
+func (x *Index) All() ([]Project, error) { return x.all() }
 
 // Lookup returns the project of (configDir, slug).
 func (x *Index) Lookup(configDir, slug string) (Project, bool, error) {
-	panic("unimplemented: ledger.Index.Lookup")
+	return x.lookup(configDir, slug)
 }

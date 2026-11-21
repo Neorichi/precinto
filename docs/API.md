@@ -3511,6 +3511,9 @@ func (l *Layout) WriteJob(t testing.TB, id, sid, state string)
 // WriteRegistry writes sessions/<pid>.json (valid=false writes a truncated file).
 func (l *Layout) WriteRegistry(t testing.TB, pid int, sid, cwd, status string, valid bool) string
 
+// WriteRegistryEntry writes sessions/<pid>.json with every field of e and returns its path.
+func (l *Layout) WriteRegistryEntry(t testing.TB, e claude.RegistryEntry) string
+
 // WriteSession writes the session files and returns every path created.
 func (l *Layout) WriteSession(t testing.TB, s Session) []string
 
@@ -3542,6 +3545,18 @@ type Session struct {
 > auth.json and config.toml placeholders) for tests. Never touches ~/.codex.
 
 ```go
+// Appender simulates Codex's rollout writer: it keeps the rollout open with
+// O_APPEND and appends one Codex-shaped record every interval; Stop ends it.
+type Appender struct {
+	// contains filtered or unexported fields
+}
+
+// StartAppender starts an appender on path.
+func StartAppender(t testing.TB, path string, every time.Duration) *Appender
+
+// Stop stops the appender and returns the number of records written.
+func (a *Appender) Stop() int
+
 // Home is a fake Codex home.
 type Home struct {
 	Dir string
@@ -3563,6 +3578,7 @@ type Options struct {
 	WithWAL    bool // write state_5.sqlite-wal next to state_5.sqlite
 	WithLocks  bool // create thread-writer-locks/<id>.lock files (unheld)
 	RolloutAge time.Duration
+	Cwd        string // cwd recorded in session_meta; "" = <parent of the home>/codextest-workspace
 }
 ```
 

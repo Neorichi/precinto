@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/precinto/precinto/internal/harness/claude"
 )
 
 // writeRegistry writes $CC/sessions/<pid>.json. A valid entry is replaced
@@ -46,6 +48,61 @@ func writeRegistry(t testing.TB, l *Layout, pid int, sid, cwd, status string, va
 		data = data[:len(data)/2]
 	}
 	writeReplace(t, cfg, path, data)
+	return path
+}
+
+// registryEntryFile is sessions/<pid>.json as WriteRegistryEntry writes it:
+// startedAt is omitted when zero (LIVE-5), status and waitingFor when empty
+// (Claude omits status until the first turn).
+type registryEntryFile struct {
+	PID        int    `json:"pid"`
+	SessionID  string `json:"sessionId"`
+	Cwd        string `json:"cwd"`
+	StartedAt  *int64 `json:"startedAt,omitempty"` // Unix milliseconds
+	ProcStart  string `json:"procStart"`
+	Kind       string `json:"kind"`
+	Entrypoint string `json:"entrypoint"`
+	Status     string `json:"status,omitempty"`
+	WaitingFor string `json:"waitingFor,omitempty"`
+}
+
+// writeRegistryEntry writes $CC/sessions/<pid>.json from every field of e:
+// Valid=false writes the first half of the JSON (half-written, LIVE-9); a
+// non-zero Mtime is applied to the file. e.Path is ignored: the path is
+// always sessions/<e.PID>.json and is returned.
+func writeRegistryEntry(t testing.TB, l *Layout, e claude.RegistryEntry) string {
+	t.Helper()
+	if l == nil {
+		t.Fatalf("claudetest: nil *Layout")
+	}
+	cfg := baseDir(t, "ConfigDir", l.ConfigDir)
+	if e.PID <= 0 {
+		t.Fatalf("claudetest: WriteRegistryEntry needs a positive pid, got %d", e.PID)
+	}
+	dir := filepath.Join(cfg, "sessions")
+	mkdirs(t, cfg, dir)
+	ensureRegistryKey(t, cfg, dir, e.PID)
+	rec := registryEntryFile{
+		PID:        e.PID,
+		SessionID:  e.SessionID,
+		Cwd:        e.Cwd,
+		ProcStart:  "claudetest-procstart-" + strconv.Itoa(e.PID),
+		Kind:       e.Kind,
+		Entrypoint: e.Entrypoint,
+		Status:     e.Status,
+		WaitingFor: e.WaitingFor,
+	}
+	if !e.StartedAt.IsZero() {
+		ms := e.StartedAt.UnixMilli()
+		rec.StartedAt = &ms
+	}
+	data := encodeJSON(t, rec)
+	if !e.Valid {
+		data = data[:len(data)/2]
+	}
+	path := filepath.Join(dir, strconv.Itoa(e.PID)+".json")
+	writeReplace(t, cfg, path, data)
+	setMtime(t, path, e.Mtime)
 	return path
 }
 

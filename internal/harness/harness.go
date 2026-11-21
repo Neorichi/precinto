@@ -202,7 +202,7 @@ type UnitRef struct {
 }
 
 // Ref returns the reference of u.
-func (u Unit) Ref() UnitRef { panic("unimplemented: harness.Unit.Ref") }
+func (u Unit) Ref() UnitRef { return unitRef(u) }
 
 // Scope limits a scan.
 type Scope struct {
@@ -354,13 +354,13 @@ type Adapter interface {
 }
 
 // Register adds an adapter (called from cmd/precinto wiring).
-func Register(a Adapter) { panic("unimplemented: harness.Register") }
+func Register(a Adapter) { register(a) }
 
 // Get returns the adapter for id.
-func Get(id ID) (Adapter, bool) { panic("unimplemented: harness.Get") }
+func Get(id ID) (Adapter, bool) { return lookup(id) }
 
 // All lists registered adapters in registration order.
-func All() []Adapter { panic("unimplemented: harness.All") }
+func All() []Adapter { return registered() }
 
 // Inventory is a data-driven harness description, inventories/<id>.toml
 // (schema 1, D33, HA20). Built-in adapters also read theirs for process
@@ -418,21 +418,21 @@ type ResumeSpec struct {
 
 // LoadInventory parses inventories/<name>.toml from fsys and validates it.
 func LoadInventory(fsys fs.FS, name string) (Inventory, error) {
-	panic("unimplemented: harness.LoadInventory")
+	return loadInventory(fsys, name)
 }
 
 // LoadInventories parses every *.toml in fsys.
 func LoadInventories(fsys fs.FS) ([]Inventory, error) {
-	panic("unimplemented: harness.LoadInventories")
+	return loadInventories(fsys)
 }
 
 // MatchProcess reports whether p is a process of inv.
 func (inv Inventory) MatchProcess(p platform.ProcInfo) bool {
-	panic("unimplemented: harness.Inventory.MatchProcess")
+	return matchProcess(inv, p)
 }
 
 // Classify returns the launch mode of argv (argv[0] excluded) per the
 // passthrough/direct lists, and whether stdin/stdout are terminals.
 func (inv Inventory) Classify(args []string, stdinTTY, stdoutTTY bool) LaunchMode {
-	panic("unimplemented: harness.Inventory.Classify")
+	return classify(inv, args, stdinTTY, stdoutTTY)
 }

@@ -33,8 +33,12 @@ default = "~/Library/Caches/claude-cli-nodejs"   # linux: $XDG_CACHE_HOME/claude
 
 [process]
 # Never match on p_comm: Claude's kernel name is its version string (IM9).
+# The native installer runs ~/.local/share/claude/versions/<version>; an npm
+# install runs node with the `claude` bin script as argv[1] (argv_regex is
+# checked against argv[1] only when argv[0] is an interpreter such as node).
 exe_basenames = ["claude"]
 exe_paths = ["~/.local/share/claude/versions/*", "~/.claude/local/*"]
+argv_regex = ["(^|/)claude$"]
 
 [resume]
 flags = ["--resume", "-r"]

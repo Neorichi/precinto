@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
@@ -76,13 +77,13 @@ type Engine struct {
 // Decide evaluates s plus adapter-supplied evidence. It adds ledger-proc,
 // lease and stability evidence itself.
 func (e *Engine) Decide(ctx context.Context, s Subject, extra []Evidence) (Verdict, error) {
-	panic("unimplemented: live.Engine.Decide")
+	return e.decide(ctx, s, extra)
 }
 
 // StillQuiet re-checks, immediately before an unlink, that s shows no new
 // evidence and its files keep their snapshot identity (SPEC §10.3 step 6).
 func (e *Engine) StillQuiet(ctx context.Context, s Subject, snaps map[string]fsx.Stat) (bool, error) {
-	panic("unimplemented: live.Engine.StillQuiet")
+	return e.stillQuiet(ctx, s, snaps)
 }
 
 // Observer tracks file identities across observations on the monotonic
@@ -92,19 +93,22 @@ func (e *Engine) StillQuiet(ctx context.Context, s Subject, snaps map[string]fsx
 // at once; a CLI sweep without the daemon waits Q.
 type Observer struct {
 	clock platform.Clock
+	mu    sync.Mutex
+	units map[string]*history   // stability history per unit key
+	holds map[string]*holdState // hold-cap tracking per unit key
 }
 
 // NewObserver returns an observer using c.
-func NewObserver(c platform.Clock) *Observer { panic("unimplemented: live.NewObserver") }
+func NewObserver(c platform.Clock) *Observer { return newObserver(c) }
 
 // Observe records the current identities of paths under key and reports
 // whether they have been stable for at least q.
 func (o *Observer) Observe(key string, paths []string, q time.Duration) (stable bool, err error) {
-	panic("unimplemented: live.Observer.Observe")
+	return o.observe(key, paths, q)
 }
 
 // Forget drops the history of key.
-func (o *Observer) Forget(key string) { panic("unimplemented: live.Observer.Forget") }
+func (o *Observer) Forget(key string) { o.forget(key) }
 
 // ErrLeaseHeld is returned by sealers that find a lease.
 var ErrLeaseHeld = errors.New("live: unit is leased by a running launch")
@@ -122,30 +126,34 @@ type Lease struct {
 // Held is a set of leases held by this process (shared flocks on
 // state/leases/<key>.lease plus a JSON description).
 type Held struct {
-	locks []*fsx.Lock
+	mu       sync.Mutex
+	dir      string
+	desc     Lease // written for every key (Key filled per lease)
+	leases   []*heldLease
+	released bool
 }
 
 // Acquire takes shared leases for every key (creating lease files 0600) and
 // records proc. Leases on the same key by several wrappers coexist.
-func Acquire(dir string, keys []string, l Lease) (*Held, error) { panic("unimplemented: live.Acquire") }
+func Acquire(dir string, keys []string, l Lease) (*Held, error) { return acquire(dir, keys, l) }
 
 // Add takes shared leases on more keys (units resolved after the launch
 // started, e.g. by a restore Selector) before their plaintext is placed.
-func (h *Held) Add(keys ...string) error { panic("unimplemented: live.Held.Add") }
+func (h *Held) Add(keys ...string) error { return h.add(keys...) }
 
 // SetChild records the harness child pid in the lease descriptions.
-func (h *Held) SetChild(child platform.ProcID) error { panic("unimplemented: live.Held.SetChild") }
+func (h *Held) SetChild(child platform.ProcID) error { return h.setChild(child) }
 
 // Inheritable returns the locked descriptors so a wrapper that execs the
 // harness directly (--no-pty exec mode) can clear FD_CLOEXEC and keep the
 // lease for the harness's lifetime.
-func (h *Held) Inheritable() []*os.File { panic("unimplemented: live.Held.Inheritable") }
+func (h *Held) Inheritable() []*os.File { return h.inheritable() }
 
 // Release drops every lease.
-func (h *Held) Release() error { panic("unimplemented: live.Held.Release") }
+func (h *Held) Release() error { return h.release() }
 
 // Probe reports whether any process holds a lease on key, and the lease
 // descriptions found; an inode mismatch or probe error reports held=true.
 func Probe(dir, key string) (held bool, leases []Lease, err error) {
-	panic("unimplemented: live.Probe")
+	return probe(dir, key)
 }

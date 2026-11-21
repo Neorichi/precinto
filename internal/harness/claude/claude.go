@@ -10,7 +10,7 @@ import (
 )
 
 // New returns the adapter.
-func New() harness.Adapter { panic("unimplemented: claude.New") }
+func New() harness.Adapter { return newAdapter() }
 
 // RegistryEntry is one ~/.claude/sessions/<pid>.json (Claude's live-session
 // registry). Fields are read best-effort; Valid=false means the file was
@@ -32,12 +32,12 @@ type RegistryEntry struct {
 
 // ReadRegistry reads every registry file of a config dir.
 func ReadRegistry(configDir string) ([]RegistryEntry, error) {
-	panic("unimplemented: claude.ReadRegistry")
+	return readRegistry(configDir)
 }
 
 // Busy reports whether an entry says the session is mid-turn (status busy
 // and WaitingFor empty, HA7).
-func (r RegistryEntry) Busy() bool { panic("unimplemented: claude.RegistryEntry.Busy") }
+func (r RegistryEntry) Busy() bool { return r.busy() }
 
 // Job is a background/supervised session record ($CC/jobs/<id>/state.json).
 type Job struct {
@@ -48,7 +48,7 @@ type Job struct {
 }
 
 // ReadJobs reads job records of a config dir (D25, R11).
-func ReadJobs(configDir string) ([]Job, error) { panic("unimplemented: claude.ReadJobs") }
+func ReadJobs(configDir string) ([]Job, error) { return readJobs(configDir) }
 
 // HistoryLine is the content-free view of one history.jsonl line; Raw is
 // kept only in memory while rotating and is sealed, never logged.
@@ -63,7 +63,7 @@ type HistoryLine struct {
 
 // ParseHistoryLine parses one line without retaining anything but the
 // fields above.
-func ParseHistoryLine(b []byte) HistoryLine { panic("unimplemented: claude.ParseHistoryLine") }
+func ParseHistoryLine(b []byte) HistoryLine { return parseHistoryLine(b) }
 
 // TranscriptFacts are paths and ids found in a transcript (never content).
 type TranscriptFacts struct {
@@ -80,7 +80,7 @@ type TranscriptFacts struct {
 
 // ScanTranscript streams a transcript and extracts TranscriptFacts.
 func ScanTranscript(ctx context.Context, path string) (TranscriptFacts, error) {
-	panic("unimplemented: claude.ScanTranscript")
+	return scanTranscript(ctx, path)
 }
 
 // Links are the JSONL linkage facts the placement table needs (SPEC §11.3,
@@ -100,19 +100,21 @@ type Links struct {
 // capsule version C or the existing file F) and returns its Links, so
 // internal/sweep never parses Claude records itself.
 func ScanLinks(ctx context.Context, r io.Reader) (Links, error) {
-	panic("unimplemented: claude.ScanLinks")
+	return scanLinks(ctx, r)
 }
 
 // SettingsJSON returns the inline JSON passed with --settings for managed
 // launches (D32, HA12): idleCompaction=false, awaySummaryEnabled=false,
 // precomputeCompactionEnabled=false.
-func SettingsJSON(p config.Policy) string { panic("unimplemented: claude.SettingsJSON") }
+func SettingsJSON(p config.Policy) string { return settingsJSON(p) }
 
 // ParseResume classifies Claude resume flags (argv excludes argv[0]).
-func ParseResume(args []string) harness.Resume { panic("unimplemented: claude.ParseResume") }
+func ParseResume(args []string) harness.Resume {
+	return parseResume(args, resumeFlags, continueFlags, forkFlags)
+}
 
 // CleanupPeriodDays returns Claude's effective cleanupPeriodDays from the
 // user settings of configDir (default 30) for the retention rules of D14.
 func CleanupPeriodDays(configDir string) (int, error) {
-	panic("unimplemented: claude.CleanupPeriodDays")
+	return cleanupPeriodDays(configDir)
 }
