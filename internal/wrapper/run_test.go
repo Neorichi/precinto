@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/wrapper"
 )
@@ -52,15 +55,7 @@ func startRunRig(t *testing.T, b *fakeBackend, tweak func(*wrapper.Options)) *ru
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
-	r.res = startRun(ctx, o)
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-r.res:
-		case <-time.After(3 * waitTimeout):
-			t.Error("Run did not end after cancel")
-		}
-	})
+	r.res = startRunCtx(t, ctx, o)
 	r.ready = parseReady(r.term.waitForRe(readyRe, 0))
 	return r
 }
@@ -78,8 +73,7 @@ func closedResult(res runResult) <-chan runResult {
 	return ch
 }
 
-// waitSubscribed waits until the wrapper subscribed (and, after the child
-// started, registered).
+// waitRegistered waits until the wrapper registered its child.
 func (b *fakeBackend) waitRegistered(t *testing.T) ipc.RegisterReq {
 	t.Helper()
 	deadline := time.Now().Add(waitTimeout)
@@ -93,11 +87,13 @@ func (b *fakeBackend) waitRegistered(t *testing.T) ipc.RegisterReq {
 	return ipc.RegisterReq{}
 }
 
+const acmeFolder = "/nonexistent/fixture/work/acme" // managedPlan's folder, as the overlay shows it
+
 func TestRunOrchestratesAndPropagatesExitCode(t *testing.T) {
 	bins := helpers(t)
-	plan := managedPlan("generic", bins.tui)
+	plan := managedPlan("generic", bins.child()...)
 	plan.Sync = []harness.Selector{{Kind: "claude-session"}}
-	plan.Notices = []string{"precinto: synthetic notice"}
+	plan.Notices = []string{string(ui.MsgSettingsKept)} // a ui.MsgID the wrapper renders (CC-20)
 	b := newFakeBackend(plan)
 	b.seal = wrapper.SealSummary{SID: "00000000-0000-4000-8000-000000000001", Files: 3, Bytes: 2048}
 	finished := false
@@ -142,8 +138,8 @@ func TestRunOrchestratesAndPropagatesExitCode(t *testing.T) {
 	if child.PID != r.ready.pid || !released {
 		t.Fatalf("lease child=%+v released=%v", child, released)
 	}
-	if b.launched.PID != r.ready.pid || b.sealed.PID != r.ready.pid {
-		t.Fatalf("RecordLaunch/SealAfterExit child = %+v / %+v", b.launched, b.sealed)
+	if b.launchedChild().PID != r.ready.pid || b.sealed.PID != r.ready.pid {
+		t.Fatalf("RecordLaunch/SealAfterExit child = %+v / %+v", b.launchedChild(), b.sealed)
 	}
 	if !finished {
 		t.Error("plan.Finish did not run with the exit code")
@@ -152,10 +148,10 @@ func TestRunOrchestratesAndPropagatesExitCode(t *testing.T) {
 		t.Errorf("unregister = %+v", b.srv.unregisters)
 	}
 	errOut := r.stderr.String()
-	if !strings.Contains(errOut, "precinto: synthetic notice") {
-		t.Errorf("plan notice not printed: %q", errOut)
+	if want := ui.Format(ui.MsgSettingsKept, ui.Vars{}); !strings.Contains(errOut, want) {
+		t.Errorf("plan notice not rendered: %q lacks %q", errOut, want)
 	}
-	want := ui.Format(ui.MsgSealedOK, ui.Vars{SID: b.seal.SID, Files: 3, Bytes: 2048, Folder: "/nonexistent/fixture/work/acme", Idle: config.Default().Policy.IdleSoft.D()})
+	want := ui.Format(ui.MsgSealedOK, ui.Vars{SID: b.seal.SID, Files: 3, Bytes: 2048, Folder: acmeFolder, Idle: config.Default().Policy.IdleSoft.D()})
 	if !strings.Contains(errOut, want) {
 		t.Errorf("stderr %q lacks the C6 line %q", errOut, want)
 	}
@@ -166,7 +162,7 @@ func TestRunOrchestratesAndPropagatesExitCode(t *testing.T) {
 
 func TestRunLockAndUnlockEvents(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	m := r.term.mark()
@@ -205,7 +201,7 @@ func TestRunLockAndUnlockEvents(t *testing.T) {
 
 func TestRunOverlayEnterUnlocksInThisTerminal(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	gotSecret := make(chan string, 1)
 	b.srv.unlockFn = func(ctx context.Context, req ipc.UnlockReq, h ipc.UIHandler) (ipc.UnlockResp, error) {
 		if err := h.Display("precinto: relayed message"); err != nil {
@@ -242,19 +238,48 @@ func TestRunOverlayEnterUnlocksInThisTerminal(t *testing.T) {
 	if strings.Contains(r.term.output(), "pw-synthetic") {
 		t.Fatal("the passphrase was echoed or reached the child")
 	}
-	b.srv.mu.Lock()
-	unlocks := append([]ipc.UnlockReq(nil), b.srv.unlocks...)
-	b.srv.mu.Unlock()
+	unlocks := b.srv.unlockRequests()
 	if len(unlocks) != 1 || !unlocks[0].TTY || len(unlocks[0].RootIDs) != 1 || unlocks[0].RootIDs[0] != "root-acme" {
 		t.Fatalf("unlock requests = %+v", unlocks)
+	}
+	if len(unlocks[0].AgentMarkers) != 0 {
+		t.Fatalf("agent markers %v claimed from an environment without any", unlocks[0].AgentMarkers)
 	}
 	r.term.typeKeys("q")
 	r.finish()
 }
 
+// The overlay's unlock request carries the wrapper's own agent markers: a
+// self-restricting claim the daemon adds to its own checks (CC-11).
+func TestRunOverlayUnlockClaimsAgentMarkers(t *testing.T) {
+	bins := helpers(t)
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
+	var env paths.Env
+	r := startRunRig(t, b, func(o *wrapper.Options) {
+		o.Env = o.Env.With("CODEX_THREAD_ID", "synthetic")
+		env = o.Env
+	})
+	b.waitRegistered(t)
+	m := r.term.mark()
+	b.srv.publish(ipc.Event{Kind: ipc.EventLocked, Reason: string(ui.ReasonManual)})
+	r.term.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m)
+	r.term.typeKeys("\r")
+	r.term.waitFor(ui.Format(ui.MsgUnlockCancelled, ui.Vars{Folder: acmeFolder}), m)
+	unlocks := b.srv.unlockRequests()
+	want := paths.AgentMarkers(env)
+	if len(want) == 0 || !slices.Contains(want, "CODEX_THREAD_ID") {
+		t.Fatalf("paths.AgentMarkers = %v, want CODEX_THREAD_ID among them", want)
+	}
+	if len(unlocks) != 1 || !slices.Equal(unlocks[0].AgentMarkers, want) {
+		t.Fatalf("unlock requests %+v, want agent markers %v", unlocks, want)
+	}
+	b.srv.publish(ipc.Event{Kind: ipc.EventEnd})
+	r.finish()
+}
+
 func TestRunOverlayUnlockCancelledStaysLocked(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	b.srv.unlockFn = func(ctx context.Context, req ipc.UnlockReq, h ipc.UIHandler) (ipc.UnlockResp, error) {
 		_, err := h.Secret("secret:")
 		if errors.Is(err, ui.ErrCancelled) {
@@ -270,7 +295,7 @@ func TestRunOverlayUnlockCancelledStaysLocked(t *testing.T) {
 	r.term.typeKeys("\r")
 	r.term.waitFor("secret:", lockMark)
 	r.term.typeKeys("\x03")
-	r.term.waitFor(ui.Format(ui.MsgUnlockCancelled, ui.Vars{Folder: "/nonexistent/fixture/work/acme"}), lockMark)
+	r.term.waitFor(ui.Format(ui.MsgUnlockCancelled, ui.Vars{Folder: acmeFolder}), lockMark)
 	// Still locked: keys are dropped.
 	r.term.typeKeys("o")
 	r.term.never("OUT-1", lockMark, 300*time.Millisecond)
@@ -281,17 +306,52 @@ func TestRunOverlayUnlockCancelledStaysLocked(t *testing.T) {
 	}
 }
 
+// TestRunOverlayNamesTheFolderFactor: the key help names the first usable
+// factor the folder's lock event carries (ui.FactorName, CC-40), the Mac
+// password only where its dialog can appear, and none when the event
+// carries no factor (C4.keys.plain).
+func TestRunOverlayNamesTheFolderFactor(t *testing.T) {
+	bins := helpers(t)
+	cases := []struct {
+		name    string
+		factors []string
+		gui     bool
+		want    string
+	}{
+		{"passphrase only", []string{"passphrase"}, true, ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "precinto passphrase"})},
+		{"secure enclave with a GUI", []string{"se", "passphrase"}, true, ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "Mac password"})},
+		{"secure enclave without a GUI", []string{"se", "passphrase"}, false, ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "precinto passphrase"})},
+		{"security key", []string{"plugin"}, false, ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "security key"})},
+		{"no factor known", nil, true, ui.Format(ui.MsgOverlayKeysPlain, ui.Vars{})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer wrapper.SetGUI(tc.gui)()
+			b := newFakeBackend(managedPlan("generic", bins.child()...))
+			r := startRunRig(t, b, nil)
+			b.waitRegistered(t)
+			m := r.term.mark()
+			b.srv.publish(ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}, Reason: string(ui.ReasonIdle), Factors: tc.factors})
+			r.term.waitFor(tc.want, m)
+			if tc.factors == nil && strings.Contains(r.term.since(m), "unlock (") {
+				t.Fatal("a factor was named although the event carried none")
+			}
+			b.srv.publish(ipc.Event{Kind: ipc.EventEnd})
+			r.finish()
+		})
+	}
+}
+
 // TestRunEndEventEndsTheChildSession covers the end event (SPEC §12.7 step
 // 4) and SEC-30 for the PTY child: the child and the helper it left in its
 // session end; a process of the test's own session survives; the terminal
 // is reset and cleared; C5 is printed.
 func TestRunEndEventEndsTheChildSession(t *testing.T) {
 	bins := helpers(t)
-	childLife, sibLife := newLifeline(t), newLifeline(t)
-	sib := testSibling(t, bins.tui, sibLife)
-	t.Cleanup(func() { _ = sib.Process.Kill(); _ = sib.Wait() })
+	childLife, sibLife := newProbe(t), newProbe(t)
+	testSibling(t, bins, sibLife)
 
-	plan := managedPlan(harness.ClaudeCode, bins.tui)
+	plan := managedPlan(harness.ClaudeCode, bins.childWithProbe()...)
 	plan.Resume = harness.Resume{Kind: harness.ResumeSID, Value: "00000000-0000-4000-8000-0000000000aa"}
 	b := newFakeBackend(plan)
 	b.lease = &fakeLease{files: []*os.File{childLife.w}}
@@ -307,10 +367,7 @@ func TestRunEndEventEndsTheChildSession(t *testing.T) {
 	b.srv.publish(ipc.Event{Kind: ipc.EventLocked, Reason: string(ui.ReasonIdle)})
 	r.term.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m)
 	endMark := r.term.mark()
-	// An end for another session is ignored.
-	b.srv.publish(ipc.Event{Kind: ipc.EventEnd, SIDs: []string{"00000000-0000-4000-8000-0000000000bb"}})
-	time.Sleep(200 * time.Millisecond)
-	b.srv.publish(ipc.Event{Kind: ipc.EventEnd, SIDs: []string{plan.Resume.Value}, Reason: string(ui.ReasonIdle)})
+	b.srv.publish(ipc.Event{Kind: ipc.EventEnd, RootIDs: []string{"root-acme"}, SIDs: []string{plan.Resume.Value}, Reason: string(ui.ReasonIdle)})
 	r.term.waitFor(ui.Format(ui.MsgOverlayEnding, ui.Vars{}), endMark)
 	res := r.finish()
 	if res.code != 143 {
@@ -325,7 +382,7 @@ func TestRunEndEventEndsTheChildSession(t *testing.T) {
 	// clear_terminal_on_end: reset and clear, so nothing of it stays.
 	r.term.waitFor(specReset+"\x1b[H\x1b[2J\x1b[3J", endMark)
 	errOut := r.stderr.String()
-	c5 := ui.Format(ui.MsgEnded, ui.Vars{Folder: "/nonexistent/fixture/work/acme", N: 1, Reason: ui.ReasonIdle,
+	c5 := ui.Format(ui.MsgEnded, ui.Vars{Folder: acmeFolder, N: 1, Reason: ui.ReasonIdle,
 		Idle: config.Default().Policy.IdleSoft.D(), Resume: "claude --resume " + plan.Resume.Value})
 	if !strings.Contains(errOut, c5) {
 		t.Errorf("stderr %q lacks C5 %q", errOut, c5)
@@ -335,9 +392,33 @@ func TestRunEndEventEndsTheChildSession(t *testing.T) {
 	}
 }
 
+// TestRunEndEventsAreAddressed is D71 on the wrapper's side: an end event
+// on the wrapper's own subscription that names one of its folders ends the
+// child, even while its own sid is unknown and whatever sids the event
+// carries; one that names only other folders is not for it.
+func TestRunEndEventsAreAddressed(t *testing.T) {
+	bins := helpers(t)
+	b := newFakeBackend(managedPlan(harness.ClaudeCode, bins.child()...)) // a new session: sid unknown
+	r := startRunRig(t, b, nil)
+	b.waitRegistered(t)
+	m := r.term.mark()
+	b.srv.publish(ipc.Event{Kind: ipc.EventEnd, RootIDs: []string{"root-other"}, Reason: string(ui.ReasonIdle)})
+	r.term.never(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m, 300*time.Millisecond)
+	r.term.typeKeys("o")
+	r.term.waitFor("OUT-1", m) // still running, unlocked
+	b.srv.publish(ipc.Event{Kind: ipc.EventEnd, RootIDs: []string{"root-acme"}, SIDs: []string{"00000000-0000-4000-8000-0000000000cc"}, Reason: string(ui.ReasonManual)})
+	r.term.waitFor(ui.Format(ui.MsgOverlayEnding, ui.Vars{}), m)
+	if res := r.finish(); res.code != 143 {
+		t.Fatalf("exit code %d, want 143 (ended)", res.code)
+	}
+	if !strings.Contains(r.stderr.String(), "ended 1 session(s) after locked by you") {
+		t.Errorf("C5 missing: %q", r.stderr.String())
+	}
+}
+
 func TestRunCtrlDOnTheOverlayEndsTheSession(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	m := r.term.mark()
@@ -356,16 +437,20 @@ func TestRunCtrlDOnTheOverlayEndsTheSession(t *testing.T) {
 	}
 }
 
+// TestRunSubscriptionLossLocksUntilUnlocked: a lost subscription shows the
+// lock screen with its cause (CC-38: ReasonAgent); after the reconnect the
+// wrapper relies on the new stream's initial state (D71): a daemon that
+// restarted with the folder locked keeps it locked until an unlocked event.
 func TestRunSubscriptionLossLocksUntilUnlocked(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	m := r.term.mark()
-	b.srv.dropSubscriptions() // the stream closes: a daemon restart
+	b.srv.setState("root-acme", string(ui.ReasonStart)) // the restarted daemon has every folder locked
+	b.srv.dropSubscriptions()                           // the stream closes: a daemon restart
 	r.term.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m)
 	r.term.waitFor("agent isn't running", m)
-	// The overlay names the cause (CC-38: ReasonAgent).
 	r.term.waitFor(ui.ReasonText(ui.ReasonAgent, 0), m)
 	r.term.typeKeys("o")
 	deadline := time.Now().Add(waitTimeout)
@@ -375,7 +460,8 @@ func TestRunSubscriptionLossLocksUntilUnlocked(t *testing.T) {
 	if len(b.srv.registrations()) < 2 {
 		t.Fatal("the wrapper did not register again after reconnecting")
 	}
-	// Reconnected, yet still locked until an unlocked event (SPEC §15.3).
+	// Reconnected to a locked folder: still locked, now for its own reason.
+	r.term.waitFor(ui.ReasonText(ui.ReasonStart, 0), m)
 	r.term.never("OUT-1", m, 400*time.Millisecond)
 	unlockMark := r.term.mark()
 	b.srv.publish(ipc.Event{Kind: ipc.EventUnlocked})
@@ -386,32 +472,81 @@ func TestRunSubscriptionLossLocksUntilUnlocked(t *testing.T) {
 	r.finish()
 }
 
+// TestRunReconnectToAnUnlockedFolderUnlocks: the new stream's initial state
+// says the folder is unlocked, so the lock screen of the loss goes away
+// without a new presence prompt (D71, SPEC §15.3).
+func TestRunReconnectToAnUnlockedFolderUnlocks(t *testing.T) {
+	bins := helpers(t)
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
+	r := startRunRig(t, b, nil)
+	b.waitRegistered(t)
+	m := r.term.mark()
+	r.term.typeKeys("o")
+	r.term.waitFor("OUT-1", m)
+	lostMark := r.term.mark()
+	b.srv.dropSubscriptions()
+	r.term.waitFor(ui.ReasonText(ui.ReasonAgent, 0), lostMark)
+	r.term.waitFor("WINCH 99x30", lostMark) // unlocked again by the initial state
+	r.term.typeKeys("o")
+	r.term.waitFor("OUT-2", lostMark)
+	if n := len(b.srv.unlockRequests()); n != 0 {
+		t.Fatalf("%d unlock request(s) after a reconnect to an unlocked folder", n)
+	}
+	r.term.typeKeys("q")
+	r.finish()
+}
+
 func TestRunHeartbeatTimeoutLocksLocally(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits for the heartbeat timeout")
 	}
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	m := r.term.mark()
 	start := time.Now()
-	b.srv.heartbeats.Store(false) // the daemon hangs: no event for 2 s (1 s in tests)
+	b.srv.heartbeats.Store(false) // the daemon hangs: no event for the heartbeat timeout
 	r.term.waitFor("agent isn't running", m)
-	if d := time.Since(start); d < 900*time.Millisecond {
-		t.Fatalf("locked after %v, before the heartbeat timeout", d)
+	if d := time.Since(start); d < testHeartbeat-100*time.Millisecond {
+		t.Fatalf("locked after %v, before the heartbeat timeout (%v)", d, testHeartbeat)
 	}
 	b.srv.heartbeats.Store(true)
 	r.cancel()
 	r.finish()
 }
 
+// TestRunRefusesAFolderLockedAtSubscribe: the subscription's initial state
+// (D71) says the folder is locked again (it locked right after the unlock):
+// the launch is refused before Prepare, the lease and the restore (exit 3,
+// C1.notify).
+func TestRunRefusesAFolderLockedAtSubscribe(t *testing.T) {
+	bins := helpers(t)
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
+	b.srv.setState("root-acme", string(ui.ReasonScreen))
+	prepared := false
+	b.plan.Prepare = func(context.Context) error { prepared = true; return nil }
+	tp := newTerm(t, 100, 30)
+	out := waitRun(t, startRun(t, runOptions(t, tp, b, &syncBuffer{})))
+	var ie *ipc.Error
+	if out.code != wrapper.ExitNotStarted || !errors.As(out.err, &ie) || ie.Code != ipc.CodeLocked || ie.ExitCode() != 3 {
+		t.Fatalf("Run = %d, %v; want ExitNotStarted with ipc.CodeLocked (exit 3)", out.code, out.err)
+	}
+	if ie.Msg != ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: acmeFolder}) {
+		t.Fatalf("refusal %q, want C1.notify", ie.Msg)
+	}
+	if prepared || b.called("AcquireLease") || b.called("RestoreSync") || strings.Contains(tp.output(), "READY") {
+		t.Fatalf("the launch went on after a locked initial state: prepared=%v calls %v", prepared, b.callList())
+	}
+}
+
 // TestRunLockDuringRestoreSyncAborts is the wrapper's part of REST-8: a
 // lock during the synchronous restore closes abort at once, and the child
-// is never started.
+// is never started, even when the folder unlocks again before the restore
+// returns (what it aborted is incomplete).
 func TestRunLockDuringRestoreSyncAborts(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	aborted := make(chan time.Duration, 1)
 	inRestore := make(chan struct{})
 	b.restoreSync = func(ctx context.Context, abort <-chan struct{}) (wrapper.RestoreSummary, error) {
@@ -420,13 +555,14 @@ func TestRunLockDuringRestoreSyncAborts(t *testing.T) {
 		select {
 		case <-abort:
 			aborted <- time.Since(start)
-			return wrapper.RestoreSummary{}, context.Canceled
+			b.srv.publish(ipc.Event{Kind: ipc.EventUnlocked, RootIDs: []string{"root-acme"}})
+			return wrapper.RestoreSummary{}, nil // a partial restore, reported as done
 		case <-time.After(waitTimeout):
 			return wrapper.RestoreSummary{}, nil
 		}
 	}
 	tp := newTerm(t, 100, 30)
-	res := startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{}))
+	res := startRun(t, runOptions(t, tp, b, &syncBuffer{}))
 	<-inRestore
 	b.srv.publish(ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}, Reason: string(ui.ReasonScreen)})
 	select {
@@ -454,17 +590,17 @@ var errConflict = errors.New("synthetic conflict")
 
 // TestRunRestoreErrorRefusesTheLaunch is the wrapper's part of CODX-7: a
 // RestoreSync failure (a Codex conflict) refuses the launch; the error
-// reaches cmd/precinto, which maps it to the exit code.
+// reaches cmd/precinto, which maps it to the exit code (CC-42).
 func TestRunRestoreErrorRefusesTheLaunch(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan(harness.Codex, bins.tui))
+	b := newFakeBackend(managedPlan(harness.Codex, bins.child()...))
 	b.restoreSync = func(ctx context.Context, abort <-chan struct{}) (wrapper.RestoreSummary, error) {
 		return wrapper.RestoreSummary{}, errConflict
 	}
 	tp := newTerm(t, 100, 30)
-	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
-	if !errors.Is(out.err, errConflict) || out.code == 0 {
-		t.Fatalf("Run = %d, %v; want the restore error", out.code, out.err)
+	out := waitRun(t, startRun(t, runOptions(t, tp, b, &syncBuffer{})))
+	if !errors.Is(out.err, errConflict) || out.code != wrapper.ExitNotStarted {
+		t.Fatalf("Run = %d, %v; want ExitNotStarted with the restore error", out.code, out.err)
 	}
 	if b.called("RecordLaunch") || strings.Contains(tp.output(), "READY") {
 		t.Fatal("the child started although the restore failed")
@@ -476,11 +612,13 @@ func TestRunRestoreErrorRefusesTheLaunch(t *testing.T) {
 
 func TestRunPassthroughSkipsGateAndRestore(t *testing.T) {
 	bins := helpers(t)
-	plan := managedPlan(harness.ClaudeCode, bins.tui)
+	// A passthrough child gets no lease descriptors: its stdin, the test
+	// terminal whose master the test closes, is its lifeline.
+	plan := managedPlan(harness.ClaudeCode, bins.tui, "-test-token", testToken)
 	plan.Mode = harness.LaunchPassthrough
 	b := newFakeBackend(plan)
 	tp := newTerm(t, 100, 30)
-	res := startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{}))
+	res := startRun(t, runOptions(t, tp, b, &syncBuffer{}))
 	m := parseReady(tp.waitForRe(readyRe, 0))
 	if m.active != "1" {
 		t.Fatalf("PRECINTO_ACTIVE = %q", m.active)
@@ -506,11 +644,10 @@ func TestRunPassthroughSkipsGateAndRestore(t *testing.T) {
 // what it left in its session, nothing else.
 func TestRunDirectModeSetsidAndEnd(t *testing.T) {
 	bins := helpers(t)
-	childLife, sibLife := newLifeline(t), newLifeline(t)
-	sib := testSibling(t, bins.tui, sibLife)
-	t.Cleanup(func() { _ = sib.Process.Kill(); _ = sib.Wait() })
+	childLife, sibLife := newProbe(t), newProbe(t)
+	testSibling(t, bins, sibLife)
 
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.childWithProbe()...))
 	b.lease = &fakeLease{files: []*os.File{childLife.w}}
 	inR, inW, err := os.Pipe()
 	if err != nil {
@@ -525,7 +662,7 @@ func TestRunDirectModeSetsidAndEnd(t *testing.T) {
 	o := runOptions(t, newTerm(t, 80, 24), b, &syncBuffer{})
 	o.NoPTY = true
 	o.Stdin, o.Stdout = inR, outW
-	res := startRun(context.Background(), o)
+	res := startRun(t, o)
 	defer inR.Close()
 	defer outW.Close()
 	pr := newPipeReader(t, outR)
@@ -558,13 +695,13 @@ func TestRunDirectModeSetsidAndEnd(t *testing.T) {
 
 func TestRunConfirmDeclinedRefuses(t *testing.T) {
 	bins := helpers(t)
-	plan := managedPlan(harness.ClaudeCode, bins.tui)
+	plan := managedPlan(harness.ClaudeCode, bins.child()...)
 	plan.Confirm = string(ui.MsgBareWarning) // a ui.MsgID the wrapper renders (CC-20)
 	b := newFakeBackend(plan)
 	fp := &fakePrompt{yes: false}
 	defer wrapper.SetPromptUI(func() (wrapper.PromptUI, error) { return fp, nil })()
 	tp := newTerm(t, 80, 24)
-	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
+	out := waitRun(t, startRun(t, runOptions(t, tp, b, &syncBuffer{})))
 	if out.code != wrapper.ExitNotStarted || !errors.Is(out.err, ui.ErrCancelled) {
 		t.Fatalf("Run = %d, %v; want ExitNotStarted, ui.ErrCancelled (exit 3)", out.code, out.err)
 	}
@@ -576,21 +713,74 @@ func TestRunConfirmDeclinedRefuses(t *testing.T) {
 	}
 }
 
+// TestRunRendersPlanMessages is CC-20: the plan's notices and confirmation
+// are ui.MsgID values rendered with its MsgVars; a confirmed C7.twice runs
+// the planned argv.
+func TestRunRendersPlanMessages(t *testing.T) {
+	bins := helpers(t)
+	const sid = "00000000-0000-4000-8000-0000000000dd"
+	plan := managedPlan(harness.ClaudeCode, bins.child("--resume", sid, "--fork-session")...)
+	plan.Notices = []string{string(ui.MsgSettingsKept)}
+	plan.Confirm = string(ui.MsgResumeTwice)
+	plan.MsgVars = map[string]string{"sid": sid, "pid": "4242"}
+	b := newFakeBackend(plan)
+	fp := &fakePrompt{yes: true}
+	defer wrapper.SetPromptUI(func() (wrapper.PromptUI, error) { return fp, nil })()
+	r := startRunRig(t, b, nil)
+	if !strings.Contains(r.term.output(), "ARGV "+strings.Join(plan.Argv[1:], " ")) {
+		t.Errorf("the confirmed launch did not run the planned argv:\n%q", tail(r.term.output(), 500))
+	}
+	if want := ui.Format(ui.MsgSettingsKept, ui.Vars{}); !strings.Contains(r.stderr.String(), want) {
+		t.Errorf("notice not rendered: %q", r.stderr.String())
+	}
+	r.term.typeKeys("q")
+	r.finish()
+	// Read after Run returned: Run's goroutine asked.
+	question := ui.Format(ui.MsgResumeTwice, ui.Vars{SID: sid, PID: 4242})
+	if len(fp.asked) != 1 || fp.asked[0] != question || strings.Contains(question, "{") {
+		t.Fatalf("asked %q, want %q", fp.asked, question)
+	}
+}
+
+// Every message an adapter puts in a plan renders with its MsgVars and no
+// placeholder left (CC-20).
+func TestPlanMessagesRenderCompletely(t *testing.T) {
+	for _, tc := range []struct {
+		id   ui.MsgID
+		vars map[string]string
+	}{
+		{ui.MsgResumeTwice, map[string]string{"sid": "00000000-0000-4000-8000-0000000000dd", "pid": "4242"}},
+		{ui.MsgCodexConsent, map[string]string{"folder": "~/work/acme"}},
+		{ui.MsgBareWarning, nil},
+		{ui.MsgCodexUntrusted, nil},
+		{ui.MsgSettingsKept, nil},
+		{ui.MsgPurgeForget, nil},
+	} {
+		text := ui.Format(tc.id, wrapper.PlanVars(tc.vars))
+		if text == string(tc.id) || strings.ContainsAny(text, "{}") {
+			t.Errorf("%s renders as %q", tc.id, text)
+		}
+	}
+	if v := wrapper.PlanVars(map[string]string{"pid": strconv.Itoa(7)}); v.PID != 7 {
+		t.Errorf("PlanVars pid = %d", v.PID)
+	}
+}
+
 func TestRunConfirmWithoutTerminalFailsClosed(t *testing.T) {
 	bins := helpers(t)
-	plan := managedPlan(harness.ClaudeCode, bins.tui)
+	plan := managedPlan(harness.ClaudeCode, bins.child()...)
 	plan.Confirm = string(ui.MsgBareWarning) // a ui.MsgID the wrapper renders (CC-20)
 	b := newFakeBackend(plan)
 	tp := newTerm(t, 80, 24)
-	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
-	if out.code == 0 || out.err == nil || b.called("EnsureUnlocked") {
+	out := waitRun(t, startRun(t, runOptions(t, tp, b, &syncBuffer{})))
+	if out.code != wrapper.ExitNotStarted || out.err == nil || b.called("EnsureUnlocked") {
 		t.Fatalf("Run = %d, %v with calls %v; want a refusal", out.code, out.err, b.callList())
 	}
 }
 
 func TestRunEnsureUnlockedRelaysAndFailsClosed(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	fp := &fakePrompt{secret: "x"}
 	defer wrapper.SetPromptUI(func() (wrapper.PromptUI, error) { return fp, nil })()
 	b.ensureFn = func(h ipc.UIHandler) error {
@@ -600,7 +790,7 @@ func TestRunEnsureUnlockedRelaysAndFailsClosed(t *testing.T) {
 		return &ipc.Error{Code: ipc.CodeCancelled, Msg: "unlock cancelled"}
 	}
 	tp := newTerm(t, 80, 24)
-	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
+	out := waitRun(t, startRun(t, runOptions(t, tp, b, &syncBuffer{})))
 	var ce *ipc.Error
 	if out.code != wrapper.ExitNotStarted || !errors.As(out.err, &ce) || ce.ExitCode() != 3 {
 		t.Fatalf("Run = %d, %v; want ExitNotStarted with an exit-3 error", out.code, out.err)
@@ -613,33 +803,38 @@ func TestRunEnsureUnlockedRelaysAndFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRunInjectsClaudeSettings(t *testing.T) {
+// TestRunRunsThePlanAsPlanned: the child gets exactly the plan's argv and
+// environment additions (plus PRECINTO_ACTIVE=1). D32's settings are the
+// adapter's (PlanLaunch, SPEC §7.1.5), never added by the wrapper.
+func TestRunRunsThePlanAsPlanned(t *testing.T) {
 	bins := helpers(t)
-	t.Run("injected when the plan lacks it", func(t *testing.T) {
-		b := newFakeBackend(managedPlan(harness.ClaudeCode, bins.tui, "--resume", "x"))
+	t.Run("a managed Claude launch", func(t *testing.T) {
+		plan := managedPlan(harness.ClaudeCode, bins.child("--resume", "x")...)
+		plan.Env = []string{"CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0"}
+		b := newFakeBackend(plan)
 		r := startRunRig(t, b, nil)
 		out := r.term.output()
-		if !strings.Contains(out, "ARGV --settings "+wrapper.ClaudeSettings+" --resume x") {
-			t.Errorf("argv without D32 settings:\n%q", tail(out, 500))
+		if !strings.Contains(out, "ARGV "+strings.Join(plan.Argv[1:], " ")+"\r\n") {
+			t.Errorf("argv changed:\n%q", tail(out, 500))
 		}
-		if !strings.Contains(out, "AWAY=0") {
-			t.Errorf("CLAUDE_CODE_ENABLE_AWAY_SUMMARY not 0:\n%q", tail(out, 500))
+		if strings.Contains(out, "--settings") || !strings.Contains(out, "AWAY=0") {
+			t.Errorf("not the plan's settings and environment:\n%q", tail(out, 500))
 		}
 		r.term.typeKeys("q")
 		r.finish()
 	})
-	t.Run("a user's own --settings wins", func(t *testing.T) {
-		b := newFakeBackend(managedPlan(harness.ClaudeCode, bins.tui, "--settings", "{}"))
+	t.Run("a user's own --settings", func(t *testing.T) {
+		b := newFakeBackend(managedPlan(harness.ClaudeCode, bins.child("--settings", "{}")...))
 		r := startRunRig(t, b, nil)
 		out := r.term.output()
-		if strings.Contains(out, wrapper.ClaudeSettings) || !strings.Contains(out, "ARGV --settings {}") {
+		if !strings.Contains(out, "ARGV "+strings.Join(b.plan.Argv[1:], " ")+"\r\n") || strings.Contains(out, "AWAY=0") {
 			t.Errorf("settings changed:\n%q", tail(out, 500))
 		}
 		r.term.typeKeys("q")
 		r.finish()
 	})
-	t.Run("not for other harnesses or unmanaged launches", func(t *testing.T) {
-		plan := managedPlan(harness.ClaudeCode, bins.tui)
+	t.Run("an unmanaged launch", func(t *testing.T) {
+		plan := managedPlan(harness.ClaudeCode, bins.child()...)
 		plan.Roots = nil
 		b := newFakeBackend(plan)
 		r := startRunRig(t, b, nil)
@@ -656,7 +851,7 @@ func TestRunInjectsClaudeSettings(t *testing.T) {
 
 func TestRunReportsHumanActivityOnly(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	m := r.term.mark()
@@ -712,7 +907,7 @@ func TestRunPrintsHookAndSealLines(t *testing.T) {
 	}{
 		{"hooks not seen", func(b *fakeBackend) { b.hooksSeen = false }, ui.Format(ui.MsgClaudeNoHooks, ui.Vars{})},
 		{"seal deferred", func(b *fakeBackend) { b.seal = wrapper.SealSummary{Deferred: true} },
-			ui.Format(ui.MsgSealDeferred, ui.Vars{Harness: "Claude"})},
+			ui.Format(ui.MsgSealDeferred, ui.Vars{Harness: "Claude Code"})}, // the inventory name (CC-39)
 		{"seal failed", func(b *fakeBackend) {
 			b.seal = wrapper.SealSummary{SID: "00000000-0000-4000-8000-000000000002", Failed: "disk full"}
 		}, ui.Format(ui.MsgSealFailed, ui.Vars{SID: "00000000-0000-4000-8000-000000000002", Cause: "disk full"})},
@@ -721,7 +916,7 @@ func TestRunPrintsHookAndSealLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			b := newFakeBackend(managedPlan(harness.ClaudeCode, bins.tui))
+			b := newFakeBackend(managedPlan(harness.ClaudeCode, bins.child()...))
 			tc.setup(b)
 			r := startRunRig(t, b, nil)
 			r.term.typeKeys("q")
@@ -735,12 +930,12 @@ func TestRunPrintsHookAndSealLines(t *testing.T) {
 
 func TestRunExpiringNotifies(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	m := r.term.mark()
 	b.srv.publish(ipc.Event{Kind: ipc.EventExpiring})
-	want := "\x1b]9;" + ui.Format(ui.MsgExpiry, ui.Vars{Folder: "/nonexistent/fixture/work/acme", Limit: config.Default().Policy.MaxUnlock.D()}) + "\x1b\\"
+	want := "\x1b]9;" + ui.Format(ui.MsgExpiry, ui.Vars{Folder: acmeFolder, Limit: config.Default().Policy.MaxUnlock.D()}) + "\x1b\\"
 	r.term.waitFor(want, m)
 	r.term.typeKeys("q")
 	r.finish()
@@ -748,7 +943,7 @@ func TestRunExpiringNotifies(t *testing.T) {
 
 func TestRunCancelledContextEndsTheChild(t *testing.T) {
 	bins := helpers(t)
-	b := newFakeBackend(managedPlan("generic", bins.tui))
+	b := newFakeBackend(managedPlan("generic", bins.child()...))
 	r := startRunRig(t, b, nil)
 	b.waitRegistered(t)
 	r.cancel()
@@ -765,7 +960,7 @@ func TestRunCancelledContextEndsTheChild(t *testing.T) {
 }
 
 func TestRunRefusesBadOptions(t *testing.T) {
-	if code, err := wrapper.Run(context.Background(), wrapper.Options{}); err == nil || code == 0 {
+	if code, err := wrapper.Run(context.Background(), wrapper.Options{}); err == nil || code != wrapper.ExitNotStarted {
 		t.Fatalf("Run without a backend = %d, %v", code, err)
 	}
 	// The child never started: ExitNotStarted with the reason (CC-42);
@@ -785,7 +980,7 @@ func TestRunRefusesBadOptions(t *testing.T) {
 	plan := managedPlan("generic", bins.tui+"-missing")
 	b = newFakeBackend(plan)
 	tp := newTerm(t, 80, 24)
-	out := waitRun(t, startRun(context.Background(), runOptions(t, tp, b, &syncBuffer{})))
+	out := waitRun(t, startRun(t, runOptions(t, tp, b, &syncBuffer{})))
 	if out.code != wrapper.ExitNotStarted || !errors.Is(out.err, fs.ErrNotExist) {
 		t.Fatalf("missing executable: %d, %v", out.code, out.err)
 	}

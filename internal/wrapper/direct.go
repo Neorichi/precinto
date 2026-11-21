@@ -176,7 +176,7 @@ func (d *directChild) terminate(o TerminateOptions) error {
 	recent := !d.reaped || time.Since(d.exitedAt) < sessionKillWindow
 	d.sigMu.Unlock()
 	if recent {
-		killSession(d.id)
+		killSession(d.id, func() { d.signalGroup(sigKill) })
 	}
 	if !d.isExited() {
 		return errStillAlive

@@ -12,7 +12,14 @@
 //	Ctrl-C twice                      exit 0 (Codex-style quit keys)
 //
 // "tuichild sleep" just sleeps (the grandchild and sibling processes).
-// Flags: -ignore-term ignores SIGTERM; -burst N sets the burst size;
+//
+// Flags, anywhere in argv (every other argument is the harness's own):
+// -lifeline FD exits with 70 when the test's lifeline pipe on FD reaches
+// EOF (the test's cleanup closed it, or the test process is gone), whatever
+// signals the process ignores; -probe FD hands the test's liveness probe on
+// FD to every grandchild; -test-token T marks the process as the test's own
+// (passed on to grandchildren); -max-life D exits with 70 after D (default
+// 2 min); -ignore-term ignores SIGTERM; -burst N sets the burst size;
 // -cooked leaves a terminal stdin in cooked mode.
 // Every line it prints is synthetic.
 package main
@@ -31,6 +38,10 @@ import (
 
 	"golang.org/x/term"
 )
+
+// exitLifeline is the exit code when the lifeline ends or the hard
+// lifetime runs out.
+const exitLifeline = 70
 
 var mu sync.Mutex
 
@@ -57,27 +68,92 @@ func winsize() (int, int) {
 	return int(ws.Col), int(ws.Row)
 }
 
-func main() {
-	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "sleep" {
-		time.Sleep(10 * time.Minute)
-		return
+// options are the flags of one tuichild.
+type options struct {
+	lifeline   *os.File // the test's lifeline (read end), nil without -lifeline
+	probe      *os.File // the test's liveness probe (write end), nil without -probe
+	token      string
+	maxLife    time.Duration
+	ignoreTerm bool
+	cooked     bool
+	burst      int
+	sleep      bool
+}
+
+// inherited wraps descriptor fd once: an *os.File closes its descriptor
+// when it is garbage-collected, so each one is created once and kept.
+func inherited(fd, name string) *os.File {
+	n, err := strconv.Atoi(fd)
+	if err != nil || n < 3 {
+		return nil
 	}
-	ignoreTerm, cooked := false, false
-	burst := 50
+	return os.NewFile(uintptr(n), name)
+}
+
+func parse(args []string) options {
+	o := options{maxLife: 2 * time.Minute, burst: 50}
+	var positional []string
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-ignore-term":
-			ignoreTerm = true
-		case "-cooked":
-			cooked = true
-		case "-burst":
+		value := func() string {
 			if i+1 < len(args) {
-				burst, _ = strconv.Atoi(args[i+1])
 				i++
+				return args[i]
 			}
+			return ""
+		}
+		switch args[i] {
+		case "-lifeline":
+			o.lifeline = inherited(value(), "lifeline")
+		case "-probe":
+			o.probe = inherited(value(), "probe")
+		case "-test-token":
+			o.token = value()
+		case "-max-life":
+			if d, err := time.ParseDuration(value()); err == nil && d > 0 {
+				o.maxLife = d
+			}
+		case "-ignore-term":
+			o.ignoreTerm = true
+		case "-cooked":
+			o.cooked = true
+		case "-burst":
+			if n, err := strconv.Atoi(value()); err == nil {
+				o.burst = n
+			}
+		default:
+			positional = append(positional, args[i])
 		}
 	}
+	o.sleep = len(positional) > 0 && positional[0] == "sleep"
+	return o
+}
+
+// watchLifeline exits once the lifeline reaches EOF: only the test process
+// holds its write end and nobody writes to it, so a read returns only when
+// that end is closed. A read error counts the same.
+func watchLifeline(f *os.File) {
+	if f == nil {
+		return
+	}
+	go func() {
+		buf := make([]byte, 16)
+		for {
+			if _, err := f.Read(buf); err != nil {
+				os.Exit(exitLifeline)
+			}
+		}
+	}()
+}
+
+func main() {
+	args := os.Args[1:]
+	o := parse(args)
+	watchLifeline(o.lifeline)
+	if o.sleep {
+		time.Sleep(o.maxLife)
+		os.Exit(exitLifeline)
+	}
+	time.AfterFunc(o.maxLife, func() { os.Exit(exitLifeline) })
 	isTTY := term.IsTerminal(0)
 	sigc := make(chan os.Signal, 8)
 	signal.Notify(sigc, syscall.SIGWINCH, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT, syscall.SIGCONT)
@@ -88,7 +164,7 @@ func main() {
 				c, r := winsize()
 				say("WINCH %dx%d", c, r)
 			case syscall.SIGTERM:
-				if ignoreTerm {
+				if o.ignoreTerm {
 					say("TERM-IGNORED")
 					continue
 				}
@@ -105,7 +181,7 @@ func main() {
 		}
 	}()
 	active := os.Getenv("PRECINTO_ACTIVE") // the wrapper sets it in the child
-	if isTTY && !cooked {
+	if isTTY && !o.cooked {
 		if st, err := term.MakeRaw(0); err == nil {
 			defer func() { _ = term.Restore(0, st) }()
 		}
@@ -127,7 +203,7 @@ func main() {
 					outN++
 					say("OUT-%d", outN)
 				case 'b':
-					for i := 0; i < burst; i++ {
+					for i := 0; i < o.burst; i++ {
 						say("BURST-%05d %s", i, strings.Repeat("x", 60))
 					}
 					say("BURST-END")
@@ -153,7 +229,7 @@ func main() {
 					raw("\x1b[c\x1b[6n\x1b]11;?\x07")
 					say("QUERIED")
 				case 'g', 'G':
-					spawnGrandchild(b == 'G')
+					spawnGrandchild(o, b == 'G')
 				case 'z':
 					say("STOPPING")
 					_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
@@ -181,21 +257,29 @@ func main() {
 	}
 }
 
-// spawnGrandchild starts "tuichild sleep" in this session, passing on fd 3
-// (the test's liveness pipe) when present.
-func spawnGrandchild(ownGroup bool) {
+// spawnGrandchild starts "tuichild sleep" in this session with this
+// process's lifeline (fd 3), probe (fd 4) and token.
+func spawnGrandchild(o options, ownGroup bool) {
 	self, err := os.Executable()
 	if err != nil {
 		say("GRANDCHILD-ERR")
 		return
 	}
-	cmd := exec.Command(self, "sleep")
-	cmd.Env = []string{}
-	if f := os.NewFile(3, "pipe"); f != nil {
-		if _, err := f.Stat(); err == nil {
-			cmd.ExtraFiles = []*os.File{f}
-		}
+	args := []string{"sleep", "-max-life", o.maxLife.String()}
+	if o.token != "" {
+		args = append(args, "-test-token", o.token)
 	}
+	var files []*os.File
+	if o.lifeline != nil {
+		files = append(files, o.lifeline)
+		args = append(args, "-lifeline", strconv.Itoa(2+len(files)))
+	}
+	if o.probe != nil {
+		files = append(files, o.probe)
+	}
+	cmd := exec.Command(self, args...)
+	cmd.Env = []string{}
+	cmd.ExtraFiles = files
 	if ownGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}

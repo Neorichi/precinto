@@ -12,6 +12,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/ui"
 )
@@ -37,6 +38,14 @@ func SetProcSeams(identify func(int) (platform.ProcID, error), session func(plat
 	oldID, oldSess := identifyProc, signalSession
 	identifyProc, signalSession = identify, session
 	return func() { identifyProc, signalSession = oldID, oldSess }
+}
+
+// SetGUI makes Run see a terminal where a GUI dialog can (or cannot)
+// appear, instead of measuring it (platform.DetectUIContext).
+func SetGUI(gui bool) (restore func()) {
+	old := detectUI
+	detectUI = func(paths.Env, *os.File, *os.File) platform.UIContext { return platform.UIContext{GUI: gui} }
+	return func() { detectUI = old }
 }
 
 // SetTimings shortens the subscription and activity timings.
@@ -81,8 +90,8 @@ func WaitReadable(fd int, d time.Duration) (bool, error) { return waitReadable(f
 func FilterReplay(b []byte) []byte { return filterReplay(b) }
 
 // OverlayLines renders the lock screen's lines.
-func OverlayLines(o Overlay, harnessName, status string, ending bool) []string {
-	return overlayText{o: o, harness: harnessName, status: status, ending: ending}.lines()
+func OverlayLines(o Overlay, status string, ending bool) []string {
+	return overlayText{o: o, status: status, ending: ending}.lines()
 }
 
 // TerminateOptionsFor returns the termination parameters Run uses for plan.
@@ -91,8 +100,12 @@ func TerminateOptionsFor(plan harness.LaunchPlan) TerminateOptions { return term
 // PlanVars maps LaunchPlan.MsgVars to ui.Vars.
 func PlanVars(m map[string]string) ui.Vars { return planVars(m) }
 
-// ClaudeSettings is the D32 settings JSON.
-const ClaudeSettings = claudeSettings
+// KillSessionWith is the session kill of Terminate with signal in place of
+// platform.SignalGroup; unreapedGroup stands for the child's process-group
+// signal while it is not reaped.
+func KillSessionWith(signal func(platform.ProcID, syscall.Signal) error, leader platform.ProcID, unreapedGroup func()) {
+	killSessionWith(signal, leader, unreapedGroup)
+}
 
 // DefaultScrollbackBytes is the ring size used when ProxyOptions leaves it 0.
 const DefaultScrollbackBytes = defaultScrollbackBytes

@@ -4,6 +4,7 @@ package wrapper_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/wrapper"
 )
@@ -27,28 +29,40 @@ type proxyRig struct {
 	human []bool // OnHuman calls (enter flag)
 }
 
-func startRig(t *testing.T, o wrapper.ProxyOptions, extra []*os.File, args ...string) *proxyRig {
+// startRig starts the scripted child with the test's lifeline as fd 3 and,
+// with p, the probe as fd 4 (handed to every grandchild).
+func startRig(t *testing.T, o wrapper.ProxyOptions, p *probe, args ...string) *proxyRig {
 	t.Helper()
 	bins := helpers(t)
+	life := newLifeline(t)
 	r := &proxyRig{t: t, term: newTerm(t, 100, 30)}
 	o.OnHuman = func(enter bool) {
 		r.mu.Lock()
 		r.human = append(r.human, enter)
 		r.mu.Unlock()
 	}
-	cmd := exec.Command(bins.tui, args...)
+	argv := bins.child(args...)
+	files := []*os.File{life.r}
+	if p != nil {
+		argv = bins.childWithProbe(args...)
+		files = append(files, p.w)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = childEnv(t).Environ()
-	cmd.ExtraFiles = extra
-	p, err := wrapper.StartProxy(cmd, r.term.slave, o)
+	cmd.ExtraFiles = files
+	px, err := wrapper.StartProxy(cmd, r.term.slave, o)
 	if err != nil {
 		t.Fatalf("StartProxy: %v", err)
 	}
-	r.p = p
+	r.p = px
 	t.Cleanup(func() {
 		if !r.exited() {
-			_ = p.Terminate(wrapper.TerminateOptions{Grace: 200 * time.Millisecond})
+			_ = px.Terminate(wrapper.TerminateOptions{Grace: 200 * time.Millisecond})
 		}
-		_, _ = p.Wait()
+		// Whatever survived the child (its session, its descendants) goes
+		// too; then the child is reaped.
+		killTree(px.Child())
+		_, _ = px.Wait()
 	})
 	r.ready = parseReady(r.term.waitForRe(readyRe, 0))
 	return r
@@ -367,12 +381,10 @@ func TestProxyTerminateQuitKeys(t *testing.T) {
 // (the "user's shell job") survives.
 func TestProxyTerminateEndsOnlyTheChildSession(t *testing.T) {
 	bins := helpers(t)
-	child := newLifeline(t)
-	sibling := newLifeline(t)
-	sib := testSibling(t, bins.tui, sibling)
-	t.Cleanup(func() { _ = sib.Process.Kill(); _ = sib.Wait() })
+	child, sibling := newProbe(t), newProbe(t)
+	testSibling(t, bins, sibling)
 
-	r := startRig(t, wrapper.ProxyOptions{}, []*os.File{child.w}, "-ignore-term")
+	r := startRig(t, wrapper.ProxyOptions{}, child, "-ignore-term")
 	child.handOff()
 	m := r.term.mark()
 	r.term.typeKeys("g")
@@ -394,6 +406,86 @@ func TestProxyTerminateEndsOnlyTheChildSession(t *testing.T) {
 	}
 	if sibling.closedWithin(300 * time.Millisecond) {
 		t.Fatal("a process outside the child's session was killed")
+	}
+}
+
+// TestKillSessionFallback pins Terminate's session kill (CC-13, RJ-12)
+// when platform.SignalGroup fails: a measured leader it reports replaced is
+// left alone (nothing of that session remains), an unmeasured one falls
+// back to the group signal that holds while the child is unreaped, and any
+// other failure falls back to the child's process group.
+func TestKillSessionFallback(t *testing.T) {
+	bins := helpers(t)
+	cases := []struct {
+		name              string
+		err               error
+		measured          bool
+		wantGroup, killed bool
+	}{
+		{"done", nil, true, false, false},
+		{"leader gone", platform.ErrNoProcess, true, false, false},
+		{"leader replaced", fmt.Errorf("%w: session leader replaced", platform.ErrNotSame), true, false, false},
+		{"leader not measured", platform.ErrNotSame, false, true, false},
+		{"listing failed", errors.New("synthetic listing failure"), true, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A process of the test leading its own session and group,
+			// standing in for the child.
+			p := newProbe(t)
+			sleeper := exec.Command(bins.tui, "sleep", "-lifeline", "3", "-test-token", testToken)
+			sleeper.Env = []string{}
+			sleeper.ExtraFiles = []*os.File{newLifeline(t).r, p.w}
+			sleeper.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			h := startHelper(t, sleeper)
+			p.handOff()
+			leader := h.id
+			if !tc.measured {
+				leader = platform.ProcID{PID: h.id.PID}
+			}
+			var asked []platform.ProcID
+			grouped := false
+			wrapper.KillSessionWith(func(id platform.ProcID, sig syscall.Signal) error {
+				asked = append(asked, id)
+				return tc.err
+			}, leader, func() { grouped = true })
+			if len(asked) != 1 || asked[0] != leader {
+				t.Fatalf("SignalGroup asked for %v, want the leader %v once", asked, leader)
+			}
+			if grouped != tc.wantGroup {
+				t.Fatalf("unreaped-group fallback = %v, want %v", grouped, tc.wantGroup)
+			}
+			wait := 300 * time.Millisecond
+			if tc.killed {
+				wait = waitTimeout
+			}
+			if got := p.closedWithin(wait); got != tc.killed {
+				t.Fatalf("process group signalled = %v, want %v", got, tc.killed)
+			}
+		})
+	}
+}
+
+// The busy line names Overlay.Harness and the key help Overlay.Factor, for
+// direct StartProxy callers too; without a known factor the key help names
+// none (CC-39, CC-40).
+func TestProxyOverlayNamesHarnessAndFactor(t *testing.T) {
+	r := startRig(t, wrapper.ProxyOptions{}, nil)
+	m := r.term.mark()
+	o := wrapper.Overlay{Folder: "~/work/acme", Reason: "idle 15 min", Busy: true, Harness: "Codex", Factor: "precinto passphrase"}
+	if err := r.p.Lock(o); err != nil {
+		t.Fatal(err)
+	}
+	r.term.waitFor(ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: "Codex"}), m)
+	r.term.waitFor(ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "precinto passphrase"}), m)
+	m = r.term.mark()
+	o.Busy, o.Factor = false, ""
+	if err := r.p.Lock(o); err != nil { // redrawn in place
+		t.Fatal(err)
+	}
+	r.term.waitFor(ui.Format(ui.MsgOverlayKeysPlain, ui.Vars{}), m)
+	if strings.Contains(r.term.since(m), "is finishing") {
+		t.Fatal("the busy line stayed after a lock that is not busy")
 	}
 }
 
@@ -474,7 +566,10 @@ func TestProxyRefusesBadInput(t *testing.T) {
 	if _, err := wrapper.StartProxy(nil, tp.slave, wrapper.ProxyOptions{}); err == nil {
 		t.Error("nil command accepted")
 	}
-	cmd := exec.Command(bins.tui)
+	// Never started; were one started by mistake, it would exit at once
+	// (its -lifeline fd 3 is not open).
+	argv := bins.child()
+	cmd := exec.Command(argv[0], argv[1:]...)
 	if _, err := wrapper.StartProxy(cmd, tp.slave, wrapper.ProxyOptions{}); err == nil {
 		t.Error("a command without an explicit environment was accepted")
 	}
@@ -484,7 +579,7 @@ func TestProxyRefusesBadInput(t *testing.T) {
 	}
 	defer r.Close()
 	defer w.Close()
-	cmd = exec.Command(bins.tui)
+	cmd = exec.Command(argv[0], argv[1:]...)
 	cmd.Env = []string{}
 	if _, err := wrapper.StartProxy(cmd, r, wrapper.ProxyOptions{}); err == nil {
 		t.Error("a pipe was accepted as the terminal")

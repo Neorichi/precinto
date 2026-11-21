@@ -2,17 +2,18 @@
 
 package wrapper_test
 
-// Cross-group tests: they need internal/platform (G2: Identify,
-// SignalGroup), internal/ipc and internal/agent/agenttest. Built with
-// -tags testing,crossgroup the local seams of seams_local_test.go are off,
-// so the wrapper uses the real platform functions everywhere.
+// Cross-group tests: the wrapper against the in-process daemon
+// (internal/agent/agenttest, G2) over a real vault (vaulttest, G1). Like
+// the unit suite, they use the real internal/platform (Identify,
+// SignalGroup).
 
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/agent/agenttest"
 	"github.com/precinto/precinto/internal/harness"
@@ -20,8 +21,15 @@ import (
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault/vaulttest"
 	"github.com/precinto/precinto/internal/wrapper"
 )
+
+func init() {
+	// The real daemon beats every second; the production timeout (2 s,
+	// SPEC §15.3) plus room for a loaded machine.
+	testHeartbeat = 3 * time.Second
+}
 
 // TestCrossgroupChildProcIDIsMeasured: Proxy.Child is the ProcID that
 // platform.Identify measures (pid plus kernel start time), never pid alone.
@@ -46,10 +54,9 @@ func TestCrossgroupChildProcIDIsMeasured(t *testing.T) {
 // it), while a process of the test's session survives.
 func TestCrossgroupTerminateEndsTheWholeChildSession(t *testing.T) {
 	bins := helpers(t)
-	child, sibling := newLifeline(t), newLifeline(t)
-	sib := testSibling(t, bins.tui, sibling)
-	defer func() { _ = sib.Process.Kill(); _ = sib.Wait() }()
-	r := startRig(t, wrapper.ProxyOptions{}, []*os.File{child.w}, "-ignore-term")
+	child, sibling := newProbe(t), newProbe(t)
+	testSibling(t, bins, sibling)
+	r := startRig(t, wrapper.ProxyOptions{}, child, "-ignore-term")
 	child.handOff()
 	m := r.term.mark()
 	r.term.typeKeys("G")
@@ -72,12 +79,18 @@ type agentBackend struct {
 	*fakeBackend
 	agent *agenttest.Agent
 	home  *testkit.Home
-	t     *testing.T
 }
 
+// Daemon dials the daemon for a wrapper goroutine (the subscription and its
+// redial after a loss, the request connection): an error, never a t.Fatal,
+// also after the test ended (CC-53).
 func (b *agentBackend) Daemon(ctx context.Context) (wrapper.Daemon, error) {
 	b.record("Daemon")
-	return b.agent.Dial(b.t), nil
+	c, err := b.agent.Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func (b *agentBackend) RecordLaunch(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) error {
@@ -86,28 +99,105 @@ func (b *agentBackend) RecordLaunch(ctx context.Context, plan harness.LaunchPlan
 	return b.fakeBackend.RecordLaunch(ctx, plan, child)
 }
 
-// TestCrossgroupRunAgainstTheDaemon drives Run through the real protocol:
-// the wrapper registers and subscribes; `precinto lock` shows the lock
-// screen; `precinto lock --end` ends the child's session.
+// unlockForTest is agenttest.UnlockForTest (CC-53) with the request
+// deadline on the real clock, the one the daemon measures it against
+// (internal/agent/unlock.go): UnlockForTest takes it from the fake clock,
+// which starts at testkit.Epoch, so its unlock fails (EOF) once the wall
+// clock is a minute past that epoch. Back to UnlockForTest once it uses the
+// real clock.
+func unlockForTest(t *testing.T, a *agenttest.Agent, rootIDs []string, recoveryKey string) {
+	t.Helper()
+	c, err := a.Client(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req := ipc.UnlockReq{RootIDs: rootIDs, Factor: "recovery", TTY: true, Deadline: time.Now().Add(time.Minute)}
+	if _, err := c.Unlock(ctx, req, recoveryUI{key: recoveryKey}); err != nil {
+		t.Fatalf("unlock %v: %v", rootIDs, err)
+	}
+}
+
+// recoveryUI answers the relayed prompts of a recovery unlock.
+type recoveryUI struct{ key string }
+
+func (recoveryUI) Display(string) error { return nil }
+func (u recoveryUI) Secret(string) (*memguard.LockedBuffer, error) {
+	return memguard.NewBufferFromBytes([]byte(u.key)), nil
+}
+func (recoveryUI) Confirm(string, string, string) (bool, error) { return true, nil }
+
+// TestCrossgroupRunAgainstTheDaemon drives Run through the real protocol
+// (SEC-30 ended by `lock --end`): the folder's vault is unlocked before the
+// launch, so the subscription starts unlocked (D71); the wrapper registers
+// its child; `precinto lock` shows the lock screen; `precinto lock --end`
+// ends the child and the helper it left in its own session, while a
+// process of the test's session survives. For the PTY child and the
+// direct-mode (--no-pty) child.
 func TestCrossgroupRunAgainstTheDaemon(t *testing.T) {
+	t.Run("pty", func(t *testing.T) { runAgainstTheDaemon(t, false) })
+	t.Run("direct", func(t *testing.T) { runAgainstTheDaemon(t, true) })
+}
+
+func runAgainstTheDaemon(t *testing.T, direct bool) {
 	bins := helpers(t)
 	h := testkit.NewHome(t)
+	rootID := h.Cfg.Roots[0].ID
+	fx := vaulttest.New(t, h.Layout.Base, rootID)
 	a := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
-	defer a.Stop()
 	h.Procs.Add(platform.ProcInfo{ID: platform.Self(), Exe: "/usr/local/bin/precinto"})
+	unlockForTest(t, a, []string{rootID}, fx.Recovery.String())
 
-	plan := managedPlan(harness.ClaudeCode, bins.tui)
+	childLife, sibLife := newProbe(t), newProbe(t)
+	testSibling(t, bins, sibLife)
+
+	plan := managedPlan(harness.ClaudeCode, bins.childWithProbe()...)
 	plan.Roots = h.Cfg.Roots
-	b := &agentBackend{fakeBackend: newFakeBackend(plan), agent: a, home: h, t: t}
+	fb := newFakeBackend(plan)
+	fb.lease = &fakeLease{files: []*os.File{childLife.w}}
+	b := &agentBackend{fakeBackend: fb, agent: a, home: h}
 	tp := newTerm(t, 100, 30)
-	o := runOptions(t, tp, b.fakeBackend, &syncBuffer{})
-	o.Backend = b
-	o.Env = h.Env
-	res := startRun(context.Background(), o)
-	tp.waitForRe(readyRe, 0)
+	o := runOptions(t, tp, fb, &syncBuffer{})
+	o.Backend, o.Env = b, h.Env
+	typeKeys := tp.typeKeys
+	var pr *pipeReader
+	if direct {
+		inR, inW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		outR, outW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = inW.Close(); _ = inR.Close(); _ = outW.Close(); _ = outR.Close() })
+		o.NoPTY, o.Stdin, o.Stdout = true, inR, outW
+		pr = newPipeReader(t, outR)
+		typeKeys = func(s string) {
+			t.Helper()
+			if _, err := inW.Write([]byte(s)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	res := startRun(t, o)
+	if direct {
+		pr.waitForRe(readyRe)
+	} else {
+		tp.waitForRe(readyRe, 0)
+	}
+	fb.waitLaunched(t)
+	childLife.handOff()
+	typeKeys("g")
+	if direct {
+		pr.waitFor("GRANDCHILD pid=")
+	} else {
+		tp.waitFor("GRANDCHILD pid=", 0)
+	}
 
 	c := a.Dial(t)
-	defer c.Close()
 	deadline := time.Now().Add(waitTimeout)
 	for {
 		st, err := c.Status(context.Background())
@@ -123,15 +213,23 @@ func TestCrossgroupRunAgainstTheDaemon(t *testing.T) {
 	if _, err := c.Lock(context.Background(), ipc.LockReq{All: true}); err != nil {
 		t.Fatal(err)
 	}
-	tp.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m)
+	if !direct {
+		tp.waitFor(ui.Format(ui.MsgOverlayTitle, ui.Vars{}), m)
+	}
 	if _, err := c.Lock(context.Background(), ipc.LockReq{All: true, End: true}); err != nil {
 		t.Fatal(err)
 	}
 	out := waitRun(t, res)
-	if out.code == 0 {
-		t.Fatalf("the child was not ended: exit %d", out.code)
+	if out.code != 143 || out.err != nil {
+		t.Fatalf("Run = %d, %v; want 143 (the child ended on SIGTERM)", out.code, out.err)
 	}
-	if !strings.Contains(tp.output(), ui.Format(ui.MsgOverlayEnding, ui.Vars{})) {
-		t.Error("the overlay did not show the ending line")
+	if !childLife.closedWithin(waitTimeout) {
+		t.Fatal("the helper the child left in its own session survived lock --end")
+	}
+	if sibLife.closedWithin(300 * time.Millisecond) {
+		t.Fatal("a process of the test's own session was killed")
+	}
+	if !direct {
+		tp.waitFor(ui.Format(ui.MsgOverlayEnding, ui.Vars{}), m)
 	}
 }

@@ -42,10 +42,9 @@ func resetSequence(clear, iterm bool) []byte {
 
 // overlayText is everything the lock screen shows.
 type overlayText struct {
-	o       Overlay
-	harness string // display name for C4.busy
-	status  string // last relayed message, prompt or error
-	ending  bool   // C4.ending instead of the key help
+	o      Overlay
+	status string // last relayed message, prompt or error
+	ending bool   // C4.ending instead of the key help
 }
 
 // lines renders the overlay's lines (sanitized catalog texts).
@@ -65,13 +64,17 @@ func (v overlayText) lines() []string {
 	}
 	out = append(out, clean(ui.Format(ui.MsgOverlayPaused, ui.Vars{})))
 	if v.o.Busy {
-		out = append(out, clean(ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: v.harness})))
+		out = append(out, clean(ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: clean(v.o.Harness)})))
 	}
 	out = append(out, "")
-	if v.ending {
+	switch factor := clean(v.o.Factor); {
+	case v.ending:
 		out = append(out, clean(ui.Format(ui.MsgOverlayEnding, ui.Vars{})))
-	} else {
-		out = append(out, clean(ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: clean(v.o.Factor)})))
+	case factor != "":
+		out = append(out, clean(ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: factor})))
+	default:
+		// No usable factor is known (CC-40): the key help names none.
+		out = append(out, clean(ui.Format(ui.MsgOverlayKeysPlain, ui.Vars{})))
 	}
 	if s := clean(v.status); s != "" {
 		out = append(out, "", s)

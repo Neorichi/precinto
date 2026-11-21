@@ -11,7 +11,12 @@ package wrappere2e
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +29,9 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/precinto/precinto/internal/harness/claude/claudetest"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
 )
@@ -32,9 +39,63 @@ import (
 const (
 	e2eTimeout = 90 * time.Second
 	passphrase = "e2e-synthetic-passphrase-0001" // a throwaway vault's factor
+	// helperLife bounds the synthetic Codex TUI and the job-control shell
+	// (their -max-life): longer than any E2E scenario.
+	helperLife = "15m"
 )
 
 var startEnv = paths.FromOS()
+
+// e2eToken is carried in the argv of the helper programs these tests start
+// (the synthetic Codex TUI, the job-control shell), so the ones left when
+// the package ends are its own (TESTPLAN §1 rule 8).
+var e2eToken string
+
+func TestMain(m *testing.M) {
+	var b [16]byte
+	_, _ = rand.Read(b[:]) // never fails (Go ≥ 1.24)
+	e2eToken = "precinto-wrapper-e2e-" + hex.EncodeToString(b[:])
+	code := m.Run()
+	if left := sweepToken(e2eToken, 3*time.Second); left > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL: %d helper process(es) outlived their test and were killed\n", left)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+// sweepToken gives the processes whose argv carries token up to grace to
+// exit, then SIGKILLs (ProcID-verified) those left and returns how many
+// there were.
+func sweepToken(token string, grace time.Duration) int {
+	deadline := time.Now().Add(grace)
+	for {
+		all, err := platform.System().List()
+		if err != nil {
+			return 0
+		}
+		var left []platform.ProcInfo
+		for _, p := range all {
+			if p.ID.PID == os.Getpid() || p.State == platform.StateZombie {
+				continue
+			}
+			for _, a := range p.Argv {
+				if strings.Contains(a, token) {
+					left = append(left, p)
+					break
+				}
+			}
+		}
+		if len(left) == 0 || time.Now().After(deadline) {
+			for _, p := range left {
+				_ = platform.Signal(p.ID, syscall.SIGKILL)
+			}
+			return len(left)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 func requireE2E(t *testing.T) {
 	t.Helper()
@@ -73,6 +134,9 @@ func (w *world) environ() []string {
 	return e.Environ()
 }
 
+// folder is the fixture folder as precinto names it ({folder}).
+func (w *world) folder() string { return paths.Tilde(w.h.HomeDir, w.h.Root) }
+
 // setup initialises the vault with a passphrase factor (recovery key to a
 // file, so no screen to type back) and protects the fixture folder,
 // answering the CLI's questions on a terminal.
@@ -80,12 +144,12 @@ func (w *world) setup() {
 	w.t.Helper()
 	rec := filepath.Join(w.h.Dir, "recovery.txt")
 	s := w.start("init", "--factor", "passphrase", "--recovery-out", rec)
-	s.answer(answerPassphrase, answerNo)
+	s.answer(w.initRules()...)
 	if code := s.wait(); code != 0 {
 		w.t.Fatalf("precinto init: exit %d\n%s", code, s.text())
 	}
 	p := w.start("protect", w.h.Root)
-	p.answer(answerPassphrase, answerYes)
+	p.answer(w.cliRules()...)
 	p.wait() // the fake home lists the folder already; an "already protected" exit is fine
 	st := w.start("status")
 	if code := st.wait(); code != 0 && code != 3 {
@@ -208,17 +272,59 @@ func (s *session) wait() int {
 	}
 }
 
-// rule answers a prompt: when re matches new output, reply is typed.
+// rule answers a prompt: when the prompt shows up in new output, reply is
+// typed. Catalog prompts are matched by their exact text, ui.Format of the
+// message id (CC-38: B.*, C2.passphrase, C9.*, C10.consent); only the
+// CLI's own questions, which have no catalog id, fall back to a pattern.
 type rule struct {
+	text  string
 	re    *regexp.Regexp
 	reply string
 }
 
-var (
-	answerPassphrase = rule{regexp.MustCompile(`(?i)passphrase[^\n]*:\s*$`), passphrase + "\r"}
-	answerYes        = rule{regexp.MustCompile(`\[(Y/n|y/N)\]\s*$`), "y\r"}
-	answerNo         = rule{regexp.MustCompile(`\[(Y/n|y/N)\]\s*$`), "n\r"}
-)
+func (r rule) matches(s string) bool {
+	if r.text != "" {
+		return strings.Contains(s, r.text)
+	}
+	return r.re.MatchString(s)
+}
+
+func say(id ui.MsgID, v ui.Vars, reply string) rule {
+	return rule{text: ui.Format(id, v), reply: reply}
+}
+
+// defaultAnswer takes the default of any other yes/no question (Enter).
+var defaultAnswer = rule{re: regexp.MustCompile(`\[(Y/n|y/N)\]\s*$`), reply: "\r"}
+
+// initRules answer precinto init: the new passphrase twice and no
+// background service (B.service would install a LaunchAgent).
+func (w *world) initRules() []rule {
+	return []rule{
+		say(ui.MsgPassphraseNew, ui.Vars{}, passphrase+"\r"),
+		say(ui.MsgPassphraseAgain, ui.Vars{}, passphrase+"\r"),
+		say(ui.MsgServiceOffer, ui.Vars{}, "n\r"),
+		defaultAnswer,
+	}
+}
+
+// cliRules answer the unlock prompt of the fixture folder (C2.passphrase)
+// and protect's Codex question (C10.consent).
+func (w *world) cliRules() []rule {
+	return []rule{
+		say(ui.MsgUnlockPassphrase, ui.Vars{Folder: w.folder()}, passphrase+"\r"),
+		say(ui.MsgCodexConsent, ui.Vars{Folder: w.folder()}, "y\r"),
+		defaultAnswer,
+	}
+}
+
+// launchRules are cliRules plus yes to precinto run's own questions before
+// a launch (C9.codex, C9.bare).
+func (w *world) launchRules() []rule {
+	return append([]rule{
+		say(ui.MsgCodexUntrusted, ui.Vars{}, "y\r"),
+		say(ui.MsgBareWarning, ui.Vars{}, "y\r"),
+	}, w.cliRules()...)
+}
 
 // answer replies to prompts until the process exits.
 func (s *session) answer(rules ...rule) {
@@ -233,7 +339,7 @@ func (s *session) answer(rules ...rule) {
 		}
 		fresh := s.since(seen)
 		for _, r := range rules {
-			if r.re.MatchString(fresh) {
+			if r.matches(fresh) {
 				seen += len(fresh)
 				s.send(r.reply)
 				break
@@ -254,7 +360,7 @@ func tail(s string) string {
 func (w *world) lock(args ...string) {
 	w.t.Helper()
 	s := w.start(append([]string{"lock"}, args...)...)
-	s.answer(answerYes)
+	s.answer(w.cliRules()...)
 	if code := s.wait(); code != 0 {
 		w.t.Fatalf("precinto lock %v: exit %d\n%s", args, code, s.text())
 	}
@@ -263,9 +369,31 @@ func (w *world) lock(args ...string) {
 func (w *world) unlock() {
 	w.t.Helper()
 	s := w.start("unlock", "--root", w.h.Root)
-	s.answer(answerPassphrase, answerYes)
+	s.answer(w.cliRules()...)
 	if code := s.wait(); code != 0 {
 		w.t.Fatalf("precinto unlock: exit %d\n%s", code, s.text())
+	}
+}
+
+// sealSession seals the folder's synthetic Claude session sid with precinto
+// seal. Its writer is a process that already exited (--wait-pid, R20), so
+// no quiet window applies and the transcript leaves the disk at once.
+func (w *world) sealSession(sid string) {
+	w.t.Helper()
+	writer := exec.Command("/bin/sh", "-c", "exit 0")
+	writer.Env = []string{}
+	if err := writer.Start(); err != nil {
+		w.t.Fatal(err)
+	}
+	id, err := platform.Identify(writer.Process.Pid) // not reaped yet: the pid is the writer's
+	_ = writer.Wait()
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	s := w.start("seal", "--session", sid, "--adopt", "--wait-pid", id.String())
+	s.answer(w.cliRules()...)
+	if code := s.wait(); code != 0 {
+		w.t.Fatalf("precinto seal: exit %d\n%s", code, tail(s.text()))
 	}
 }
 
@@ -285,6 +413,13 @@ func fakeCodex(t *testing.T) string {
 		t.Fatalf("build the synthetic codex: %v\n%s", err, out)
 	}
 	return dir
+}
+
+// codexArgv is the argv of the synthetic Codex TUI with args: its hard
+// lifetime and the package token. Its lifeline is the PTY of the wrapper
+// that runs it (fd 3 is the wrapper's lease).
+func codexArgv(args ...string) []string {
+	return append([]string{"codex", "-max-life", helperLife, "-test-token", e2eToken}, args...)
 }
 
 // goTool is the go command of the toolchain running the tests.
@@ -329,8 +464,8 @@ func realClaude(t *testing.T) string {
 func TestE2E4LockScreenSyntheticTUI(t *testing.T) {
 	requireE2E(t)
 	w := newWorld(t, fakeCodex(t))
-	run := w.start("run", "--harness", "codex", "--", "codex", "-burst", "130000")
-	run.answer(answerYes) // C10.consent / C9.codex on the first Codex launch
+	run := w.start(append([]string{"run", "--harness", "codex", "--"}, codexArgv("-burst", "130000")...)...)
+	run.answer(w.launchRules()...) // C10.consent / C9.codex on the first Codex launch
 	m := run.expect("READY", 0)
 	run.send("o")
 	run.expect("OUT-1", m)
@@ -375,7 +510,7 @@ func TestE2E4LockScreenClaudeInline(t *testing.T) {
 	requireE2E(t)
 	w := newWorld(t, realClaude(t))
 	run := w.start("run", "--harness", "claude-code", "--", "claude", "--model", "haiku")
-	run.answer(answerYes)
+	run.answer(w.launchRules()...)
 	run.expect("Claude Code", 0)
 	time.Sleep(2 * time.Second) // let the first frame settle
 	lockMark := run.mark()
@@ -397,7 +532,7 @@ func TestE2E3ResumeRestoresTheSession(t *testing.T) {
 	marker := testkit.Marker(t)
 	first := w.start("run", "--harness", "claude-code", "--", "claude", "-p", "--model", "haiku",
 		"--output-format", "json", "Remember the code word "+marker+" and reply only OK.")
-	first.answer(answerYes)
+	first.answer(w.launchRules()...)
 	if code := first.wait(); code != 0 {
 		t.Fatalf("first run: exit %d\n%s", code, first.text())
 	}
@@ -407,12 +542,54 @@ func TestE2E3ResumeRestoresTheSession(t *testing.T) {
 	}
 	second := w.start("run", "--harness", "claude-code", "--", "claude", "-p", "--model", "haiku",
 		"--resume", sid, "What is the code word? Reply with the code word only.")
-	second.answer(answerYes)
+	second.answer(w.launchRules()...)
 	if code := second.wait(); code != 0 {
 		t.Fatalf("resume: exit %d\n%s", code, second.text())
 	}
 	if !strings.Contains(second.text(), marker) {
 		t.Fatalf("the resumed session lost its context:\n%s", tail(second.text()))
+	}
+}
+
+// e2e3SID is the fixture session of the E2E-3 variants.
+const e2e3SID = "00000000-0000-4000-8000-0000000000e3"
+
+// TestE2E3ResumeMergesFragmentAndMissingNewline is E2E-3's fragment and
+// missing-newline variants on the restore fixtures of REST-4 and REST-5: a
+// synthetic session is sealed, Claude recreates its transcript as a linked
+// fragment (E8), and, in the second variant, the sealed transcript's last
+// record had lost its newline in a crash. `precinto run claude --resume`
+// merges capsule and fragment before Claude starts, and Claude resumes with
+// the full context.
+func TestE2E3ResumeMergesFragmentAndMissingNewline(t *testing.T) {
+	requireE2E(t)
+	claudeDir := realClaude(t)
+	for _, v := range []struct {
+		name      string
+		noNewline bool
+	}{{"fragment", false}, {"missing newline", true}} {
+		t.Run(v.name, func(t *testing.T) {
+			w := newWorld(t, claudeDir)
+			marker := testkit.Marker(t)
+			l := &claudetest.Layout{ConfigDir: w.h.ClaudeConfig, TmpDir: w.h.ClaudeTmp, CacheDir: w.h.ClaudeCache}
+			s := claudetest.Session{SID: e2e3SID, Cwd: w.h.Root, Marker: marker, NoNewline: v.noNewline,
+				ModTime: time.Now().Add(-time.Hour)}
+			transcript := l.WriteSession(t, s)[0]
+			w.sealSession(s.SID)
+			if _, err := os.Lstat(transcript); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("the synthetic session was not sealed (%v)", err)
+			}
+			l.AppendFragment(t, s, 2) // Claude recreated <sid>.jsonl after the move (E8)
+			run := w.start("run", "--harness", "claude-code", "--", "claude", "-p", "--model", "haiku",
+				"--resume", s.SID, "Earlier messages of this conversation begin with a token that starts with precinto-marker-. Reply with that token only.")
+			run.answer(w.launchRules()...)
+			if code := run.wait(); code != 0 {
+				t.Fatalf("resume: exit %d\n%s", code, tail(run.text()))
+			}
+			if !strings.Contains(run.text(), marker) {
+				t.Fatalf("the resumed session lost its context:\n%s", tail(run.text()))
+			}
+		})
 	}
 }
 
@@ -441,14 +618,14 @@ func TestE2E7HookPresence(t *testing.T) {
 	w := newWorld(t, realClaude(t))
 	want := ui.Format(ui.MsgClaudeNoHooks, ui.Vars{})
 	plain := w.start("run", "--harness", "claude-code", "--", "claude", "-p", "--model", "haiku", "Reply OK.")
-	plain.answer(answerYes)
+	plain.answer(w.launchRules()...)
 	plain.wait()
 	if !strings.Contains(plain.text(), want[:40]) {
 		t.Errorf("plugin not installed: C9.claude missing:\n%s", tail(plain.text()))
 	}
 	bare := w.start("run", "--harness", "claude-code", "--", "claude", "--bare", "-p", "--model", "haiku", "Reply OK.")
-	bare.expect("--bare", 0) // C9.bare asks before launching
-	bare.answer(answerYes)
+	bare.expect(ui.Format(ui.MsgBareWarning, ui.Vars{}), 0) // C9.bare asks before launching
+	bare.answer(w.launchRules()...)
 	bare.wait()
 	if !strings.Contains(bare.text(), want[:40]) {
 		t.Errorf("--bare: C9.claude missing:\n%s", tail(bare.text()))
@@ -475,7 +652,10 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ctlW.Close()
-	cmd := exec.Command(shellBin, w.bin, "run", "--harness", "codex", "--", "codex")
+	// The shell's lifeline is the terminal: it dies with its master.
+	argv := append([]string{shellBin, "-ctl", "3", "-max-life", helperLife, "-test-token", e2eToken,
+		w.bin, "run", "--harness", "codex", "--"}, codexArgv()...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env, cmd.Dir = w.environ(), w.h.Root
 	cmd.ExtraFiles = []*os.File{ctlR}
 	master, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
@@ -483,7 +663,17 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctlR.Close()
-	defer master.Close()
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		select {
+		case <-waited:
+		default:
+			_ = cmd.Process.Kill()
+			<-waited
+		}
+		_ = master.Close()
+	})
 	var mu sync.Mutex
 	var out bytes.Buffer
 	go func() {
@@ -512,10 +702,14 @@ func TestE2E5WrappedSessionEndsAlone(t *testing.T) {
 	w.lock("--end")
 	waitText("CTRL-C 2") // the Codex quit keys reached the TUI
 	waitText("JOBSHELL exit")
-	if err := cmd.Wait(); err != nil {
+	select {
+	case err := <-waited:
+		waited <- err // for the cleanup
 		if ee, ok := err.(*exec.ExitError); ok && ee.Sys().(syscall.WaitStatus).Signaled() {
 			t.Fatalf("the terminal's shell was killed: %v", err)
 		}
+	case <-time.After(e2eTimeout):
+		t.Fatal("the terminal's shell did not exit")
 	}
 	if !strings.Contains(text(), "ended 1 session(s)") {
 		t.Errorf("C5 missing:\n%q", tail(text()))
@@ -533,7 +727,7 @@ func TestE2E6CodexHomeThroughTheWrapper(t *testing.T) {
 	}
 	w := newWorld(t, filepath.Dir(p))
 	run := w.start("run", "--harness", "codex", "--", "codex", "exec", "--ephemeral", "Reply OK.")
-	run.answer(answerYes)
+	run.answer(w.launchRules()...)
 	run.wait() // no Codex login in the synthetic home: only the home and the seal matter
 	home := w.h.Layout.CodexHome("root-acme")
 	if _, err := os.Stat(filepath.Join(home, "config.toml")); err != nil {

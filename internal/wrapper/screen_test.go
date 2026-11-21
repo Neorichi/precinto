@@ -32,32 +32,37 @@ func TestResetSequence(t *testing.T) {
 }
 
 func TestOverlayLinesComeFromTheCatalog(t *testing.T) {
-	o := wrapper.Overlay{Folder: "~/work/acme", Reason: "idle 15 min", Factor: "Mac password", Busy: true}
-	lines := strings.Join(wrapper.OverlayLines(o, "Claude", "", false), "\n")
+	o := wrapper.Overlay{Folder: "~/work/acme", Reason: "idle 15 min", Factor: "Mac password", Busy: true, Harness: "Claude Code"}
+	lines := strings.Join(wrapper.OverlayLines(o, "", false), "\n")
 	for _, want := range []string{
 		ui.Format(ui.MsgOverlayTitle, ui.Vars{}),
 		"~/work/acme · locked after idle 15 min",
 		ui.Format(ui.MsgOverlayPaused, ui.Vars{}),
-		ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: "Claude"}),
+		ui.Format(ui.MsgOverlayBusy, ui.Vars{Harness: "Claude Code"}),
 		ui.Format(ui.MsgOverlayKeys, ui.Vars{Factor: "Mac password"}),
 	} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("overlay lacks %q:\n%s", want, lines)
 		}
 	}
-	ending := strings.Join(wrapper.OverlayLines(o, "Claude", "", true), "\n")
+	ending := strings.Join(wrapper.OverlayLines(o, "", true), "\n")
 	if !strings.Contains(ending, ui.Format(ui.MsgOverlayEnding, ui.Vars{})) || strings.Contains(ending, "Ctrl-D") {
 		t.Errorf("ending overlay:\n%s", ending)
 	}
-	notBusy := strings.Join(wrapper.OverlayLines(wrapper.Overlay{Folder: "f", Reason: "screen locked"}, "Codex", "status line", false), "\n")
+	notBusy := strings.Join(wrapper.OverlayLines(wrapper.Overlay{Folder: "f", Reason: "screen locked", Harness: "Codex"}, "status line", false), "\n")
 	if strings.Contains(notBusy, "finishing") || !strings.Contains(notBusy, "status line") {
 		t.Errorf("overlay without busy and with status:\n%s", notBusy)
+	}
+	// No usable factor known (CC-40): the key help names none.
+	plain := strings.Join(wrapper.OverlayLines(wrapper.Overlay{Folder: "f", Reason: "screen locked"}, "", false), "\n")
+	if !strings.Contains(plain, ui.Format(ui.MsgOverlayKeysPlain, ui.Vars{})) || strings.Contains(plain, "unlock (") {
+		t.Errorf("overlay without a factor:\n%s", plain)
 	}
 }
 
 func TestOverlaySanitizesText(t *testing.T) {
-	o := wrapper.Overlay{Folder: "~/evil\x1b]52;c;AAAA\x07dir", Reason: "idle\x1b[2J", Factor: "pass\x07phrase"}
-	for _, line := range wrapper.OverlayLines(o, "x\x1b[31m", "st\x1bPatus", false) {
+	o := wrapper.Overlay{Folder: "~/evil\x1b]52;c;AAAA\x07dir", Reason: "idle\x1b[2J", Factor: "pass\x07phrase", Busy: true, Harness: "x\x1b[31m"}
+	for _, line := range wrapper.OverlayLines(o, "st\x1bPatus", false) {
 		if strings.ContainsAny(line, "\x1b\x07") {
 			t.Fatalf("overlay line carries control characters: %q", line)
 		}

@@ -641,7 +641,6 @@ func (s *proxyState) lock(o Overlay) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ov.o = o
-	s.ov.harness = o.Harness
 	if s.overlayOn {
 		return s.writeOutErr(s.overlayBytes(s.editor != nil))
 	}
@@ -847,7 +846,7 @@ func (s *proxyState) terminate(o TerminateOptions) error {
 	recent := !s.reaped || time.Since(s.exitedAt) < sessionKillWindow
 	s.sigMu.Unlock()
 	if recent {
-		killSession(s.child)
+		killSession(s.child, func() { s.signalChildGroup(sigKill) })
 	}
 	if !s.isExited() {
 		return errStillAlive
@@ -862,11 +861,26 @@ func (s *proxyState) terminate(o TerminateOptions) error {
 const sessionKillWindow = 2 * time.Second
 
 // killSession SIGKILLs what remains of the session a wrapper child leads
-// (platform.SignalGroup verifies the leader identity, CC-13).
-func killSession(leader platform.ProcID) {
-	if err := signalSession(leader, sigKill); err != nil && !errors.Is(err, platform.ErrNoProcess) {
-		// The child's process group is the part of its session the
-		// wrapper can always name.
+// (D57). platform.SignalGroup verifies the leader's identity (CC-13): when
+// it reports a measured leader replaced, nothing of that session is left (a
+// session id is never reused while the session has a member), so nothing
+// else is signalled; for a child whose identity could not be measured,
+// unreapedGroup signals its process group while it is not reaped (its pid
+// still names it). Other failures fall back to the child's process group,
+// the part of its session the wrapper can always name (RJ-12).
+func killSession(leader platform.ProcID, unreapedGroup func()) {
+	killSessionWith(signalSession, leader, unreapedGroup)
+}
+
+func killSessionWith(signal func(platform.ProcID, sysSignal) error, leader platform.ProcID, unreapedGroup func()) {
+	err := signal(leader, sigKill)
+	switch {
+	case err == nil, errors.Is(err, platform.ErrNoProcess):
+	case errors.Is(err, platform.ErrNotSame):
+		if leader.StartUS == 0 {
+			unreapedGroup()
+		}
+	default:
 		_ = killGroup(leader.PID, sigKill)
 	}
 }

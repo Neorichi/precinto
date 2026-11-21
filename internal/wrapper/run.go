@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,13 +31,6 @@ const (
 	postExitTimeout = 10 * time.Minute // Finish, release, seal after exit
 	bgStopWait      = 30 * time.Second // background restore after the child exited
 	eventBuffer     = 64
-)
-
-// D32: settings a managed Claude launch runs with (SPEC §7.1.5).
-const (
-	claudeSettings  = `{"idleCompaction":false,"awaySummaryEnabled":false,"precomputeCompactionEnabled":false}`
-	claudeAwayEnv   = "CLAUDE_CODE_ENABLE_AWAY_SUMMARY"
-	claudeConfigEnv = paths.EnvClaudeConfigDir
 )
 
 // abortCh is a channel closed once.
@@ -73,7 +66,6 @@ type runner struct {
 	sid         string
 	cwd         string
 	harnessName string
-	factor      string
 	iterm       bool
 	tty         string
 	configDir   string
@@ -89,8 +81,17 @@ type runner struct {
 	child platform.ProcID
 	pid   int
 
+	// Before exec (Run's goroutine and the restore watcher, one at a
+	// time): the folders whose state the subscription reported, and
+	// whether it reported a lock, an end or a loss, which refuses the
+	// launch (SPEC §15.1 step 4).
+	known      map[string]bool
+	preRefused bool
+
 	// Event-loop state (one goroutine at a time).
 	locked     map[string]bool
+	factors    map[string][]string // a folder's enrolled factor kinds, from its events (CC-40)
+	gui        int8                // 0 not measured yet, 1 a GUI dialog can appear, -1 it cannot
 	lockCode   ui.Reason
 	lockReason string // rendered for the overlay
 	busy       bool
@@ -137,7 +138,9 @@ func newRunner(o Options, plan harness.LaunchPlan) *runner {
 		stderr:     o.Stderr,
 		msgs:       ui.Writer{W: o.Stderr},
 		ctl:        &ctlConn{b: o.Backend},
+		known:      map[string]bool{},
 		locked:     map[string]bool{},
+		factors:    map[string][]string{},
 		unlockDone: make(chan error, 1),
 		termDone:   make(chan error, 1),
 		abortBG:    newAbort(),
@@ -165,40 +168,23 @@ func newRunner(o Options, plan harness.LaunchPlan) *runner {
 		r.cwd, _ = os.Getwd()
 	}
 	r.harnessName = displayName(r.plan.Harness, o.Argv[0])
-	r.factor = factorHint(o.Env)
 	r.iterm = o.Env.Get("TERM_PROGRAM") == "iTerm.app"
 	return r
 }
 
-// displayName is the harness name users know (C4.busy, C6.deferred).
+// displayName is {harness} of C4.busy and C6.deferred (CC-39): the
+// inventory display name of the built-in harnesses, the harness id of the
+// others, and argv[0]'s base name when the plan names none.
 func displayName(h harness.ID, argv0 string) string {
 	switch h {
 	case harness.ClaudeCode:
-		return "Claude"
+		return "Claude Code"
 	case harness.Codex:
 		return "Codex"
 	case "":
 		return filepath.Base(argv0)
 	}
 	return string(h)
-}
-
-// factorHint names the factor the overlay's Enter will ask for. The wrapper
-// cannot list the enrolled factors; the Mac password dialog is impossible
-// in tmux, screen and SSH (D27, D60).
-func factorHint(e paths.Env) string {
-	if runtime.GOOS == "darwin" {
-		remote := false
-		for _, k := range []string{"TMUX", "STY", "SSH_CONNECTION", "SSH_TTY"} {
-			if _, ok := e.Lookup(k); ok {
-				remote = true
-			}
-		}
-		if !remote {
-			return "Mac password"
-		}
-	}
-	return "passphrase"
 }
 
 func (r *runner) reasonText(code ui.Reason) string {
@@ -253,62 +239,35 @@ func (r *runner) childStderr() io.Writer {
 }
 
 // childEnv is the child's environment: the invoking environment, the
-// plan's additions, PRECINTO_ACTIVE=1 (SPEC §15.1 step 6) and, for a
-// managed Claude launch whose argv carries no --settings (the adapter did
-// not prepare it), D32's variable.
-func (r *runner) childEnv(argv []string) paths.Env {
+// plan's additions (D32's variable for a managed Claude launch among them:
+// PlanLaunch owns the settings injection, SPEC §7.1.5) and
+// PRECINTO_ACTIVE=1 (SPEC §15.1 step 6).
+func (r *runner) childEnv() paths.Env {
 	e := r.o.Env
 	for _, kv := range r.plan.Env {
 		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
 			e = e.With(k, v)
 		}
 	}
-	if r.claudeManaged() && !hasSettingsFlag(argv) {
-		e = e.With(claudeAwayEnv, "0")
-	}
 	return e.With(paths.EnvActive, "1")
 }
 
-func (r *runner) claudeManaged() bool {
-	return r.managed && r.plan.Harness == harness.ClaudeCode && r.plan.Mode != harness.LaunchPassthrough
-}
-
-// hasSettingsFlag reports a --settings option before any "--".
-func hasSettingsFlag(argv []string) bool {
-	for i, a := range argv {
-		if i == 0 {
-			continue
-		}
-		if a == "--" {
-			return false
-		}
-		if a == "--settings" || strings.HasPrefix(a, "--settings=") {
-			return true
-		}
-	}
-	return false
-}
-
-// command builds the child's exec.Cmd from the plan: its final argv
-// (argv[0] resolved through the child's PATH when the plan left it
-// relative), D32 for a managed Claude launch whose plan carries no
-// --settings (the adapter injects it; a user's own --settings wins), the
-// environment, the working directory and the lease descriptors.
+// command builds the child's exec.Cmd from the plan: its final argv as
+// planned (argv[0] resolved through the child's PATH when the plan left it
+// relative; D32's --settings, when due, is already in it), the environment,
+// the working directory and the lease descriptors.
 func (r *runner) command(lease Lease) (*exec.Cmd, error) {
 	argv := append([]string(nil), r.plan.Argv...)
 	if len(argv) == 0 || argv[0] == "" {
 		argv = append([]string(nil), r.o.Argv...)
 	}
-	env := r.childEnv(argv)
+	env := r.childEnv()
 	if !filepath.IsAbs(argv[0]) {
 		p, err := paths.LookPath(env, argv[0])
 		if err != nil {
 			return nil, &os.PathError{Op: "exec", Path: argv[0], Err: exec.ErrNotFound}
 		}
 		argv[0] = p
-	}
-	if r.claudeManaged() && !hasSettingsFlag(argv) {
-		argv = append([]string{argv[0], "--settings", claudeSettings}, argv[1:]...)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env.Environ()
@@ -318,7 +277,7 @@ func (r *runner) command(lease Lease) (*exec.Cmd, error) {
 		// before its child (R4; live.Held.Inheritable).
 		cmd.ExtraFiles = lease.Inheritable()
 	}
-	if d := env.Get(claudeConfigEnv); r.plan.Harness == harness.ClaudeCode && d != "" {
+	if d := env.Get(paths.EnvClaudeConfigDir); r.plan.Harness == harness.ClaudeCode && d != "" {
 		r.configDir = d
 	} else if d := env.Get(paths.EnvCodexHome); r.plan.Harness == harness.Codex && d != "" {
 		r.configDir = d
@@ -375,14 +334,23 @@ func (r *runner) launch(parent context.Context) (int, error) {
 	defer cancel()
 	r.ctx = ctx
 	if r.managed {
-		// Subscribe before the restore: RestoreSync must stop when the
-		// folder locks (abort), and nothing exposes plaintext yet.
+		// Subscribe right after the unlock, before Prepare, the lease and
+		// the restore: RestoreSync must stop when the folder locks
+		// (abort), and nothing exposes plaintext yet. The stream starts
+		// with each folder's state (D71); a locked one refuses the launch.
 		d, ch, err := r.dialSub(ctx)
 		if err != nil {
 			return ExitNotStarted, err
 		}
 		r.events = make(chan subMsg, eventBuffer)
 		go r.watchSub(ctx, d, ch)
+		r.awaitState(ctx)
+		if err := ctx.Err(); err != nil {
+			return ExitNotStarted, err
+		}
+		if r.preRefused {
+			return ExitNotStarted, r.lockedErr()
+		}
 	}
 	if r.plan.Prepare != nil {
 		if err := r.plan.Prepare(ctx); err != nil {
@@ -400,9 +368,13 @@ func (r *runner) launch(parent context.Context) (int, error) {
 	}
 
 	sum, err := r.restoreSync(ctx)
-	if r.lost || len(r.locked) > 0 {
+	// A lock, an end or a loss before exec refuses the launch (exit 3,
+	// C1.notify), even when the folder unlocked again meanwhile: the
+	// restore it aborted is incomplete (SPEC §15.1 step 4).
+	r.drainPrelaunch()
+	if r.preRefused {
 		releaseLease()
-		return ExitNotStarted, &ipc.Error{Code: ipc.CodeLocked, Msg: ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: r.folder})}
+		return ExitNotStarted, r.lockedErr()
 	}
 	if err != nil {
 		releaseLease()
@@ -418,6 +390,10 @@ func (r *runner) launch(parent context.Context) (int, error) {
 	r.tty = r.sessionTTY()
 	if r.managed {
 		r.act = newActivity()
+	}
+	if r.drainPrelaunch(); r.preRefused {
+		releaseLease()
+		return ExitNotStarted, r.lockedErr()
 	}
 	if err := r.startChild(cmd); err != nil {
 		releaseLease()
@@ -447,10 +423,61 @@ func (r *runner) launch(parent context.Context) (int, error) {
 	return code, werr
 }
 
-// restoreSync runs RestoreSync while watching for a lock: a lock (or a
-// lost subscription) closes abort, and the launch is then refused.
+// awaitState waits until the subscription reported the state of every
+// folder of the plan (D71: the stream starts with one locked or unlocked
+// event per subscribed folder) or a lock, an end or a loss. A stream that
+// reports no state within the heartbeat timeout counts as lost.
+func (r *runner) awaitState(ctx context.Context) {
+	t := time.NewTimer(heartbeatTimeout)
+	defer t.Stop()
+	for !r.preRefused && !r.stateKnown() {
+		select {
+		case m := <-r.events:
+			r.applyPrelaunch(m)
+		case <-t.C:
+			r.lost, r.preRefused = true, true
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (r *runner) stateKnown() bool {
+	for _, id := range r.rootIDs {
+		if !r.known[id] {
+			return false
+		}
+	}
+	return true
+}
+
+// drainPrelaunch applies what the subscription reported so far (before
+// exec only).
+func (r *runner) drainPrelaunch() {
+	for {
+		select {
+		case m := <-r.events:
+			r.applyPrelaunch(m)
+		default:
+			return
+		}
+	}
+}
+
+// lockedErr is the refusal of a launch whose folder locked before exec
+// (exit 3, C1.notify).
+func (r *runner) lockedErr() error {
+	return &ipc.Error{Code: ipc.CodeLocked, Msg: ui.Format(ui.MsgEnterNotify, ui.Vars{Folder: r.folder})}
+}
+
+// restoreSync runs RestoreSync while watching for a lock: a lock, an end or
+// a lost subscription closes abort, and the launch is then refused.
 func (r *runner) restoreSync(ctx context.Context) (RestoreSummary, error) {
 	abort := newAbort()
+	if r.preRefused {
+		abort.fire()
+	}
 	stop := make(chan struct{})
 	watched := make(chan struct{})
 	go func() {
@@ -459,7 +486,7 @@ func (r *runner) restoreSync(ctx context.Context) (RestoreSummary, error) {
 			select {
 			case m := <-r.events:
 				r.applyPrelaunch(m)
-				if r.lost || len(r.locked) > 0 {
+				if r.preRefused {
 					abort.fire()
 				}
 			case <-stop:
@@ -473,11 +500,13 @@ func (r *runner) restoreSync(ctx context.Context) (RestoreSummary, error) {
 	return sum, err
 }
 
-// applyPrelaunch records lock state before the child exists.
+// applyPrelaunch records what the subscription reports before the child
+// exists. Any lock, end or loss refuses the launch; a reconnect does not
+// undo that.
 func (r *runner) applyPrelaunch(m subMsg) {
 	switch {
 	case m.lost:
-		r.lost = true
+		r.lost, r.preRefused = true, true
 		for _, id := range r.rootIDs {
 			r.locked[id] = true
 		}
@@ -485,14 +514,19 @@ func (r *runner) applyPrelaunch(m subMsg) {
 		r.lost = false
 	case m.isEvent:
 		aff := r.affected(m.ev.RootIDs)
+		r.noteFactors(aff, m.ev)
 		switch m.ev.Kind {
 		case ipc.EventLocked, ipc.EventEnd:
 			for _, id := range aff {
-				r.locked[id] = true
+				r.locked[id], r.known[id] = true, true
+			}
+			if len(aff) > 0 {
+				r.preRefused = true
 			}
 		case ipc.EventUnlocked:
 			for _, id := range aff {
 				delete(r.locked, id)
+				r.known[id] = true
 			}
 		}
 	}
@@ -588,6 +622,7 @@ func (r *runner) onEvent(ev ipc.Event) {
 	if len(aff) == 0 {
 		return
 	}
+	r.noteFactors(aff, ev)
 	switch ev.Kind {
 	case ipc.EventLocked:
 		for _, id := range aff {
@@ -606,13 +641,15 @@ func (r *runner) onEvent(ev ipc.Event) {
 			r.hideLock()
 		}
 	case ipc.EventEnd:
-		if len(ev.SIDs) == 0 || r.sid == "" || contains(ev.SIDs, r.sid) {
-			code := ui.Reason(ev.Reason)
-			if code == "" {
-				code = r.lockCode
-			}
-			r.startEnd(code)
+		// End events are addressed (D71): the daemon sends them only to
+		// the wrappers whose session it ends, so one naming a folder of
+		// this session ends the child, even while its sid is unknown; the
+		// SIDs it carries are not a filter.
+		code := ui.Reason(ev.Reason)
+		if code == "" {
+			code = r.lockCode
 		}
+		r.startEnd(code)
 	case ipc.EventExpiring:
 		if r.px != nil {
 			r.px.s.notify(ui.Format(ui.MsgExpiry, ui.Vars{Folder: r.folder, Limit: r.o.Policy.MaxUnlock.D()}))
@@ -644,8 +681,49 @@ func contains(list []string, s string) bool {
 	return false
 }
 
+// noteFactors records the enrolled factor kinds an event carries for ids
+// (locked, unlocked and expiring events, CC-40); an event without them
+// changes nothing.
+func (r *runner) noteFactors(ids []string, ev ipc.Event) {
+	if len(ev.Factors) == 0 {
+		return
+	}
+	for _, id := range ids {
+		r.factors[id] = append([]string(nil), ev.Factors...)
+	}
+}
+
+// factorName is the overlay's {factor}: the first usable factor
+// (ui.FactorName) of the first locked folder whose factor kinds are known,
+// "" when none is (the overlay then shows C4.keys.plain). A Secure Enclave
+// factor is named only when a GUI dialog can reach this terminal.
+func (r *runner) factorName() string {
+	for _, id := range r.rootIDs {
+		kinds := r.factors[id]
+		if !r.locked[id] || len(kinds) == 0 {
+			continue
+		}
+		if name := ui.FactorName(kinds, slices.Contains(kinds, "se") && r.guiOK()); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// guiOK reports whether a GUI dialog can appear for this terminal
+// (platform.DetectUIContext), measured once.
+func (r *runner) guiOK() bool {
+	if r.gui == 0 {
+		r.gui = -1
+		if detectUI(r.o.Env, r.o.Stdin, r.o.Stdout).GUI {
+			r.gui = 1
+		}
+	}
+	return r.gui > 0
+}
+
 func (r *runner) overlay() Overlay {
-	o := Overlay{Folder: r.folder, Reason: r.lockReason, Factor: r.factor, Busy: r.busy, Harness: r.harnessName}
+	o := Overlay{Folder: r.folder, Reason: r.lockReason, Factor: r.factorName(), Busy: r.busy, Harness: r.harnessName}
 	if r.lost {
 		// The subscription is gone: the overlay says why (CC-38), and no
 		// unlock can be in flight through a daemon that is not answering.
@@ -704,7 +782,10 @@ func (r *runner) startUnlock() {
 		c, cancel := context.WithTimeout(ctx, unlockTimeout)
 		defer cancel()
 		h := &overlayUI{s: s, cancel: c.Done()}
-		req := ipc.UnlockReq{RootIDs: roots, TTY: true, Deadline: time.Now().Add(unlockTimeout)}
+		// The wrapper's own agent markers are a self-restricting claim the
+		// daemon adds to what it measures itself (CC-11, D28, D59).
+		req := ipc.UnlockReq{RootIDs: roots, TTY: true, Deadline: time.Now().Add(unlockTimeout),
+			AgentMarkers: paths.AgentMarkers(r.o.Env)}
 		err := r.ctl.do(c, func(d Daemon) error {
 			_, err := d.Unlock(c, req, h)
 			return err

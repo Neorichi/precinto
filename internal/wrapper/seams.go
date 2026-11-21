@@ -15,6 +15,9 @@ var (
 	// signalSession signals every remaining process of a session a wrapper
 	// child leads (D57).
 	signalSession = platform.SignalGroup
+	// detectUI tells whether a GUI dialog can reach this terminal, which
+	// decides how the lock screen names a Secure Enclave factor (CC-40).
+	detectUI = platform.DetectUIContext
 	// openPromptUI opens the terminal for prompts before the launch
 	// (plan.Confirm, EnsureUnlocked's relayed UI).
 	openPromptUI = func() (promptUI, error) {

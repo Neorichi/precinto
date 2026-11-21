@@ -41,9 +41,10 @@ var startEnv = paths.FromOS()
 // Helper binaries (testdata main packages), built once per test binary.
 
 var (
-	helpersOnce sync.Once
-	helpersDir  string
-	helpersErr  error
+	helpersOnce   sync.Once
+	helpersDir    string
+	helpersShared bool // a probe run uses its parent's binaries (helpersEnv)
+	helpersErr    error
 )
 
 type helperBins struct {
@@ -54,6 +55,10 @@ type helperBins struct {
 func helpers(t *testing.T) helperBins {
 	t.Helper()
 	helpersOnce.Do(func() {
+		if dir := startEnv.Get(helpersEnv); filepath.IsAbs(dir) {
+			helpersDir, helpersShared = dir, true
+			return
+		}
 		dir, err := os.MkdirTemp("", "precinto-wrapper-helpers-")
 		if err != nil {
 			helpersErr = err
@@ -76,6 +81,19 @@ func helpers(t *testing.T) helperBins {
 		t.Fatal(helpersErr)
 	}
 	return helperBins{tui: filepath.Join(helpersDir, "tuichild"), jobshell: filepath.Join(helpersDir, "jobshell")}
+}
+
+// child is the argv of a scripted child (testdata/tuichild) that gets the
+// test's lifeline as fd 3 (the first ExtraFiles entry, or the first of the
+// fake lease's descriptors) and carries the token, then args.
+func (b helperBins) child(args ...string) []string {
+	return append([]string{b.tui, "-lifeline", "3", "-test-token", testToken}, args...)
+}
+
+// childWithProbe is child for a scripted child that also gets a liveness
+// probe as fd 4 and hands it to every grandchild it spawns.
+func (b helperBins) childWithProbe(args ...string) []string {
+	return b.child(append([]string{"-probe", "4"}, args...)...)
 }
 
 // goTool returns the first go command that runs: the toolchain of `go
@@ -126,6 +144,239 @@ func childEnv(t *testing.T) paths.Env {
 		"HOME": t.TempDir(),
 		"PATH": "/usr/bin:/bin",
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Lifelines, probes and process cleanup (TESTPLAN §1 rule 8): no helper
+// outlives its test.
+
+// lifeline is a pipe whose write end only this test process holds: it is
+// never written and never inherited (close-on-exec). Every helper gets the
+// read end and exits with exitLifeline at EOF, which comes when the test's
+// cleanup closes the write end or when the test process dies however it
+// dies, whatever the helper does with signals.
+type lifeline struct{ r, w *os.File }
+
+func newLifeline(t *testing.T) *lifeline {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close(); _ = r.Close() })
+	return &lifeline{r: r, w: w}
+}
+
+// probe is the reverse: helpers hold the write end, so EOF on the test's
+// read end proves that every holder exited (no signal is sent to check).
+type probe struct {
+	r, w *os.File
+	eof  chan struct{}
+}
+
+func newProbe(t *testing.T) *probe {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &probe{r: r, w: w, eof: make(chan struct{})}
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			if _, err := r.Read(buf); err != nil {
+				close(p.eof)
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	return p
+}
+
+// handOff closes the test's write end once a helper holds its own copy.
+func (p *probe) handOff() { _ = p.w.Close() }
+
+func (p *probe) closedWithin(d time.Duration) bool {
+	select {
+	case <-p.eof:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// snapshot is one platform.System().List() as a ProcTable, so a walk sees a
+// process and its children at the same instant.
+type snapshot []platform.ProcInfo
+
+func (s snapshot) Lookup(pid int) (platform.ProcInfo, error) {
+	for _, p := range s {
+		if p.ID.PID == pid {
+			return p, nil
+		}
+	}
+	return platform.ProcInfo{}, platform.ErrNoProcess
+}
+
+func (s snapshot) Alive(id platform.ProcID) bool {
+	for _, p := range s {
+		if p.ID == id {
+			return p.State != platform.StateZombie
+		}
+	}
+	return false
+}
+
+func (s snapshot) List() ([]platform.ProcInfo, error)  { return s, nil }
+func (s snapshot) Cwd(platform.ProcID) (string, error) { return "", nil }
+func (s snapshot) OpenFilesUnder(context.Context, []string) ([]platform.Holder, error) {
+	return nil, nil
+}
+
+// killTree SIGKILLs a process this test started and what it left: its
+// descendants (platform.Descendants in one snapshot that still holds it:
+// once it is gone they are reparented, and its pid may name another
+// process), the sessions it and they lead (the wrapper's PTY and
+// direct-mode children lead sessions of their own: platform.SignalGroup)
+// and the processes themselves. Every signal is ProcID-verified, so a pid
+// that names another process by now is never signalled.
+func killTree(id platform.ProcID) {
+	if id.PID <= 1 || id.StartUS == 0 {
+		return
+	}
+	var desc []platform.ProcInfo
+	if all, err := platform.System().List(); err == nil && snapshot(all).Alive(id) {
+		desc, _ = platform.Descendants(snapshot(all), id)
+	}
+	_ = platform.SignalGroup(id, syscall.SIGKILL)
+	_ = platform.Signal(id, syscall.SIGKILL)
+	for _, d := range desc {
+		if d.SID == d.ID.PID {
+			_ = platform.SignalGroup(d.ID, syscall.SIGKILL)
+		}
+		_ = platform.Signal(d.ID, syscall.SIGKILL)
+	}
+}
+
+// withToken lists the live processes whose argv carries token: helpers of
+// the test binary that made it (nothing else knows it).
+func withToken(token string) []platform.ProcInfo {
+	all, err := platform.System().List()
+	if err != nil {
+		return nil
+	}
+	var out []platform.ProcInfo
+	for _, p := range all {
+		if p.ID.PID == os.Getpid() || p.State == platform.StateZombie {
+			continue
+		}
+		for _, a := range p.Argv {
+			if strings.Contains(a, token) {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// sweepToken gives the processes carrying token up to grace to exit (their
+// lifelines are closed by now), then kills those left with killTree and
+// returns them.
+func sweepToken(token string, grace time.Duration) []platform.ProcInfo {
+	deadline := time.Now().Add(grace)
+	for {
+		left := withToken(token)
+		if len(left) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			for _, p := range left {
+				killTree(p.ID)
+			}
+			return left
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// helperProc is a helper process the test started itself.
+type helperProc struct {
+	cmd  *exec.Cmd
+	id   platform.ProcID
+	done chan struct{}
+	code int
+}
+
+// startHelper starts cmd; the test's cleanup then kills it with everything
+// it left (killTree; once it exited, only the session it led, which may
+// still have members) and reaps it.
+func startHelper(t *testing.T, cmd *exec.Cmd) *helperProc {
+	t.Helper()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	h := &helperProc{cmd: cmd, done: make(chan struct{})}
+	// Measured before the reap below can run: until then the pid is ours.
+	h.id, _ = platform.Identify(cmd.Process.Pid)
+	go func() {
+		_ = cmd.Wait()
+		h.code = exitCode(cmd.ProcessState)
+		close(h.done)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-h.done:
+			// Reaped: its pid may name another process now; only the
+			// session it led, if any, is still its own.
+			_ = platform.SignalGroup(h.id, syscall.SIGKILL)
+		default:
+			killTree(h.id)
+		}
+		select {
+		case <-h.done:
+		case <-time.After(waitTimeout):
+			t.Errorf("helper %d was not reaped after SIGKILL", h.id.PID)
+		}
+	})
+	return h
+}
+
+// wait waits for the helper's exit and returns its code (128+signal when
+// a signal ended it).
+func (h *helperProc) wait(t *testing.T) int {
+	t.Helper()
+	select {
+	case <-h.done:
+		return h.code
+	case <-time.After(3 * waitTimeout):
+		t.Fatal("helper process did not exit")
+		return -1
+	}
+}
+
+func exitCode(ps *os.ProcessState) int {
+	if ps == nil {
+		return -1
+	}
+	if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ps.ExitCode()
+}
+
+// testSibling starts a process in the test's own session (a stand-in for
+// the user's shell job) holding the probe p.
+func testSibling(t *testing.T, bins helperBins, p *probe) *helperProc {
+	t.Helper()
+	life := newLifeline(t)
+	sib := exec.Command(bins.tui, "sleep", "-lifeline", "3", "-test-token", testToken)
+	sib.Env = []string{}
+	sib.ExtraFiles = []*os.File{life.r, p.w}
+	h := startHelper(t, sib)
+	p.handOff()
+	return h
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +496,7 @@ func (tp *termPair) waitForRe(re *regexp.Regexp, from int) []string {
 	return nil
 }
 
-// quiet waits d and asserts sub did not appear after from.
+// never waits d and asserts sub did not appear after from.
 func (tp *termPair) never(sub string, from int, d time.Duration) {
 	tp.t.Helper()
 	time.Sleep(d)
@@ -317,62 +568,6 @@ func parseReady(m []string) ready {
 }
 
 // ---------------------------------------------------------------------------
-// Liveness pipes: a process holding the write end keeps the read end open,
-// so EOF on the read end proves every holder exited (no signal is sent to
-// check).
-
-type lifeline struct {
-	r, w *os.File
-	eof  chan struct{}
-}
-
-func newLifeline(t *testing.T) *lifeline {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	l := &lifeline{r: r, w: w, eof: make(chan struct{})}
-	go func() {
-		buf := make([]byte, 64)
-		for {
-			if _, err := r.Read(buf); err != nil {
-				close(l.eof)
-				return
-			}
-		}
-	}()
-	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
-	return l
-}
-
-// testSibling starts a process in the test's own session (a stand-in for
-// the user's shell job) holding life.
-func testSibling(t *testing.T, tui string, life *lifeline) *exec.Cmd {
-	t.Helper()
-	sib := exec.Command(tui, "sleep")
-	sib.Env = []string{}
-	sib.ExtraFiles = []*os.File{life.w}
-	if err := sib.Start(); err != nil {
-		t.Fatal(err)
-	}
-	life.handOff()
-	return sib
-}
-
-// handOff closes the test's write end once a child holds its own copy.
-func (l *lifeline) handOff() { _ = l.w.Close() }
-
-func (l *lifeline) closedWithin(d time.Duration) bool {
-	select {
-	case <-l.eof:
-		return true
-	case <-time.After(d):
-		return false
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Fakes of the wrapper's seams (docs/OWNERSHIP.md §4: G6 tests fake
 // Backend, Daemon and Lease).
 
@@ -387,6 +582,11 @@ type fakeServer struct {
 	dials       int
 	heartbeats  atomic.Bool
 	unlockFn    func(ctx context.Context, r ipc.UnlockReq, ui ipc.UIHandler) (ipc.UnlockResp, error)
+	// What a new subscription starts with (D71): one event per subscribed
+	// folder, unlocked unless the folder is in lockedAt (with its reason),
+	// with the folder's factors.
+	lockedAt map[string]string
+	factors  map[string][]string
 }
 
 type fakeSub struct {
@@ -398,9 +598,43 @@ type fakeSub struct {
 func (s *fakeSub) close() { s.once.Do(func() { close(s.closed) }) }
 
 func newFakeServer() *fakeServer {
-	s := &fakeServer{}
+	s := &fakeServer{lockedAt: map[string]string{}, factors: map[string][]string{}}
 	s.heartbeats.Store(true)
 	return s
+}
+
+// setState sets what later subscriptions report for root first: locked
+// with reason, or unlocked when reason is "".
+func (s *fakeServer) setState(root, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if reason == "" {
+		delete(s.lockedAt, root)
+	} else {
+		s.lockedAt[root] = reason
+	}
+}
+
+// setFactors sets the factor kinds the initial events of root carry.
+func (s *fakeServer) setFactors(root string, kinds ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.factors[root] = kinds
+}
+
+// initial returns the events a subscription to roots starts with (D71).
+func (s *fakeServer) initial(roots []string) []ipc.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []ipc.Event
+	for _, id := range roots {
+		ev := ipc.Event{Kind: ipc.EventUnlocked, RootIDs: []string{id}, At: time.Now(), Factors: s.factors[id]}
+		if reason, ok := s.lockedAt[id]; ok {
+			ev.Kind, ev.Reason = ipc.EventLocked, reason
+		}
+		out = append(out, ev)
+	}
+	return out
 }
 
 // publish sends ev to every live subscription.
@@ -430,6 +664,12 @@ func (s *fakeServer) registrations() []ipc.RegisterReq {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]ipc.RegisterReq(nil), s.registers...)
+}
+
+func (s *fakeServer) unlockRequests() []ipc.UnlockReq {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ipc.UnlockReq(nil), s.unlocks...)
 }
 
 // dropSubscriptions closes every stream (a daemon restart).
@@ -484,10 +724,14 @@ func (d *fakeDaemon) Unlock(ctx context.Context, r ipc.UnlockReq, ui ipc.UIHandl
 	return fn(ctx, r, ui)
 }
 
-// Subscribe streams published events plus a heartbeat every 50 ms (while
-// heartbeats are on); the stream closes with the connection.
+// Subscribe streams the folders' state first (D71), then published events
+// plus a heartbeat every 50 ms (while heartbeats are on); the stream closes
+// with the connection.
 func (d *fakeDaemon) Subscribe(ctx context.Context, r ipc.SubscribeReq) (<-chan ipc.Event, error) {
 	sub := &fakeSub{ch: make(chan ipc.Event, 64), closed: make(chan struct{})}
+	for _, ev := range d.srv.initial(r.RootIDs) {
+		sub.ch <- ev
+	}
 	d.srv.mu.Lock()
 	d.srv.subs = append(d.srv.subs, sub)
 	d.srv.subReqs = append(d.srv.subReqs, r)
@@ -541,8 +785,11 @@ func (d *fakeDaemon) Close() error {
 	return nil
 }
 
+// fakeLease hands the child the run's lifeline as its first descriptor
+// (fd 3), then files.
 type fakeLease struct {
 	mu       sync.Mutex
+	life     *os.File
 	files    []*os.File
 	added    []string
 	child    platform.ProcID
@@ -565,7 +812,14 @@ func (l *fakeLease) SetChild(child platform.ProcID) error {
 	return nil
 }
 
-func (l *fakeLease) Inheritable() []*os.File { return l.files }
+func (l *fakeLease) Inheritable() []*os.File {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.life == nil {
+		return l.files
+	}
+	return append([]*os.File{l.life}, l.files...)
+}
 
 func (l *fakeLease) Release() error {
 	l.mu.Lock()
@@ -588,6 +842,7 @@ type fakeBackend struct {
 	planErr     error
 	ensureErr   error
 	ensureFn    func(ui ipc.UIHandler) error
+	life        *os.File // the run's lifeline, the child's fd 3
 	lease       *fakeLease
 	restoreSync func(ctx context.Context, abort <-chan struct{}) (wrapper.RestoreSummary, error)
 	restoreBG   func(ctx context.Context, abort <-chan struct{})
@@ -602,6 +857,21 @@ type fakeBackend struct {
 }
 
 var _ wrapper.Backend = (*fakeBackend)(nil)
+
+// takeLifeline gives the run's child life as its fd 3 (startRun; the
+// helper process's own lifeline in helperMain).
+func (b *fakeBackend) takeLifeline(life *os.File) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.life = life
+}
+
+// launchedChild is the child Run reported (zero before RecordLaunch).
+func (b *fakeBackend) launchedChild() platform.ProcID {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.launched
+}
 
 func (b *fakeBackend) record(name string) {
 	b.mu.Lock()
@@ -639,9 +909,14 @@ func (b *fakeBackend) EnsureUnlocked(ctx context.Context, roots []config.Root, u
 
 func (b *fakeBackend) AcquireLease(ctx context.Context, plan harness.LaunchPlan) (wrapper.Lease, error) {
 	b.record("AcquireLease")
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.lease == nil {
 		b.lease = &fakeLease{}
 	}
+	b.lease.mu.Lock()
+	b.lease.life = b.life
+	b.lease.mu.Unlock()
 	return b.lease, nil
 }
 
@@ -685,10 +960,7 @@ func (b *fakeBackend) waitLaunched(t *testing.T) platform.ProcID {
 	t.Helper()
 	deadline := time.Now().Add(waitTimeout)
 	for time.Now().Before(deadline) {
-		b.mu.Lock()
-		id := b.launched
-		b.mu.Unlock()
-		if !id.IsZero() {
+		if id := b.launchedChild(); !id.IsZero() {
 			return id
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -776,13 +1048,55 @@ type runResult struct {
 	err  error
 }
 
-func startRun(ctx context.Context, o wrapper.Options) <-chan runResult {
+// startRun runs wrapper.Run in a goroutine with a context the test's
+// cleanup cancels. The cleanup then waits up to 5 s for Run, SIGKILLs what
+// is left of the child (its session and descendants, killTree) when Run is
+// still running, and waits for Run again. The child gets a lifeline of the
+// test as its fd 3 (through the fake lease). No goroutine of it calls
+// t.Fatal.
+func startRun(t *testing.T, o wrapper.Options) <-chan runResult {
+	t.Helper()
+	return startRunCtx(t, context.Background(), o)
+}
+
+func startRunCtx(t *testing.T, parent context.Context, o wrapper.Options) <-chan runResult {
+	t.Helper()
+	life := newLifeline(t)
+	type lifelineTaker interface{ takeLifeline(*os.File) }
+	if b, ok := o.Backend.(lifelineTaker); ok {
+		b.takeLifeline(life.r)
+	}
+	ctx, cancel := context.WithCancel(parent)
 	ch := make(chan runResult, 1)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		code, err := wrapper.Run(ctx, o)
 		ch <- runResult{code, err}
 	}()
+	t.Cleanup(func() {
+		cancel()
+		if waitDone(done, 5*time.Second) {
+			return
+		}
+		type launched interface{ launchedChild() platform.ProcID }
+		if b, ok := o.Backend.(launched); ok {
+			killTree(b.launchedChild())
+		}
+		if !waitDone(done, 3*waitTimeout) {
+			t.Error("Run did not return after its child was killed")
+		}
+	})
 	return ch
+}
+
+func waitDone(c <-chan struct{}, d time.Duration) bool {
+	select {
+	case <-c:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 func waitRun(t *testing.T, ch <-chan runResult) runResult {
