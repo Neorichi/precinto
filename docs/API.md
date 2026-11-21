@@ -1423,6 +1423,14 @@ func DetectUIContext(e paths.Env, stdin, stdout *os.File) UIContext
 > (docs/TESTPLAN.md "fakes").
 
 ```go
+// Operations accepted by SetErr.
+const (
+	OpLookup         = "Lookup"
+	OpList           = "List"
+	OpCwd            = "Cwd"
+	OpOpenFilesUnder = "OpenFilesUnder"
+)
+
 // Clock is a settable clock with independent wall and monotonic readings.
 type Clock struct {
 	// contains filtered or unexported fields
@@ -1480,6 +1488,13 @@ func (p *Procs) Reuse(pid int, startUS int64, exe string)
 
 // SetCwd sets the working directory Cwd reports for pid ("" = unknown).
 func (p *Procs) SetCwd(pid int, cwd string)
+
+// SetErr makes every later call of op (OpLookup, OpList, OpCwd or
+// OpOpenFilesUnder) fail with an error wrapping err, until SetErr(op, nil).
+// It models an unreadable process table, a TCC denial or a missing lsof, so
+// tests can check that callers read such failures as "live" (HA9, R11). Any
+// other op panics: a misspelt op would silently inject nothing.
+func (p *Procs) SetErr(op string, err error)
 
 // SetOpenFiles sets the absolute paths pid holds open (OpenFilesUnder).
 func (p *Procs) SetOpenFiles(pid int, paths ...string)

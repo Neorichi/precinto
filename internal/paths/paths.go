@@ -119,13 +119,13 @@ func (e Env) Environ() []string {
 // CLAUDE_PID, CODEX_THREAD_ID-like markers, KIMI_*, GEMINI_SESSION_ID,
 // PRECINTO_ACTIVE). Process ancestry and a missing controlling TTY are
 // checked separately by ui.AgentContext and the daemon (D7, D28, D59).
-func AgentMarkers(e Env) []string { panic("unimplemented: paths.AgentMarkers") }
+func AgentMarkers(e Env) []string { return agentMarkers(e) }
 
 // OverridesAllowed reports whether PRECINTO_HOME/PRECINTO_RUNTIME_DIR may be
 // honoured: built with -tags testing, or PRECINTO_DEV=1 and AgentMarkers(e)
 // is empty (D6). Hook mode never honours them (hooks run in agent
 // contexts).
-func OverridesAllowed(e Env) bool { panic("unimplemented: paths.OverridesAllowed") }
+func OverridesAllowed(e Env) bool { return overridesAllowed(e, testingBuild) }
 
 // TestingBuild reports whether the binary was built with -tags testing.
 func TestingBuild() bool { return testingBuild }
@@ -210,12 +210,16 @@ type Layout struct {
 // overrides): darwin $HOME/Library/Application Support/precinto; linux
 // ${XDG_DATA_HOME:-$HOME/.local/share}/precinto (a relative XDG_DATA_HOME is
 // ignored, as the XDG spec requires).
-func DefaultBase(e Env) (string, error) {
+func DefaultBase(e Env) (string, error) { return defaultBaseFor(e, runtime.GOOS) }
+
+// defaultBaseFor is DefaultBase for an explicit GOOS, so that the linux
+// rules are tested on darwin too.
+func defaultBaseFor(e Env, goos string) (string, error) {
 	home, err := UserHome(e)
 	if err != nil {
 		return "", err
 	}
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		return filepath.Join(home, "Library", "Application Support", "precinto"), nil
 	case "linux":
@@ -224,13 +228,13 @@ func DefaultBase(e Env) (string, error) {
 		}
 		return filepath.Join(home, ".local", "share", "precinto"), nil
 	default:
-		return "", fmt.Errorf("paths: unsupported OS %s (D34)", runtime.GOOS)
+		return "", fmt.Errorf("paths: unsupported OS %s (D34)", goos)
 	}
 }
 
 // NewLayout derives the Layout for e, honouring overrides only when
 // OverridesAllowed(e). It fails if the socket path is 104 bytes or longer.
-func NewLayout(e Env) (Layout, error) { panic("unimplemented: paths.NewLayout") }
+func NewLayout(e Env) (Layout, error) { return newLayout(e, runtime.GOOS, OverridesAllowed(e)) }
 
 // LayoutAt derives a Layout for an explicit base and run directory (tests,
 // and the daemon after it has resolved its own layout). Both must be
@@ -288,7 +292,7 @@ func LayoutAt(base, runDir string) (Layout, error) {
 
 // EnsureDirs creates every Layout directory with mode 0700 and fails on
 // symlinks or foreign owners (fsx.CheckPrivateDir).
-func (l Layout) EnsureDirs() error { panic("unimplemented: paths.Layout.EnsureDirs") }
+func (l Layout) EnsureDirs() error { return l.ensureDirs() }
 
 // VaultDir returns <base>/vaults/<vaultID>.
 func (l Layout) VaultDir(vaultID string) string { return filepath.Join(l.VaultsDir, vaultID) }

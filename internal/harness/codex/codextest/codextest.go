@@ -20,12 +20,19 @@ type Options struct {
 }
 
 // New writes a synthetic home under dir.
-func New(t testing.TB, dir string, o Options) *Home { panic("unimplemented: codextest.New") }
+func New(t testing.TB, dir string, o Options) *Home {
+	t.Helper()
+	return newHome(t, dir, o)
+}
 
 // HoldWriterLock flocks thread-writer-locks/<id>.lock until release is called.
 func (h *Home) HoldWriterLock(t testing.TB, id string) (release func()) {
-	panic("unimplemented: codextest.Home.HoldWriterLock")
+	t.Helper()
+	return holdWriterLock(t, h, id)
 }
 
 // Rollouts lists rollout paths.
-func (h *Home) Rollouts(t testing.TB) []string { panic("unimplemented: codextest.Home.Rollouts") }
+func (h *Home) Rollouts(t testing.TB) []string {
+	t.Helper()
+	return rollouts(t, h)
+}

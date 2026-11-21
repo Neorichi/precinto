@@ -421,11 +421,11 @@ type Change struct {
 // Diff lists changes from old to new. A change is weakening if it removes a
 // root or harness, raises a timer, disables a trigger, narrows md, or turns
 // on a less strict option (D48).
-func Diff(old, new Config) []Change { panic("unimplemented: config.Diff") }
+func Diff(old, new Config) []Change { return diff(old, new) }
 
 // Strictest merges a and b taking, per key, the more protective value; used
 // by hooks with the daemon's pinned policy (D48).
-func Strictest(a, b Config) Config { panic("unimplemented: config.Strictest") }
+func Strictest(a, b Config) Config { return strictest(a, b) }
 
 // WriteRootsList writes the absolute root paths of c, one per line, to path
 // atomically with mode 0600 (D22; read by the POSIX shim). Implemented in
@@ -463,7 +463,7 @@ func ReadRootsList(path string) ([]string, error) {
 }
 
 // NewRootID returns a fresh random root id (32 hex characters).
-func NewRootID() string { panic("unimplemented: config.NewRootID") }
+func NewRootID() string { return newRootID() }
 
 // PinnedVersion is the state/policy.pinned format version.
 const PinnedVersion = 1

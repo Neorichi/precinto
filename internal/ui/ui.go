@@ -1,10 +1,14 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/awnumar/memguard"
@@ -19,36 +23,140 @@ import (
 // daemon prompts without an adapter.
 type TTY struct {
 	in, out *os.File
+	modes   termModes   // nil: golang.org/x/term; tests over pipes use a no-op
+	owned   bool        // Close closes in and out
+	mu      sync.Mutex  // serializes prompts and output; held for a whole prompt
+	closed  bool        // guarded by mu
+	abort   atomic.Bool // set by Close: a running prompt cancels within pollInterval
 }
 
 // OpenTTY opens /dev/tty; it fails in hooks (no controlling terminal).
-func OpenTTY() (*TTY, error) { panic("unimplemented: ui.OpenTTY") }
+func OpenTTY() (*TTY, error) { return openTTY(devTTY) }
 
 // Close releases the terminal.
-func (t *TTY) Close() error { panic("unimplemented: ui.TTY.Close") }
+func (t *TTY) Close() error {
+	if t == nil {
+		return os.ErrInvalid
+	}
+	// A prompt running in another goroutine notices abort within
+	// pollInterval, restores the terminal mode and releases mu.
+	t.abort.Store(true)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil
+	}
+	t.closed = true
+	if !t.owned {
+		return nil
+	}
+	var errs []error
+	if t.in != nil {
+		errs = append(errs, t.in.Close())
+	}
+	if t.out != nil && t.out != t.in {
+		errs = append(errs, t.out.Close())
+	}
+	return errors.Join(errs...)
+}
 
 // Printf writes to the terminal.
-func (t *TTY) Printf(format string, args ...any) { panic("unimplemented: ui.TTY.Printf") }
+func (t *TTY) Printf(format string, args ...any) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.usable() != nil {
+		return
+	}
+	// Arguments are folder paths, config values and diffs, which a process
+	// of the same user can edit: control characters never reach the
+	// terminal (S17).
+	_ = t.write(SanitizeTerminal([]byte(fmt.Sprintf(format, args...))))
+}
 
 // Display shows one informational line (ipc.UIHandler).
-func (t *TTY) Display(msg string) error { panic("unimplemented: ui.TTY.Display") }
+func (t *TTY) Display(msg string) error {
+	if t == nil {
+		return errNotOpen
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.usable(); err != nil {
+		return err
+	}
+	return t.write(oneLine(msg))
+}
 
 // Secret prompts and reads a secret with echo off directly into a locked
 // buffer; Ctrl-C returns ErrCancelled (ipc.UIHandler).
 func (t *TTY) Secret(prompt string) (*memguard.LockedBuffer, error) {
-	panic("unimplemented: ui.TTY.Secret")
+	if t == nil {
+		return nil, errNotOpen
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.usable(); err != nil {
+		return nil, err
+	}
+	return t.secret(prompt)
 }
 
 // Confirm asks a question answered by typing yes or no (the words of the
 // relayed request, ipc.UIHandler); anything else counts as no.
-func (t *TTY) Confirm(prompt, yes, no string) (bool, error) { panic("unimplemented: ui.TTY.Confirm") }
+func (t *TTY) Confirm(prompt, yes, no string) (bool, error) {
+	text, yesWord, ambiguous := confirmText(prompt, yes, no)
+	line, err := t.visiblePrompt(text)
+	if err != nil {
+		return false, err
+	}
+	answer := strings.Join(strings.Fields(line), " ")
+	return !ambiguous && strings.EqualFold(answer, yesWord), nil
+}
 
 // YesNo asks a [y/N] or [Y/n] question.
-func (t *TTY) YesNo(prompt string, def bool) (bool, error) { panic("unimplemented: ui.TTY.YesNo") }
+func (t *TTY) YesNo(prompt string, def bool) (bool, error) {
+	if t == nil {
+		return false, errNotOpen
+	}
+	text, def := yesNoHint(prompt, def)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.usable(); err != nil {
+		return false, err
+	}
+	s, err := t.begin()
+	if err != nil {
+		return false, err
+	}
+	defer s.end()
+	for i := 0; i < yesNoTries; i++ {
+		line, err := t.readVisible(s, text)
+		if err != nil {
+			return false, err
+		}
+		answer := def
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "":
+		case "y", "yes":
+			answer = true
+		case "n", "no":
+			answer = false
+		default:
+			continue // asked again
+		}
+		if s.end() {
+			return false, ErrCancelled
+		}
+		return answer, nil
+	}
+	return false, ErrCancelled
+}
 
 // ReadLine reads one visible line (typed-back confirmations such as
 // MsgConfirmTyped and MsgUnlockConfirmAll).
-func (t *TTY) ReadLine(prompt string) (string, error) { panic("unimplemented: ui.TTY.ReadLine") }
+func (t *TTY) ReadLine(prompt string) (string, error) { return t.visiblePrompt(promptText(prompt)) }
 
 // ShowSecretScreen shows lines on the alternate screen (the secret in
 // groups of 6), requires the user to type back its last confirmLast
@@ -56,7 +164,7 @@ func (t *TTY) ReadLine(prompt string) (string, error) { panic("unimplemented: ui
 // iTerm2 ClearScrollback) and leaves the alternate screen. The buffer is not
 // retained.
 func (t *TTY) ShowSecretScreen(header []string, secret *memguard.LockedBuffer, confirmLast int) error {
-	panic("unimplemented: ui.TTY.ShowSecretScreen")
+	return t.showSecretScreen(header, secret, confirmLast)
 }
 
 // ErrCancelled is returned when the user cancels a prompt.
@@ -67,7 +175,7 @@ type errorString string
 func (e errorString) Error() string { return string(e) }
 
 // Interactive reports whether both stdin and stdout are terminals.
-func Interactive(stdin, stdout *os.File) bool { panic("unimplemented: ui.Interactive") }
+func Interactive(stdin, stdout *os.File) bool { return isTerminal(stdin) && isTerminal(stdout) }
 
 // AgentContext reports whether the current process runs inside an AI agent
 // session: any paths.AgentMarkers, or an ancestor whose executable is a
@@ -77,12 +185,16 @@ func Interactive(stdin, stdout *os.File) bool { panic("unimplemented: ui.Interac
 // --all, prune, forget, unprotect, vault repair) also treat a process
 // without a controlling terminal as an agent context (D59).
 func AgentContext(e paths.Env, t platform.ProcTable) (bool, string) {
-	panic("unimplemented: ui.AgentContext")
+	return agentContext(e, t, agentProbe{
+		markers: paths.AgentMarkers,
+		pid:     os.Getpid(),
+		ctty:    hasControllingTerminal,
+	})
 }
 
 // SanitizeTerminal strips C0/C1 control characters except '\n' and '\t'
 // (escape-sequence injection defence for `precinto cat` to a TTY, S17).
-func SanitizeTerminal(b []byte) []byte { panic("unimplemented: ui.SanitizeTerminal") }
+func SanitizeTerminal(b []byte) []byte { return sanitizeTerminal(b) }
 
 // Reason is why a folder is locked, as shown to users (SPEC §16.3 C3).
 type Reason string
