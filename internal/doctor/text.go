@@ -13,8 +13,9 @@ import (
 // of keys and variables, never values, prompts or file content); the
 // user-facing words of the catalog ("folder", "locked", never "root",
 // "grant", "soft" or "hard"). Texts that exist in the ui catalog are taken
-// from it; the others are composed here until the catalog has doctor
-// messages (change request).
+// from it (C9.ungated, C9.codexoutside, C13.*, C14.tampered); doctor's
+// other findings are composed in this package under the same rules, which
+// its tests enforce on every finding (D70).
 
 // oneLine strips control characters (a folder or file name can carry
 // terminal escapes, S17) and keeps the text on one line.

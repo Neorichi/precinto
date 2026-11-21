@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -191,6 +192,97 @@ func TestResidue(t *testing.T) {
 	want(t, fs, doctor.CheckResidue, doctor.Warn, "Codex hook outputs")
 }
 
+// TestVolumeStaging (FX-G7sup-06): a restore into a file system other than
+// <base>'s stages in <volume>/.precinto-staging (fsx.NewStaging). doctor
+// lists that directory of every volume holding a restore target, like
+// <base>/staging, reports what no pending journal record names, and never
+// lists one that is not a private directory of the user.
+func TestVolumeStaging(t *testing.T) {
+	f := newFixture(t)
+	// A second "volume", mounted at a directory of the test tree, holding a
+	// protected folder; every other path stays on the test's own volume.
+	vol := mkdir(t, filepath.Join(f.h.Dir, "Volumes", "USB"), 0o700)
+	usb := config.Root{ID: "root-usb", Path: mkdir(t, filepath.Join(vol, "notes"), 0o700), MD: config.MDLedger}
+	f.o.Cfg.Roots = append(append([]config.Root{}, f.h.Cfg.Roots...), usb)
+	var asked []string
+	f.d.VolumeRoot = func(p string) string {
+		asked = append(asked, p)
+		if strings.HasPrefix(p, vol+string(filepath.Separator)) || p == vol {
+			return vol
+		}
+		return f.h.Dir
+	}
+	none(t, f.run(), doctor.CheckInterrupted, doctor.Warn)
+	if !slices.Contains(asked, usb.Path) || !slices.Contains(asked, f.h.Root) || !slices.Contains(asked, f.h.ClaudeConfig) {
+		t.Errorf("volumes looked up for %q", asked)
+	}
+
+	staging := mkdir(t, filepath.Join(vol, ".precinto-staging"), 0o700)
+	orphan := mkdir(t, filepath.Join(staging, "op-orphan"), 0o700)
+	writeFile(t, filepath.Join(orphan, "f000001"), "plaintext", 0o600)
+	writeFile(t, filepath.Join(orphan, "f000002"), "plaintext", 0o600)
+	owned := mkdir(t, filepath.Join(staging, "op-owned"), 0o700)
+	mkdir(t, f.h.Layout.JournalDir, 0o700)
+	f.d.JournalPending = func() ([]*journal.Record, error) {
+		return []*journal.Record{{ID: "op-owned", Kind: journal.KindRestore, Phase: journal.PhaseStaged, Staging: owned, Updated: now}}, nil
+	}
+	fs := f.run()
+	got := want(t, fs, doctor.CheckInterrupted, doctor.Warn, orphan+" is an abandoned restore staging folder with 2 decrypted files")
+	if got.Fix != "rm -r "+orphan {
+		t.Errorf("fix %q", got.Fix)
+	}
+	for _, x := range of(fs, doctor.CheckInterrupted) {
+		if strings.Contains(x.Message, "op-owned") {
+			t.Errorf("staging owned by a journal record reported: %q", x.Message)
+		}
+	}
+	none(t, fs, doctor.CheckPermissions, doctor.Warn, doctor.Fail)
+
+	// Readable by others: reported, and still listed (it is the user's).
+	if err := os.Chmod(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs = f.run()
+	want(t, fs, doctor.CheckPermissions, doctor.Warn, staging+" can be read by other users (mode 0755)")
+	want(t, fs, doctor.CheckInterrupted, doctor.Warn, orphan+" is an abandoned restore staging folder")
+
+	// A symlink planted there is never listed (its target is not staging).
+	if err := os.RemoveAll(staging); err != nil {
+		t.Fatal(err)
+	}
+	decoy := mkdir(t, filepath.Join(f.h.Dir, "decoy"), 0o700)
+	mkdir(t, filepath.Join(decoy, "op-decoy"), 0o700)
+	if err := os.Symlink(decoy, staging); err != nil {
+		t.Fatal(err)
+	}
+	fs = f.run()
+	want(t, fs, doctor.CheckPermissions, doctor.Fail, staging+" is a symbolic link")
+	for _, x := range of(fs, doctor.CheckInterrupted) {
+		if strings.Contains(x.Message, "op-decoy") {
+			t.Errorf("the target of a symlinked staging directory was listed: %q", x.Message)
+		}
+	}
+}
+
+// volumeRoot mirrors fsx's choice of <volume>/.precinto-staging: the
+// highest ancestor on the same device, from the deepest existing prefix.
+func TestVolumeRoot(t *testing.T) {
+	dir := t.TempDir()
+	v := doctor.VolumeRoot(dir)
+	if v == "" || (v != dir && !strings.HasPrefix(dir, strings.TrimSuffix(v, "/")+"/")) {
+		t.Fatalf("VolumeRoot(%s) = %q: not an ancestor", dir, v)
+	}
+	if got := doctor.VolumeRoot(filepath.Join(dir, "missing", "deeper")); got != v {
+		t.Errorf("a missing path below %s: %q, want %q", dir, got, v)
+	}
+	if !doctor.SameDevice(v, dir) {
+		t.Errorf("%s is not on the device of %s", v, dir)
+	}
+	if up := filepath.Dir(v); up != v && doctor.SameDevice(up, dir) {
+		t.Errorf("the parent %s of %s is on the same device", up, v)
+	}
+}
+
 func TestPendingAndTamperedPolicy(t *testing.T) {
 	f := newFixture(t)
 	fs := f.run()
@@ -289,11 +381,54 @@ func TestConflict(t *testing.T) {
 	want(t, f.run(), doctor.CheckConflict, doctor.Info, "could not list")
 }
 
+// TestHoldCapped is the doctor side of SEC-20 and D63: files a sweep keeps
+// unsealed in a locked folder only because of weak evidence carry the
+// PlaintextSummary reason hold-capped; doctor reports them per folder, and
+// merges the agent's own hold-capped items.
 func TestHoldCapped(t *testing.T) {
 	f := newFixture(t)
-	none(t, f.run(), doctor.CheckHoldCapped) // only the agent tracks holds
+	want(t, f.run(), doctor.CheckHoldCapped, doctor.OK)
+
+	beta := f.h.Protect(t, "work/beta")
+	f.o.Cfg = f.h.Cfg
+	f.d.Plaintext = func(context.Context) ([]sweep.Plaintext, error) {
+		return []sweep.Plaintext{
+			{RootID: "root-acme", Files: 3, Bytes: 30, ByReason: map[string]int{doctor.CheckHoldCapped: 2, "restored": 1}},
+			{RootID: beta.ID, Files: 1, Bytes: 10, ByReason: map[string]int{doctor.CheckHoldCapped: 1}},
+		}, nil
+	}
+	fs := f.run()
+	got := want(t, fs, doctor.CheckHoldCapped, doctor.Warn, "2 files of "+f.tilde(f.h.Root)+" stay unencrypted although the folder is locked", "weak signs")
+	if !strings.HasSuffix(got.Fix, "precinto sweep") {
+		t.Errorf("fix %q", got.Fix)
+	}
+	want(t, fs, doctor.CheckHoldCapped, doctor.Warn, "1 file of "+f.tilde(beta.Path)+" stays unencrypted")
+	want(t, fs, doctor.CheckUnsealed, doctor.Warn, "3 files", "hold-capped 2") // still unencrypted plaintext
+
+	// An unlocked folder has no hold cap yet (it needs a persistent
+	// observer, DF-01); the agent's items are merged next to doctor's.
+	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) {
+		return ipc.StatusResp{PID: 9, Vaults: []ipc.VaultStatus{{VaultID: beta.ID, State: "unlocked"}},
+			Attention: []ipc.Attention{{Code: ipc.AttnHoldCapped, Folder: "~/work/acme", Count: 1}}}, nil
+	}
+	fs = f.run()
+	want(t, fs, doctor.CheckHoldCapped, doctor.Warn, "2 files of "+f.tilde(f.h.Root))
+	want(t, fs, doctor.CheckHoldCapped, doctor.Warn, "1 unit in ~/work/acme is kept unsealed only by weak signs of activity")
+	for _, x := range of(fs, doctor.CheckHoldCapped) {
+		if strings.Contains(x.Message, f.tilde(beta.Path)) {
+			t.Errorf("an unlocked folder reported hold-capped: %q", x.Message)
+		}
+	}
+
+	// The agent alone, with nothing held.
+	f.d.Plaintext = func(context.Context) ([]sweep.Plaintext, error) { return nil, nil }
 	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) { return ipc.StatusResp{PID: 9}, nil }
 	want(t, f.run(), doctor.CheckHoldCapped, doctor.OK)
+
+	// Neither the scan nor the agent answered: nothing is claimed.
+	f.d.Plaintext = func(context.Context) ([]sweep.Plaintext, error) { return nil, errors.New("scan failed") }
+	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) { return ipc.StatusResp{}, ipc.ErrNoDaemon }
+	none(t, f.run(), doctor.CheckHoldCapped)
 }
 
 func TestUngatedSessionScan(t *testing.T) {
@@ -359,16 +494,73 @@ func TestQuarantineUnreadableStore(t *testing.T) {
 	want(t, fs, doctor.CheckQuarantine, doctor.Info, "could not be fully listed")
 }
 
-// An unreadable process table makes the local ungated scan claim nothing.
+// An unreadable working directory counts as "may be inside" (D47, D52):
+// the process is reported as ungated without a folder. An unreadable
+// process table makes the local scan claim nothing.
 func TestUngatedScanUnreadableProcessTable(t *testing.T) {
 	f := newFixture(t)
 	p := platform.ProcInfo{ID: platform.ProcID{PID: 6100, StartUS: now.Add(-time.Hour).UnixMicro()}, PPID: 1, Exe: "/opt/homebrew/bin/claude"}
 	f.h.Procs.Add(p)
 	f.h.Procs.SetCwd(p.ID.PID, f.h.Root)
-	want(t, f.run(), doctor.CheckUngatedSession, doctor.Warn, "pid 6100")
+	want(t, f.run(), doctor.CheckUngatedSession, doctor.Warn, "pid 6100", f.tilde(f.h.Root))
 	f.h.Procs.SetErr(fakeplatform.OpCwd, errors.New("proc_pidinfo denied"))
+	got := want(t, f.run(), doctor.CheckUngatedSession, doctor.Warn, "claude (pid 6100) runs without precinto's hooks and its working folder cannot be read")
+	if strings.Contains(got.Message, f.tilde(f.h.Root)) || got.Fix != "quit it, or start it with: precinto run claude" {
+		t.Errorf("finding %+v", got)
+	}
+	// No folder protects Claude Code: an unknown cwd cannot be in one.
+	f.o.Cfg.Roots[0].Harnesses = []string{"codex"}
 	none(t, f.run(), doctor.CheckUngatedSession, doctor.Warn)
+	f.o.Cfg.Roots[0].Harnesses = nil
 	f.h.Procs.SetErr(fakeplatform.OpCwd, nil)
 	f.h.Procs.SetErr(fakeplatform.OpList, errors.New("sysctl failed"))
 	none(t, f.run(), doctor.CheckUngatedSession, doctor.Warn)
+}
+
+// goneProcs reports one pid as exited at its cwd lookup (it ended between
+// the listing and the lookup).
+type goneProcs struct {
+	*fakeplatform.Procs
+	gone int
+}
+
+func (g goneProcs) Cwd(id platform.ProcID) (string, error) {
+	if id.PID == g.gone {
+		return "", platform.ErrNotSame
+	}
+	return g.Procs.Cwd(id)
+}
+
+// FX-G7sup-06: processes whose cwd is unknown ("" from the process table)
+// are reported without a folder unless a hook recorded them; one that
+// exited meanwhile is not reported at all.
+func TestUngatedScanUnknownCwd(t *testing.T) {
+	f := newFixture(t)
+	old := now.Add(-time.Hour).UnixMicro()
+	unknown := platform.ProcInfo{ID: platform.ProcID{PID: 6200, StartUS: old}, PPID: 1, Exe: "/opt/homebrew/bin/codex"}
+	hooked := platform.ProcInfo{ID: platform.ProcID{PID: 6201, StartUS: old}, PPID: 1, Exe: "/opt/homebrew/bin/claude"}
+	exited := platform.ProcInfo{ID: platform.ProcID{PID: 6202, StartUS: old}, PPID: 1, Exe: "/opt/homebrew/bin/claude"}
+	for _, p := range []platform.ProcInfo{unknown, hooked, exited} {
+		f.h.Procs.Add(p) // no SetCwd: the table cannot tell their cwd
+	}
+	f.o.Procs = goneProcs{Procs: f.h.Procs, gone: exited.ID.PID}
+	mkdir(t, f.h.Layout.SessionsDir, 0o700)
+	f.d.Sessions = func(h harness.ID) ([]ledger.Session, error) {
+		if h == harness.ClaudeCode {
+			return []ledger.Session{{Harness: "claude-code", SID: "00000000-0000-4000-8000-000000000003", CurrentProc: hooked.ID}}, nil
+		}
+		return nil, nil
+	}
+	fs := f.run()
+	got := want(t, fs, doctor.CheckUngatedSession, doctor.Warn, "codex (pid 6200) runs without precinto's hooks and its working folder cannot be read")
+	if got.Fix != "quit it, or start it with: precinto run codex" {
+		t.Errorf("fix %q", got.Fix)
+	}
+	for _, x := range of(fs, doctor.CheckUngatedSession) {
+		for _, pid := range []string{"6201", "6202"} {
+			if strings.Contains(x.Message, "pid "+pid) {
+				t.Errorf("pid %s reported: %q", pid, x.Message)
+			}
+		}
+	}
 }

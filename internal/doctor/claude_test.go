@@ -13,6 +13,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/harness/claude/claudetest"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/testkit"
@@ -100,7 +101,7 @@ func TestClaudePlugin(t *testing.T) {
 	want(t, f.run(), doctor.CheckClaudePlugin, doctor.OK)
 
 	// Disabled at user level (a local file overriding the shared one).
-	writeJSON(t, filepath.Join(f.h.ClaudeConfig, "settings.local.json"), map[string]any{"enabledPlugins": map[string]bool{"precinto@precinto": false}})
+	writeJSON(t, filepath.Join(f.h.ClaudeConfig, "settings.local.json"), map[string]any{"enabledPlugins": map[string]bool{paths.ClaudePluginID: false}})
 	want(t, f.run(), doctor.CheckClaudePlugin, doctor.Fail, "is disabled in")
 
 	// Installed but not enabled anywhere.
@@ -108,6 +109,17 @@ func TestClaudePlugin(t *testing.T) {
 	g.installClaudePlugin()
 	writeJSON(t, filepath.Join(g.h.ClaudeConfig, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"other@x": true}})
 	want(t, g.run(), doctor.CheckClaudePlugin, doctor.Warn, "installed", "not enabled")
+
+	// Only exactly paths.ClaudePluginID is precinto's plugin (CC-37): a
+	// precinto plugin of another marketplace, installed and enabled, is not.
+	h := newFixture(t)
+	other := "precinto@elsewhere"
+	writeJSON(t, filepath.Join(h.h.ClaudeConfig, "plugins", "installed_plugins.json"), map[string]any{
+		"version": 2,
+		"plugins": map[string]any{other: []any{map[string]any{"scope": "user", "version": "0.2.0"}}},
+	})
+	writeJSON(t, filepath.Join(h.h.ClaudeConfig, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{other: true, "x" + paths.ClaudePluginID: true}})
+	want(t, h.run(), doctor.CheckClaudePlugin, doctor.Fail, "is not installed")
 }
 
 func TestClaudeHooksOff(t *testing.T) {
@@ -117,11 +129,11 @@ func TestClaudeHooksOff(t *testing.T) {
 	local := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.local.json"), map[string]any{"disableAllHooks": true})
 	// Only paths.ClaudePluginID is precinto's plugin (CC-37): a same-named
 	// plugin of another marketplace is not.
-	shared := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"precinto@precinto": false, "precinto@elsewhere": false}})
+	shared := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.json"), map[string]any{"enabledPlugins": map[string]bool{paths.ClaudePluginID: false, "precinto@elsewhere": false}})
 	user := writeJSON(t, filepath.Join(f.h.ClaudeConfig, "settings.json"), map[string]any{"disableAllHooks": true})
 	fs := f.run()
 	want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(local)+" turns off every hook", f.tilde(f.h.Root))
-	got := want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(shared)+" disables precinto's plugin (precinto@precinto)")
+	got := want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(shared)+" disables precinto's plugin ("+paths.ClaudePluginID+")")
 	if strings.Contains(got.Message, "precinto@elsewhere") {
 		t.Errorf("another marketplace's plugin counted as precinto's: %s", got.Message)
 	}
@@ -133,6 +145,60 @@ func TestClaudeHooksOff(t *testing.T) {
 		if strings.Contains(x.Message, f.tilde(local)) {
 			t.Errorf("disableAllHooks=false reported: %q", x.Message)
 		}
+	}
+}
+
+// TestClaudeSettingsInSubfolders (FX-G7sup-06, SPEC §16.1): a session
+// started in a subfolder reads that subfolder's .claude settings, so they
+// are scanned up to 4 levels below the folder, skipping .git, node_modules
+// and vendor and never following a symlinked directory. A nested
+// protected folder's files are reported under that folder only (D36).
+func TestClaudeSettingsInSubfolders(t *testing.T) {
+	f := newFixture(t)
+	off := map[string]any{"disableAllHooks": true}
+	app := writeJSON(t, filepath.Join(f.h.Root, "app", ".claude", "settings.local.json"), off)
+	deep := writeJSON(t, filepath.Join(f.h.Root, "a", "b", "c", "d", ".claude", "settings.json"), map[string]any{"env": map[string]string{"PRECINTO_BIN": "x"}})
+	tooDeep := writeJSON(t, filepath.Join(f.h.Root, "a", "b", "c", "d", "e", ".claude", "settings.json"), off)
+	var skipped []string
+	for _, d := range []string{"node_modules", ".git", "vendor"} {
+		skipped = append(skipped, writeJSON(t, filepath.Join(f.h.Root, d, "pkg", ".claude", "settings.json"), off))
+	}
+	elsewhere := writeJSON(t, filepath.Join(f.h.Dir, "elsewhere", "proj", ".claude", "settings.json"), off)
+	if err := os.Symlink(filepath.Join(f.h.Dir, "elsewhere"), filepath.Join(f.h.Root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// A linked .claude of a subfolder is read, as Claude reads it.
+	linked := writeJSON(t, filepath.Join(f.h.Dir, "dotfiles", "claude", "settings.json"), off)
+	mkdir(t, filepath.Join(f.h.Root, "tool"), 0o700)
+	if err := os.Symlink(filepath.Dir(linked), filepath.Join(f.h.Root, "tool", ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	inner := f.h.Protect(t, "work/acme/inner")
+	f.o.Cfg = f.h.Cfg
+	innerFile := writeJSON(t, filepath.Join(inner.Path, ".claude", "settings.local.json"), off)
+
+	fs := f.run()
+	folder := f.tilde(f.h.Root)
+	want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(app)+" turns off every hook", "in "+folder+" cannot")
+	want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(filepath.Join(f.h.Root, "tool", ".claude", "settings.json"))+" turns off every hook")
+	want(t, fs, doctor.CheckClaudeSettingsEnv, doctor.Fail, f.tilde(deep)+" sets PRECINTO_BIN in env")
+	got := want(t, fs, doctor.CheckClaudeHooksOff, doctor.Fail, f.tilde(innerFile))
+	if !strings.Contains(got.Message, "in "+f.tilde(inner.Path)+" cannot") {
+		t.Errorf("a nested folder's file is not reported under that folder: %q", got.Message)
+	}
+	n := 0
+	for _, x := range of(fs, doctor.CheckClaudeHooksOff) {
+		if strings.Contains(x.Message, f.tilde(innerFile)) {
+			n++
+		}
+		for _, p := range append(skipped, tooDeep, elsewhere, filepath.Join(f.h.Root, "link", "proj", ".claude", "settings.json")) {
+			if strings.Contains(x.Message, f.tilde(p)+" ") {
+				t.Errorf("%s reported: %q", p, x.Message)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("the nested folder's file was reported %d times", n)
 	}
 }
 

@@ -3,6 +3,7 @@ package doctor_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -18,6 +19,7 @@ import (
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 // constValues returns the string constants of a Go file whose names start
@@ -223,6 +225,58 @@ func TestAttentionItemsAreMerged(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("unknown attention code dropped:\n%s", dump(fs))
+	}
+}
+
+// TestUngatedAttentionNamesTheHarness: an ungated-session item that names
+// its harness (ipc.Attention.Harness, CC-48) is rendered as C9.ungated
+// exactly, with the command users type; one without a usable harness keeps
+// the generic text.
+func TestUngatedAttentionNamesTheHarness(t *testing.T) {
+	f := newFixture(t)
+	st := ipc.StatusResp{PID: 4242, Attention: []ipc.Attention{
+		{Code: ipc.AttnUngatedSession, Folder: "~/work/acme", PID: 778, Harness: "claude-code", Detail: "no hooks"},
+		{Code: ipc.AttnUngatedSession, Folder: f.h.Root, PID: 779, Harness: "codex", Fix: "precinto run codex"},
+		{Code: ipc.AttnUngatedSession, PID: 780, Harness: "gemini"},
+		{Code: ipc.AttnUngatedSession, Folder: f.h.Root, PID: 781, Harness: "$(evil)"},
+	}}
+	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) { return st, nil }
+	fs := f.run()
+	folder := f.tilde(f.h.Root)
+	exact := map[int]string{
+		778: ui.Format(ui.MsgUngatedSession, ui.Vars{Harness: "claude", PID: 778, Folder: "~/work/acme"}),
+		779: ui.Format(ui.MsgUngatedSession, ui.Vars{Harness: "codex", PID: 779, Folder: folder}),
+	}
+	for pid, text := range exact {
+		got := want(t, fs, doctor.CheckUngatedSession, doctor.Warn, fmt.Sprintf("(pid %d)", pid))
+		if wantMsg := strings.TrimPrefix(text, "precinto: "); got.Message != wantMsg {
+			t.Errorf("pid %d: message\n %q\nwant C9.ungated\n %q", pid, got.Message, wantMsg)
+		}
+	}
+	if got := want(t, fs, doctor.CheckUngatedSession, doctor.Warn, "(pid 778)"); got.Fix != "quit it, or start it with: precinto run claude" {
+		t.Errorf("fix %q", got.Fix)
+	}
+	if got := want(t, fs, doctor.CheckUngatedSession, doctor.Warn, "(pid 779)"); got.Fix != "precinto run codex" {
+		t.Errorf("the agent's own fix was replaced: %q", got.Fix)
+	}
+	// No folder: no C9.ungated (it names one), but the harness is named.
+	if got := want(t, fs, doctor.CheckUngatedSession, doctor.Warn, "gemini (pid 780) runs without precinto's hooks"); got.Fix != "quit it, or start it with: precinto run gemini" {
+		t.Errorf("fix %q", got.Fix)
+	}
+	// A harness that is not a command word is never put into a command.
+	got := want(t, fs, doctor.CheckUngatedSession, doctor.Warn, "a session (pid 781)")
+	if strings.Contains(got.Message, "evil") || strings.Contains(got.Fix, "evil") {
+		t.Errorf("finding %+v", got)
+	}
+
+	// `precinto doctor codex` leaves out the Claude Code session.
+	f.o.Harness = "codex"
+	fs = f.run()
+	want(t, fs, doctor.CheckUngatedSession, doctor.Warn, "(pid 779)")
+	for _, x := range of(fs, doctor.CheckUngatedSession) {
+		if strings.Contains(x.Message, "(pid 778)") {
+			t.Errorf("doctor codex shows a Claude Code session: %q", x.Message)
+		}
 	}
 }
 

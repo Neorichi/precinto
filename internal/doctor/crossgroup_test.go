@@ -11,6 +11,7 @@ package doctor_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ func realDeps(f *fixture) *doctor.Deps {
 	d.CloudSynced = safe.CloudSynced
 	d.SpotlightIndexed = safe.SpotlightIndexed
 	d.BackupExcluded = safe.BackupExcluded
+	d.VolumeRoot = safe.VolumeRoot
 	d.Executable = safe.Executable
 	d.SystemBins = nil
 	d.RunShell = safe.RunShell
@@ -58,20 +60,37 @@ func TestCrossgroupVaultTripwire(t *testing.T) {
 }
 
 // TestCrossgroupUnloggedCapsule: a capsule planted in the store without a
-// provenance entry is reported (SEC-1, D8); one named by a pending journal
-// record is not (O7).
+// provenance entry is reported (SEC-1, D8), and so is a logged capsule that
+// is gone; neither is once a pending journal record names its unit (O7:
+// precinto's own crash leftovers are never reported).
 func TestCrossgroupUnloggedCapsule(t *testing.T) {
 	f := newFixture(t)
 	vaulttest.New(t, f.h.Base, "root-acme")
 	f.d = realDeps(f)
+	// unitB is logged but its capsule is not in the store; unitA's capsule
+	// is in the store but not logged.
 	if err := capslog.Open(f.h.Layout.CapsuleLog).Append(capslog.Entry{V: capslog.Version, Path: "claude-code/" + unitB + "/g000001.pcap",
 		Unit: unitB, Harness: "claude-code", Kind: "claude-session", VaultID: "root-acme", Gen: 1, SealedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	f.capsuleFile("claude-code/" + unitA + "/g000001.pcap")
-	want(t, f.run(), doctor.CheckQuarantine, doctor.Warn, "1 file in the capsule store are not in the provenance log")
+	fs := f.run()
+	want(t, fs, doctor.CheckQuarantine, doctor.Warn, "1 file in the capsule store is not in the provenance log")
+	want(t, fs, doctor.CheckQuarantine, doctor.Warn, "1 logged capsule is missing from the store")
 
-	if _, err := journal.Open(f.h.Layout.JournalDir).Begin(journal.KindSeal, "claude-code", unitA); err != nil {
+	j := journal.Open(f.h.Layout.JournalDir)
+	if _, err := j.Begin(journal.KindSeal, "claude-code", unitA); err != nil {
+		t.Fatal(err)
+	}
+	fs = f.run()
+	for _, x := range of(fs, doctor.CheckQuarantine) {
+		if strings.Contains(x.Message, "not in the provenance log") {
+			t.Errorf("a capsule named by a pending journal record was reported: %q", x.Message)
+		}
+	}
+	want(t, fs, doctor.CheckQuarantine, doctor.Warn, "1 logged capsule is missing from the store") // unitB has no record
+
+	if _, err := j.Begin(journal.KindSeal, "claude-code", unitB); err != nil {
 		t.Fatal(err)
 	}
 	none(t, f.run(), doctor.CheckQuarantine, doctor.Warn, doctor.Fail)

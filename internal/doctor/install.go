@@ -68,7 +68,9 @@ func (e *env) findExecutable(name, configured string) string {
 // the package.json of the npm package pkg when the executable is that
 // package's script, else from the nearest path component that is a version
 // (…/versions/2.1.329, …/Cellar/codex/0.154.0/bin/codex,
-// …/Caskroom/claude-code/2.1.329/claude), at most four levels up.
+// …/Caskroom/claude-code/2.1.329/claude), at most four levels up. With pkg
+// "" (data-driven inventories name no package) the package is the one the
+// script lies in.
 func versionOfExecutable(exe, pkg string) (version, bool) {
 	real := exe
 	if r, err := filepath.EvalSymlinks(exe); err == nil {
@@ -76,9 +78,7 @@ func versionOfExecutable(exe, pkg string) (version, bool) {
 	}
 	// npm: <prefix>/lib/node_modules/<pkg>/{cli.js,bin/codex.js}; the
 	// prefix itself may carry a version (nvm), so this comes first.
-	marker := "/node_modules/" + pkg + "/"
-	if i := strings.Index(real, marker); i >= 0 {
-		dir := real[:i+len(marker)-1]
+	if dir := npmPackageDir(real, pkg); dir != "" {
 		b, err := readRegular(filepath.Join(dir, "package.json"), maxSmallFile)
 		if err != nil {
 			return version{}, false
@@ -87,7 +87,7 @@ func versionOfExecutable(exe, pkg string) (version, bool) {
 			Name    string `json:"name"`
 			Version string `json:"version"`
 		}
-		if json.Unmarshal(b, &meta) != nil || meta.Name != pkg {
+		if json.Unmarshal(b, &meta) != nil || (pkg != "" && meta.Name != pkg) {
 			return version{}, false
 		}
 		return parseVersion(meta.Version)
@@ -100,6 +100,34 @@ func versionOfExecutable(exe, pkg string) (version, bool) {
 		p = filepath.Dir(p)
 	}
 	return version{}, false
+}
+
+// npmPackageDir returns the directory of the npm package a resolved script
+// lies in: <…>/node_modules/<pkg>, or with pkg "" the package (name or
+// @scope/name) after the last node_modules of the path; "" when the script
+// is not inside such a package.
+func npmPackageDir(real, pkg string) string {
+	const nm = "/node_modules/"
+	if pkg != "" {
+		marker := nm + pkg + "/"
+		if i := strings.Index(real, marker); i >= 0 {
+			return real[:i+len(marker)-1]
+		}
+		return ""
+	}
+	i := strings.LastIndex(real, nm)
+	if i < 0 {
+		return ""
+	}
+	parts := strings.Split(real[i+len(nm):], "/")
+	n := 1
+	if strings.HasPrefix(parts[0], "@") {
+		n = 2
+	}
+	if len(parts) <= n || parts[0] == "" || parts[n-1] == "" {
+		return "" // the script must lie inside the package directory
+	}
+	return real[:i+len(nm)] + strings.Join(parts[:n], "/")
 }
 
 // runningOf lists the live processes of a harness, recognised by their

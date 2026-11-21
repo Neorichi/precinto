@@ -61,6 +61,18 @@ func TestRenderJSON(t *testing.T) {
 	if !strings.Contains(b.String(), `"findings": []`) || !strings.Contains(b.String(), `"worst": "ok"`) {
 		t.Errorf("empty report: %s", b.String())
 	}
+
+	// Every text of a finding is sanitized, its severity too.
+	for _, asJSON := range []bool{true, false} {
+		b.Reset()
+		odd := []doctor.Finding{{Code: "x\x1b]0;t\x07", Severity: "odd\x1b[2J", Message: "m\x1b[31m", Fix: "f\x9b"}}
+		if err := doctor.Render(&b, odd, asJSON); err != nil {
+			t.Fatal(err)
+		}
+		if s := b.String(); strings.ContainsAny(s, "\x1b\x07") || strings.Contains(s, "\x9b") || strings.Contains(s, `\u001b`) || strings.Contains(s, `\u0007`) || strings.Contains(s, `�`) {
+			t.Errorf("json=%v: a control character reached the output: %q", asJSON, s)
+		}
+	}
 }
 
 func TestWorst(t *testing.T) {

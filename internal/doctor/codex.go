@@ -98,13 +98,6 @@ var knownCodexTop = map[string]bool{
 	"shell_snapshots": true, "precinto-tmp": true, "log": true, "plugins": true, "skills": true,
 }
 
-// checkExperimentalVersion is SPEC §7.3's warning for an installed
-// experimental harness outside its inventory's verified_versions. Doctor
-// has no version probe for the experimental inventories yet (it never runs
-// a harness to ask), so it reports nothing until one exists; the code is
-// reserved in the vocabulary (CC-44).
-func checkExperimentalVersion(e *env) []Finding { return nil }
-
 func checkCodexVersion(e *env) []Finding {
 	if !e.codexPresent() {
 		return nil
@@ -194,8 +187,11 @@ func checkCodexHooksTrust(e *env) []Finding {
 	return out
 }
 
+// checkCodexShellNoise runs `$SHELL -lc true`, which executes the user's
+// login profile, only when a per-root Codex home exists: only Codex run by
+// precinto runs precinto's hooks through that shell (SPEC §16.1, HA6).
 func checkCodexShellNoise(e *env) []Finding {
-	if !e.codexPresent() {
+	if len(e.codexHomes()) == 0 {
 		return nil
 	}
 	shell := e.o.Env.Get("SHELL")

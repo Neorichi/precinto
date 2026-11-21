@@ -100,6 +100,31 @@ func TestServiceRunningPermissions(t *testing.T) {
 	}
 }
 
+// CC-34: state/hookdedupe and state/notes.json are precinto's own paths
+// and must be private too.
+func TestPermissionsHookDedupeAndNotesIndex(t *testing.T) {
+	f := newFixture(t)
+	dedupe := mkdir(t, f.h.Layout.HookDedupeDir, 0o700)
+	notes := writeFile(t, f.h.Layout.NotesIndex, "{}", 0o600)
+	none(t, f.run(), doctor.CheckPermissions, doctor.Warn, doctor.Fail)
+
+	if err := os.Chmod(dedupe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(notes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs := f.run()
+	got := want(t, fs, doctor.CheckPermissions, doctor.Warn, dedupe+" can be read by other users (mode 0755)")
+	if got.Fix != "chmod 700 "+dedupe {
+		t.Errorf("fix %q", got.Fix)
+	}
+	got = want(t, fs, doctor.CheckPermissions, doctor.Warn, notes+" can be read by other users (mode 0644)")
+	if got.Fix != "chmod 600 "+notes {
+		t.Errorf("fix %q", got.Fix)
+	}
+}
+
 func TestServiceRunningSweeps(t *testing.T) {
 	f := newFixture(t)
 	f.d.GOOS = "darwin"

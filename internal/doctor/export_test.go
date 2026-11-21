@@ -73,3 +73,13 @@ func WriteJSON(w io.Writer, fs []Finding) error  { return Render(w, fs, true) }
 
 // RunLoginShell exposes the real `$SHELL -lc true` runner.
 var RunLoginShell = runLoginShell
+
+// VolumeRoot exposes the volume lookup of <volume>/.precinto-staging.
+func VolumeRoot(path string) string { return volumeRoot(path) }
+
+// SameDevice reports whether a and b exist on one file system.
+func SameDevice(a, b string) bool {
+	da, errA := deviceOf(a)
+	db, errB := deviceOf(b)
+	return errA == nil && errB == nil && da == db
+}

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/paths"
 )
@@ -139,9 +141,65 @@ func (e *env) userSettingsFiles() []string {
 	return out
 }
 
-// rootSettingsFiles returns <root>/.claude/settings*.json of a root.
-func rootSettingsFiles(root string) []string {
-	dir := filepath.Join(root, ".claude")
+// settingsScanDepth is how many directory levels below a protected folder
+// doctor looks for .claude/settings*.json: a session started in a
+// subfolder reads that subfolder's project settings (SPEC §16.1).
+const settingsScanDepth = 4
+
+// settingsSkipDirs are never descended into while looking for settings.
+var settingsSkipDirs = map[string]bool{".git": true, "node_modules": true, "vendor": true}
+
+// rootSettingsFiles returns the .claude/settings*.json files of a root and
+// of its subdirectories up to settingsScanDepth levels down, in walk order.
+// The walk is fsx's: it never follows a symlinked directory (a linked
+// .claude is read, as Claude reads it), skips .git, node_modules and vendor,
+// and never lists a dataless cloud placeholder, which would download it
+// (SPEC §17). Each root is walked once per Run.
+func (e *env) rootSettingsFiles(root string) []string {
+	if cached, ok := e.rootSettings[root]; ok {
+		return cached
+	}
+	out := settingsFilesIn(filepath.Join(root, ".claude"))
+	e.rootSettings[root] = out
+	d, err := fsx.OpenBase(root)
+	if err != nil {
+		return out // missing, a symlink or not the user's: only the folder's own settings
+	}
+	defer d.Close()
+	dirs := 0
+	_ = d.Walk(".", func(we fsx.WalkEntry) error {
+		if e.ctx.Err() != nil {
+			return fs.SkipAll
+		}
+		depth := strings.Count(we.Rel, "/") + 1
+		name := path.Base(we.Rel)
+		isDir := we.Type == fsx.TypeDir
+		switch {
+		case name == ".claude":
+			if depth > 1 && ((isDir && we.Hazard != fsx.HazardAccess) || we.Type == fsx.TypeSymlink) {
+				out = append(out, settingsFilesIn(filepath.Join(root, filepath.FromSlash(we.Rel)))...)
+			}
+			if isDir {
+				return fs.SkipDir
+			}
+			return nil // never SkipDir on a file: it would end the directory
+		case !isDir || we.Hazard != fsx.HazardNone:
+			return nil // files, links and hazards are never descended into
+		case settingsSkipDirs[name], depth > settingsScanDepth:
+			return fs.SkipDir
+		}
+		if dirs++; dirs > maxDirEntries {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	e.rootSettings[root] = out
+	return out
+}
+
+// settingsFilesIn returns the settings*.json files of one .claude
+// directory (a linked one is followed, as Claude follows it).
+func settingsFilesIn(dir string) []string {
 	es, err := listDir(dir)
 	if err != nil {
 		return nil

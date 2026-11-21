@@ -1,11 +1,14 @@
 package doctor
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/precinto/precinto/internal/config"
@@ -308,17 +311,50 @@ func (e *env) queuedSeals() []Finding {
 	return out
 }
 
+// holdCappedReason is the PlaintextSummary reason of files a sweep keeps
+// unsealed in a locked folder only because of weak signs of activity
+// (E5 mtime-only, E7 name-only, unobserved; SPEC §9.5, D63).
+const holdCappedReason = CheckHoldCapped
+
+// checkHoldCapped reports the hold-capped files of locked folders from the
+// plaintext summary (D63); the agent's own hold-capped items are merged
+// like every attention item. The 24 h cap of unlocked folders needs a
+// persistent observer and is not reported yet (DF-01).
 func checkHoldCapped(e *env) []Finding {
-	st := e.daemon()
-	if st == nil {
-		return nil // hold times are tracked by the agent only (S14)
+	out := e.part(CheckHoldCapped, e.holdCapped)
+	if len(out) > 0 {
+		return out
 	}
-	for _, a := range st.Attention {
-		if a.Code == CheckHoldCapped {
-			return nil // merged from the agent's attention items
+	if _, err := e.plaintextSummary(); err != nil {
+		return nil // nothing was looked at (unsealed reports the failed scan)
+	}
+	if st := e.daemon(); st != nil {
+		for _, a := range st.Attention {
+			if a.Code == CheckHoldCapped {
+				return nil // merged from the agent's attention items
+			}
 		}
 	}
-	return []Finding{ok(CheckHoldCapped, "no unit is kept unsealed by weak signs of activity alone")}
+	return []Finding{ok(CheckHoldCapped, "no file of a locked folder is kept unsealed by weak signs of activity alone")}
+}
+
+// holdCapped turns the hold-capped reason of PlaintextSummary into one
+// finding per locked folder.
+func (e *env) holdCapped() []Finding {
+	sums, err := e.plaintextSummary()
+	if err != nil {
+		return nil
+	}
+	var out []Finding
+	for _, p := range sums {
+		n := p.ByReason[holdCappedReason]
+		if n <= 0 || e.unlocked(p.RootID) {
+			continue
+		}
+		out = append(out, warn(CheckHoldCapped, plural(n, "file", "files")+" of "+e.folderOf(p.RootID)+" "+verb(n, "stays", "stay")+" unencrypted although the folder is locked: precinto sees only weak signs that something still writes "+verb(n, "it", "them")+" (S14)",
+			"quit whatever still runs in that folder, then run: precinto sweep"))
+	}
+	return out
 }
 
 // checkInterrupted reports what interrupted operations left: journal
@@ -354,39 +390,163 @@ func checkResidue(e *env) []Finding {
 }
 
 // staleStaging reports restore staging directories that no pending journal
-// record names: decrypted files nobody will place or remove (D12).
+// record names: decrypted files nobody will place or remove (D12). It looks
+// in <base>/staging and in the <volume>/.precinto-staging of every volume
+// holding a restore target (fsx stages there when the target is on another
+// file system than <base>).
 func (e *env) staleStaging() []Finding {
-	dir := e.o.Layout.StagingDir
-	es, err := listDir(dir)
-	if err != nil || len(es) == 0 {
-		return nil
-	}
-	pending, perr := e.journalPending()
-	if perr != nil {
-		return nil
-	}
-	named := map[string]bool{}
-	for _, r := range pending {
-		if r.Staging != "" {
-			named[filepath.Clean(r.Staging)] = true
-		}
-	}
 	var out []Finding
-	for _, en := range es {
-		p := filepath.Join(dir, en.Name())
-		if named[p] {
-			continue // a restore in flight or awaiting recovery (rolled forward or back)
+	var named map[string]bool
+	for _, dir := range append([]string{e.o.Layout.StagingDir}, e.volumeStagingDirs()...) {
+		if p := dirProblem(dir, e.d.EUID); p.severe {
+			continue // not a private directory of this user: never listed (permissions reports it)
 		}
-		files := 0
-		_ = filepath.WalkDir(p, func(_ string, d fs.DirEntry, err error) error {
-			if err == nil && d.Type().IsRegular() {
-				files++
+		es, err := listDir(dir)
+		if err != nil || len(es) == 0 {
+			continue
+		}
+		if named == nil {
+			pending, perr := e.journalPending()
+			if perr != nil {
+				return out // cannot tell what is in flight: claim nothing
 			}
-			return nil
-		})
-		out = append(out, warn(CheckInterrupted, e.show(p)+" is an abandoned restore staging folder with "+plural(files, "decrypted file", "decrypted files")+" (D12)",
-			"rm -r "+e.arg(p)))
+			named = map[string]bool{}
+			for _, r := range pending {
+				if r.Staging != "" {
+					named[filepath.Clean(r.Staging)] = true
+				}
+			}
+		}
+		for _, en := range es {
+			p := filepath.Join(dir, en.Name())
+			if !en.IsDir() || named[p] {
+				continue // not a staging folder, or a restore in flight or awaiting recovery
+			}
+			files := 0
+			_ = filepath.WalkDir(p, func(_ string, d fs.DirEntry, err error) error {
+				if err == nil && d.Type().IsRegular() {
+					files++
+				}
+				return nil
+			})
+			out = append(out, warn(CheckInterrupted, e.show(p)+" is an abandoned restore staging folder with "+plural(files, "decrypted file", "decrypted files")+" (D12)",
+				"rm -r "+e.arg(p)))
+		}
 	}
+	return out
+}
+
+// volumeStagingName is fsx's per-volume staging directory (SPEC §6.1).
+const volumeStagingName = ".precinto-staging"
+
+// volumeStagingDirs returns the existing <volume>/.precinto-staging of
+// every volume that holds a base a restore writes to: the protected
+// folders (Markdown), the registered and default harness homes (Claude's
+// config, temp and cache folders, generic homes) and the per-root Codex
+// homes. A volume is found the way fsx finds it (volumeRoot). Loaded once.
+func (e *env) volumeStagingDirs() []string {
+	if e.volStagingDone {
+		return e.volStaging
+	}
+	e.volStagingDone = true
+	root := e.d.VolumeRoot
+	if root == nil {
+		root = volumeRoot
+	}
+	var targets []string
+	for _, r := range e.o.Cfg.Roots {
+		targets = append(targets, r.Path)
+	}
+	for _, id := range sortedHarnesses(e.o.Cfg.Harness) {
+		for _, h := range e.o.Cfg.Harness[id].Homes {
+			targets = append(targets, h.Dir, h.Tmp, h.Cache)
+		}
+	}
+	targets = append(targets, e.claudeConfigDirs()...)
+	targets = append(targets, e.claudeTmpDirs()...)
+	targets = append(targets, e.o.Layout.HomesDir)
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range targets {
+		if !filepath.IsAbs(t) {
+			continue
+		}
+		v := root(t)
+		if !filepath.IsAbs(v) {
+			continue
+		}
+		d := filepath.Join(v, volumeStagingName)
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		if exists(d) {
+			out = append(out, d)
+		}
+	}
+	e.volStaging = out
+	return out
+}
+
+// volumeRoot returns the mount point of the file system holding path,
+// exactly as fsx chooses <volume>/.precinto-staging: the highest ancestor
+// of path's deepest existing prefix that is on the same device. "" when
+// that cannot be told (fsx then stages nowhere). It only stats.
+func volumeRoot(path string) string {
+	p := filepath.Clean(path)
+	var dev uint64
+	for {
+		d, err := deviceOf(p)
+		if err == nil {
+			dev = d
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return ""
+		}
+		up := filepath.Dir(p)
+		if up == p {
+			return ""
+		}
+		p = up
+	}
+	for {
+		up := filepath.Dir(p)
+		if up == p {
+			return p
+		}
+		d, err := deviceOf(up)
+		if err != nil {
+			return ""
+		}
+		if d != dev {
+			return p
+		}
+		p = up
+	}
+}
+
+// deviceOf returns the device number of the file system holding path
+// (following symlinks, as fsx does).
+func deviceOf(path string) (uint64, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, errors.New("doctor: no device number")
+	}
+	return uint64(st.Dev), nil // int32 on darwin, uint64 on linux
+}
+
+// sortedHarnesses returns the [harness.<id>] ids of a config in order.
+func sortedHarnesses(m map[string]config.Harness) []string {
+	out := make([]string, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
+	sort.Strings(out)
 	return out
 }
 

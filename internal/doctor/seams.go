@@ -52,7 +52,10 @@ type deps struct {
 	// backups (platform.BackupExcluded: known=false with a nil error when
 	// no backup destination is configured).
 	BackupExcluded func(ctx context.Context, path string) (excluded, known bool, err error)
-	Executable     func() (string, error)
+	// VolumeRoot returns the mount point of the file system holding path,
+	// as fsx chooses <volume>/.precinto-staging ("" when unknown).
+	VolumeRoot func(path string) string
+	Executable func() (string, error)
 	// SystemBins are directories searched for harness executables after
 	// PATH and the per-user install locations.
 	SystemBins []string
@@ -115,6 +118,7 @@ func defaultDeps(o Options) *deps {
 		CloudSynced:      platform.CloudSynced,
 		SpotlightIndexed: platform.SpotlightIndexed,
 		BackupExcluded:   platform.BackupExcluded,
+		VolumeRoot:       volumeRoot,
 		Executable:       os.Executable,
 		SystemBins:       []string{"/opt/homebrew/bin", "/usr/local/bin"},
 		RunShell:         runLoginShell,
@@ -211,9 +215,11 @@ func capsuleHeaderSHA(path string) (string, error) {
 // sweepEnvOnce builds, once, the sweep.Env that PlaintextSummary, List and
 // LoadReceipt need: the same adapters, ledger, liveness engine and stores a
 // sweep uses, with Grants from the agent's status (no agent: every folder
-// counts as locked, R4). It reads state/name.salt without creating it; when
-// the salt does not exist yet a random one stands in (no unit has been
-// sealed, so no receipt or log entry can match any key).
+// counts as locked, R4). It reads state/name.salt without creating it
+// (capsule.ReadSalt). When the salt does not exist yet a random one stands
+// in: the adapters refuse an empty salt, and since nothing was ever sealed
+// or leased (both create the salt first), no receipt, lease or log entry can
+// match any key.
 type sweepEnvOnce struct {
 	o      Options
 	status func(context.Context) (ipc.StatusResp, error)
@@ -232,11 +238,11 @@ func buildSweepEnv(o Options, status func(context.Context) (ipc.StatusResp, erro
 	if o.Procs == nil {
 		return sweep.Env{}, errors.New("doctor: no process table")
 	}
-	salt, err := readSalt(l.NameSalt)
+	salt, ok, err := capsule.ReadSalt(l.NameSalt)
 	if err != nil {
 		return sweep.Env{}, err
 	}
-	if salt == nil {
+	if !ok {
 		salt = make([]byte, saltSize)
 		_, _ = rand.Read(salt) // never fails (Go ≥ 1.24)
 	}

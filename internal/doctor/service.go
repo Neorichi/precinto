@@ -16,9 +16,10 @@ import (
 )
 
 // Agent, background-sweep and permission checks (SPEC §6.1, §10.1, §13;
-// D6, UX23, R15). They are reported as service-running: each of these
-// problems stops the agent or the background sweeps (EnsureDirs refuses
-// a directory that is a symlink, foreign or not private).
+// D6, UX23, R15): the agent's answer, the heartbeat and a stuck sweep lock
+// under service-running; the run directory and socket under agent-socket;
+// the privacy of precinto's own paths under permissions (EnsureDirs and
+// fsx refuse a directory that is a symlink, foreign or not private).
 
 const (
 	// sweepInterval is how often the LaunchAgent sweeps (SPEC §13.1);
@@ -36,7 +37,7 @@ func checkServiceRunning(e *env) []Finding {
 	out = append(out, e.sweepFindings()...)
 	out = append(out, e.lockFindings()...)
 	if len(out) == 0 {
-		out = append(out, ok(CheckServiceRunning, "precinto's agent, background sealing and data folder look healthy"))
+		out = append(out, ok(CheckServiceRunning, "precinto's agent and background sealing look healthy"))
 	}
 	return out
 }
@@ -158,39 +159,53 @@ func pathProblem(path string, wantDir bool, euid int) problem {
 }
 
 // precintoDirs are the Layout directories EnsureDirs manages (paths
-// layout.go), parents first.
+// layout.go), parents first; the run directory is agent-socket's.
 func precintoDirs(l paths.Layout) []string {
 	return []string{l.Base, filepath.Dir(l.BinLink), l.VaultsDir, l.FactorsDir, l.CapsulesDir, l.HomesDir,
 		l.StagingDir, l.QuarantineDir, l.StateDir, l.VerifiedDir, l.GensDir, l.ReceiptsDir, l.LeasesDir,
-		l.SessionsDir, l.ProjectsDir, l.JournalDir, l.QueueDir, l.LocksDir, l.LogsDir}
+		l.SessionsDir, l.ProjectsDir, l.JournalDir, l.QueueDir, l.LocksDir, l.HookDedupeDir, l.LogsDir}
+}
+
+// precintoFiles are precinto's own metadata files at fixed Layout paths
+// (state/notes.json holds note paths, CC-34).
+func precintoFiles(l paths.Layout) []string {
+	return []string{l.ConfigFile, l.RootsList, l.NameSalt, l.CapsuleLog, l.PolicyPinned, l.NotesIndex,
+		l.LogFile, l.SweepLast, l.SweepRequested}
+}
+
+// permissionFinding renders the permission problem p of one of precinto's
+// paths (no finding when there is none).
+func (e *env) permissionFinding(path string, dir bool, p problem) []Finding {
+	if p.text == "" {
+		return nil
+	}
+	what := "file"
+	if dir {
+		what = "folder"
+	}
+	msg := "precinto's " + what + " " + e.show(path) + " " + p.text
+	if p.severe {
+		return []Finding{fail(CheckPermissions, msg+": precinto refuses to use it, or another user could change it", p.fix(e, path, dir))}
+	}
+	return []Finding{warn(CheckPermissions, msg, p.fix(e, path, dir))}
 }
 
 // permissionFindings checks precinto's own directories and metadata files,
-// and the vault directories with their files (SPEC §6.1: directories 0700,
-// files 0600).
+// the vault directories with their files (SPEC §6.1: directories 0700,
+// files 0600) and the per-volume restore staging directories (fsx refuses
+// one that is not private, and others could read what is staged there).
 func (e *env) permissionFindings() []Finding {
 	l := e.o.Layout
 	var out []Finding
-	report := func(path string, dir bool, p problem) {
-		if p.text == "" {
-			return
-		}
-		what := "file"
-		if dir {
-			what = "folder"
-		}
-		msg := "precinto's " + what + " " + e.show(path) + " " + p.text
-		if p.severe {
-			out = append(out, fail(CheckPermissions, msg+": precinto refuses to use it, or another user could change it", p.fix(e, path, dir)))
-		} else {
-			out = append(out, warn(CheckPermissions, msg, p.fix(e, path, dir)))
-		}
-	}
+	report := func(path string, dir bool, p problem) { out = append(out, e.permissionFinding(path, dir, p)...) }
 	for _, d := range precintoDirs(l) {
 		report(d, true, dirProblem(d, e.d.EUID))
 	}
-	for _, f := range []string{l.ConfigFile, l.RootsList, l.NameSalt, l.CapsuleLog, l.PolicyPinned, l.LogFile, l.SweepLast, l.SweepRequested} {
+	for _, f := range precintoFiles(l) {
 		report(f, false, fileProblem(f, e.d.EUID))
+	}
+	for _, d := range e.volumeStagingDirs() {
+		report(d, true, dirProblem(d, e.d.EUID))
 	}
 	vaults, _ := listDir(l.VaultsDir)
 	for _, v := range vaults {

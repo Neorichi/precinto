@@ -166,7 +166,10 @@ func checkClaudeHooksOff(e *env) []Finding {
 		if !rootProtects(r, harness.ClaudeCode) {
 			continue
 		}
-		for _, f := range rootSettingsFiles(r.Path) {
+		for _, f := range e.rootSettingsFiles(r.Path) {
+			if owner, ok := e.rootFor(f, harness.ClaudeCode); ok && owner.ID != r.ID {
+				continue // a nested folder's file: reported under that folder (D36)
+			}
 			s := e.settingsAt(f)
 			if s == nil {
 				continue
@@ -257,11 +260,16 @@ func checkClaudeSettingsEnv(e *env) []Finding {
 	files := e.userSettingsFiles()
 	for _, r := range e.o.Cfg.Roots {
 		if rootProtects(r, harness.ClaudeCode) {
-			files = append(files, rootSettingsFiles(r.Path)...)
+			files = append(files, e.rootSettingsFiles(r.Path)...)
 		}
 	}
 	var out []Finding
+	seen := map[string]bool{}
 	for _, f := range files {
+		if seen[f] {
+			continue // a nested folder's file, found from both folders
+		}
+		seen[f] = true
 		s := e.settingsAt(f)
 		switch {
 		case s == nil:

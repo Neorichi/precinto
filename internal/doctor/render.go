@@ -72,7 +72,7 @@ type jsonFinding struct {
 func writeJSON(w io.Writer, fs []Finding) error {
 	r := jsonReport{V: 1, Worst: worst(fs), Findings: make([]jsonFinding, 0, len(fs))}
 	for _, f := range fs {
-		r.Findings = append(r.Findings, jsonFinding{Code: oneLine(f.Code), Severity: f.Severity, Message: oneLine(f.Message), Fix: oneLine(f.Fix)})
+		r.Findings = append(r.Findings, jsonFinding{Code: oneLine(f.Code), Severity: Severity(oneLine(string(f.Severity))), Message: oneLine(f.Message), Fix: oneLine(f.Fix)})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)

@@ -174,6 +174,14 @@ func TestCodexShellNoise(t *testing.T) {
 		gotShell, gotEnv = shell, env
 		return 12, 30 * time.Millisecond, nil
 	}
+	// The login profile runs only when a per-root Codex home exists (SPEC
+	// §16.1): Codex installed or used outside precinto is not enough.
+	f.cellarCodex("0.154.0")
+	none(t, f.run(), doctor.CheckCodexShellNoise)
+	if gotShell != "" {
+		t.Fatalf("%s -lc true ran without a per-root Codex home", gotShell)
+	}
+	f.perRootHome(0)
 	want(t, f.run(), doctor.CheckCodexShellNoise, doctor.Warn, "zsh -lc true prints 12 bytes on stdout")
 	if gotShell != "/bin/zsh" || len(gotEnv) == 0 {
 		t.Errorf("shell %q env %d", gotShell, len(gotEnv))

@@ -208,6 +208,7 @@ func safeDeps(at time.Time) *doctor.Deps {
 		CloudSynced:      func(string) bool { return false },
 		SpotlightIndexed: func(context.Context, string) (bool, bool, error) { return false, true, nil },
 		BackupExcluded:   func(context.Context, string) (bool, bool, error) { return true, true, nil },
+		VolumeRoot:       func(string) string { return "" }, // no volume outside the test's own tree
 		Executable:       func() (string, error) { return "", errors.New("no executable in unit tests") },
 		RunShell: func(context.Context, string, []string, string) (int, time.Duration, error) {
 			return 0, 10 * time.Millisecond, nil
@@ -340,9 +341,9 @@ func (f *fixture) installClaudePlugin() {
 	cc := f.h.ClaudeConfig
 	writeJSON(f.t, filepath.Join(cc, "plugins", "installed_plugins.json"), map[string]any{
 		"version": 2,
-		"plugins": map[string]any{"precinto@precinto": []any{map[string]any{"scope": "user", "version": "0.2.0"}}},
+		"plugins": map[string]any{paths.ClaudePluginID: []any{map[string]any{"scope": "user", "version": "0.2.0"}}},
 	})
-	writeJSON(f.t, filepath.Join(cc, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{"precinto@precinto": true}})
+	writeJSON(f.t, filepath.Join(cc, "settings.json"), map[string]any{"enabledPlugins": map[string]bool{paths.ClaudePluginID: true}})
 }
 
 // tilde renders a path of the fixture's HOME as findings show it.

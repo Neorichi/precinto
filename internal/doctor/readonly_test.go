@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -22,6 +23,7 @@ import (
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/harness/claude/claudetest"
 	"github.com/precinto/precinto/internal/harness/codex/codextest"
 	"github.com/precinto/precinto/internal/ipc"
@@ -174,8 +176,35 @@ func TestReadOnly(t *testing.T) {
 		return []queue.Request{{ID: "q1", Harness: "codex", At: now.Add(-9 * time.Hour), Deadline: now.Add(-time.Hour)}}, nil
 	}
 	f.d.Plaintext = func(context.Context) ([]sweep.Plaintext, error) {
-		return []sweep.Plaintext{{RootID: "root-acme", Files: 2, Bytes: 9, ByReason: map[string]int{"restored": 1, "inaccessible": 1}}}, nil
+		return []sweep.Plaintext{{RootID: "root-acme", Files: 3, Bytes: 9, ByReason: map[string]int{"restored": 1, "inaccessible": 1, doctor.CheckHoldCapped: 1}}}, nil
 	}
+	// An experimental harness outside its verified range (SPEC §7.3).
+	gemini := writeFile(t, filepath.Join(h.Dir, "opt", "gemini-cli", "9.9.9", "bin", "gemini"), "#!/bin/sh\nexit 0\n", 0o700)
+	hs := map[string]config.Harness{"gemini": {Enabled: true, Experimental: true, Bin: gemini}}
+	for k, v := range f.o.Cfg.Harness {
+		hs[k] = v
+	}
+	f.o.Cfg.Harness = hs
+	f.d.Inventory = func(id string) (harness.Inventory, error) {
+		if id == "gemini" {
+			return harness.Inventory{ID: id, Name: "Gemini CLI", Status: "experimental", VerifiedVersions: ">=0.10.0 <0.11.0",
+				Process: harness.ProcessMatch{ExeBasenames: []string{"gemini"}}}, nil
+		}
+		return harness.Inventory{}, errors.New("no inventory")
+	}
+	// Restore staging on another volume (a directory standing in for its
+	// mount point).
+	vol := mkdir(t, filepath.Join(h.Dir, "Volumes", "USB"), 0o700)
+	writeFile(t, filepath.Join(vol, ".precinto-staging", "op-vol", "f000001"), marker, 0o600)
+	f.o.Cfg.Roots = append(append([]config.Root{}, f.o.Cfg.Roots...), config.Root{ID: "root-usb", Path: mkdir(t, filepath.Join(vol, "notes"), 0o700), MD: config.MDLedger})
+	f.d.VolumeRoot = func(p string) string {
+		if strings.HasPrefix(p, vol+"/") {
+			return vol
+		}
+		return h.Dir
+	}
+	// Settings in a subfolder of a protected folder.
+	writeJSON(t, filepath.Join(h.Root, "app", ".claude", "settings.json"), map[string]any{"env": map[string]string{"PRECINTO_HOME": marker}})
 	f.d.Units = func(context.Context, bool) ([]sweep.UnitInfo, error) {
 		return []sweep.UnitInfo{{Unit: unitA, RootIDs: []string{"root-acme"}, Conflicts: 1}}, nil
 	}
@@ -226,12 +255,15 @@ func TestReadOnly(t *testing.T) {
 		seen[x.Code] = true
 	}
 	for _, c := range doctor.Codes() {
-		// hold-capped comes only from the agent; experimental-version has
-		// no version probe yet (it never runs a harness).
-		if !seen[c] && c != doctor.CheckHoldCapped && c != doctor.CheckExperimentalVersion {
+		if !seen[c] {
 			t.Errorf("no finding of %s in the canary run", c)
 		}
 	}
+	// The new sources each reached their check.
+	want(t, fs, doctor.CheckHoldCapped, doctor.Warn, "1 file of "+f.tilde(h.Root))
+	want(t, fs, doctor.CheckExperimentalVersion, doctor.Warn, "Gemini CLI 9.9.9 is outside")
+	want(t, fs, doctor.CheckInterrupted, doctor.Warn, filepath.Join(vol, ".precinto-staging", "op-vol")+" is an abandoned restore staging folder")
+	want(t, fs, doctor.CheckClaudeSettingsEnv, doctor.Fail, f.tilde(filepath.Join(h.Root, "app", ".claude", "settings.json"))+" sets PRECINTO_HOME")
 }
 
 // forbiddenCalls are the functions doctor must never call: anything that

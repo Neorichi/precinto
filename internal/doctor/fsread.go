@@ -1,7 +1,6 @@
 package doctor
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,7 +12,6 @@ import (
 	"sort"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/inventories"
 )
@@ -92,32 +90,6 @@ func readRegular(path string, max int64) ([]byte, error) {
 	return b, nil
 }
 
-// readFirstLine returns the first line of a regular file (without its
-// newline), reading at most max bytes; complete is false when no newline
-// came within them (the line may continue).
-func readFirstLine(path string, max int) (line []byte, complete bool, err error) {
-	f, _, err := openRegular(path)
-	if err != nil {
-		return nil, false, err
-	}
-	defer f.Close()
-	r := bufio.NewReaderSize(io.LimitReader(f, int64(max)), 4096)
-	for {
-		chunk, err := r.ReadSlice('\n')
-		line = append(line, chunk...)
-		switch {
-		case err == nil:
-			return line[:len(line)-1], true, nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			continue
-		case errors.Is(err, io.EOF):
-			return line, false, nil
-		default:
-			return nil, false, err
-		}
-	}
-}
-
 // exists reports whether something (of any type, a dangling symlink
 // included) is at path.
 func exists(path string) bool {
@@ -129,16 +101,6 @@ func exists(path string) bool {
 func isDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
-}
-
-// readSalt reads state/name.salt without creating it (capsule.ReadSalt;
-// capsule.LoadSalt would create it): nil when it does not exist yet.
-func readSalt(path string) ([]byte, error) {
-	salt, ok, err := capsule.ReadSalt(path)
-	if err != nil || !ok {
-		return nil, err
-	}
-	return salt, nil
 }
 
 // listDir returns the entries of dir sorted by name (at most

@@ -1,10 +1,13 @@
 package doctor
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/ledger"
@@ -64,12 +67,29 @@ func (e *env) attentionFindings() []Finding {
 	}
 	var out []Finding
 	for _, a := range st.Attention {
-		if h, ok := attnHarness[a.Code]; ok && !e.harnessSelected(h) {
+		if h, ok := attnHarnessOf(a); ok && !e.harnessSelected(h) {
 			continue
 		}
 		out = append(out, e.fromAttention(a))
 	}
 	return out
+}
+
+// attnHarnessOf returns the built-in harness an attention item is about:
+// by its code, or for an ungated session by the harness it names.
+func attnHarnessOf(a ipc.Attention) (harness.ID, bool) {
+	if h, ok := attnHarness[a.Code]; ok {
+		return h, true
+	}
+	if a.Code == ipc.AttnUngatedSession {
+		switch harnessCommand(a.Harness) {
+		case "claude":
+			return harness.ClaudeCode, true
+		case string(harness.Codex):
+			return harness.Codex, true
+		}
+	}
+	return "", false
 }
 
 // fromAttention renders one attention item (texts from the ui catalog
@@ -100,7 +120,23 @@ func (e *env) fromAttention(a ipc.Attention) Finding {
 	case ipc.AttnCodexWrongHome:
 		msg = codexWrongHomeText(a.Count, folder)
 	case ipc.AttnUngatedSession:
-		msg = fmt.Sprintf("a session (pid %d) runs%s without precinto's hooks, so it cannot be paused when the folder locks (D52)", a.PID, where)
+		name := harnessCommand(a.Harness)
+		if name != "" && folder != "" {
+			// C9.ungated exactly (CC-48); the text names the fix itself.
+			fix := oneLine(a.Fix)
+			if fix == "" {
+				fix = ungatedFix(name)
+			}
+			return Finding{Code: code, Severity: sev, Message: catalog(ui.MsgUngatedSession, ui.Vars{Harness: name, PID: a.PID, Folder: folder}), Fix: fix}
+		}
+		what := "a session"
+		if name != "" {
+			what = name
+			if a.Fix == "" {
+				a.Fix = ungatedFix(name)
+			}
+		}
+		msg = fmt.Sprintf("%s (pid %d) runs%s without precinto's hooks, so it cannot be paused when the folder locks (D52)", what, a.PID, where)
 	case ipc.AttnUnsealed:
 		msg = plural(a.Count, "file", "files") + where + " " + verb(a.Count, "is", "are") + " still unencrypted although the folder is locked"
 	case ipc.AttnHoldCapped:
@@ -139,6 +175,31 @@ func fromWhere(folder string) string {
 	return " from " + folder
 }
 
+// harnessCommand turns the harness of an attention item (ipc.Attention.
+// Harness: a harness id or the command name) into the {harness} of
+// C9.ungated, the word users type ("precinto run claude"); "" when the
+// item names none, or nothing that is a plain command word.
+func harnessCommand(h string) string {
+	h = oneLine(h)
+	if h == string(harness.ClaudeCode) {
+		return "claude"
+	}
+	if !shellSafe(h) || strings.ContainsAny(h, "/~") {
+		return ""
+	}
+	return h
+}
+
+// ungatedFix is the fix of an ungated session of harness command name.
+func ungatedFix(name string) string { return "quit it, or start it with: precinto run " + name }
+
+// ungatedUnknownCwdText is the finding of a harness process without hooks
+// whose working directory cannot be read: it may run in a protected folder
+// (unknown counts as inside, D47, D52), but no folder can be named.
+func ungatedUnknownCwdText(name string, pid int) string {
+	return fmt.Sprintf("%s (pid %d) runs without precinto's hooks and its working folder cannot be read: if it runs in a protected folder, it can't be paused when the folder locks (D52)", name, pid)
+}
+
 // hookWindow is the hook-presence window after a harness starts (SPEC
 // §14.4: SessionStart within 10 s; Codex: the first prompt).
 const hookWindow = 30 * time.Second
@@ -156,9 +217,11 @@ func checkUngatedSession(e *env) []Finding {
 }
 
 // ungatedScan is doctor's own version of the agent's scan (D52) for when
-// the agent does not run: harness processes (by executable, never p_comm)
-// whose cwd lies in a protected folder and for which no hook ever wrote a
-// ledger event. It only reports; nothing is signalled (D57).
+// the agent does not run (then every folder is locked): harness processes
+// (by executable, never p_comm) whose cwd lies in a protected folder, or
+// cannot be read while some folder protects that harness, and for which no
+// hook ever wrote a ledger event. A process whose cwd is unknown is
+// reported without a folder. It only reports; nothing is signalled (D57).
 func (e *env) ungatedScan() []Finding {
 	if e.o.Procs == nil {
 		return nil
@@ -189,12 +252,18 @@ func (e *env) ungatedScan() []Finding {
 				continue // its first hook may not have run yet
 			}
 			cwd, err := e.o.Procs.Cwd(p.ID)
-			if err != nil || cwd == "" {
-				continue
+			if errors.Is(err, platform.ErrNotSame) || errors.Is(err, platform.ErrNoProcess) {
+				continue // it exited meanwhile
 			}
-			r, inside := e.rootFor(cwd, k.id)
-			if !inside {
-				continue
+			known := err == nil && cwd != ""
+			var r config.Root
+			if known {
+				var inside bool
+				if r, inside = e.rootFor(cwd, k.id); !inside {
+					continue
+				}
+			} else if !e.protectsHarness(k.id) {
+				continue // no folder protects this harness: it cannot be in one
 			}
 			if !loaded {
 				owners, loaded = e.hookedProcs(k.id), true
@@ -203,8 +272,12 @@ func (e *env) ungatedScan() []Finding {
 				clean++ // hooks reported this process (or the ledger is unreadable: no claim)
 				continue
 			}
+			if !known {
+				out = append(out, warn(CheckUngatedSession, ungatedUnknownCwdText(k.name, p.ID.PID), ungatedFix(k.name)))
+				continue
+			}
 			out = append(out, warn(CheckUngatedSession, catalog(ui.MsgUngatedSession, ui.Vars{Harness: k.name, PID: p.ID.PID, Folder: e.folder(r)}),
-				"quit it, or start it with: precinto run "+k.name))
+				ungatedFix(k.name)))
 		}
 	}
 	if len(out) == 0 && clean > 0 {

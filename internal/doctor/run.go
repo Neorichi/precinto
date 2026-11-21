@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
@@ -56,10 +57,14 @@ type env struct {
 	claudeDirsDone bool
 	claudeDirs     []string
 
-	vaults   map[string]*vaultInfo
-	settings map[string]*settingsFile
-	claudeIn *install
-	codexIn  *install
+	volStagingDone bool
+	volStaging     []string // existing <volume>/.precinto-staging directories
+
+	vaults       map[string]*vaultInfo
+	settings     map[string]*settingsFile
+	rootSettings map[string][]string // root path → its .claude/settings*.json files
+	claudeIn     *install
+	codexIn      *install
 }
 
 // run implements Run with explicit dependencies.
@@ -75,7 +80,7 @@ func run(ctx context.Context, o Options, d *deps) ([]Finding, error) {
 		return nil, errNoLayout
 	}
 	e := &env{ctx: ctx, o: o, d: d, now: d.Now(), sel: sel,
-		vaults: map[string]*vaultInfo{}, settings: map[string]*settingsFile{}}
+		vaults: map[string]*vaultInfo{}, settings: map[string]*settingsFile{}, rootSettings: map[string][]string{}}
 	if h, err := paths.UserHome(o.Env); err == nil {
 		e.home = h
 	}
@@ -133,6 +138,16 @@ func rootProtects(r config.Root, h harness.ID) bool {
 	}
 	for _, x := range r.Harnesses {
 		if x == string(h) {
+			return true
+		}
+	}
+	return false
+}
+
+// protectsHarness reports whether some protected folder protects h.
+func (e *env) protectsHarness(h harness.ID) bool {
+	for _, r := range e.o.Cfg.Roots {
+		if rootProtects(r, h) {
 			return true
 		}
 	}
@@ -225,11 +240,16 @@ func (e *env) journalPending() ([]*journal.Record, error) {
 	return e.pending, e.pendingErr
 }
 
-// nameSalt returns state/name.salt, or nil when it does not exist yet.
+// nameSalt returns state/name.salt, or nil when it does not exist yet. It
+// never creates it (capsule.ReadSalt; capsule.LoadSalt would).
 func (e *env) nameSalt() ([]byte, error) {
 	if !e.saltDone {
 		e.saltDone = true
-		e.salt, e.saltErr = readSalt(e.o.Layout.NameSalt)
+		salt, ok, err := capsule.ReadSalt(e.o.Layout.NameSalt)
+		if ok {
+			e.salt = salt
+		}
+		e.saltErr = err
 	}
 	return e.salt, e.saltErr
 }

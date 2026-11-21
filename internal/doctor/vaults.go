@@ -2,8 +2,10 @@ package doctor
 
 import (
 	"errors"
+	"io/fs"
 	"time"
 
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/vault"
 )
@@ -149,11 +151,14 @@ const minScryptLogN = 19
 
 // checkPluginPin reports plugin-backed factors whose pinned binary no
 // longer matches its SHA-256 (unlock with that factor fails, exit 5) and
-// names the command that re-pins it (D75). It only hashes the binary.
+// names the command that re-pins it (D75). Like the vault before every use
+// (pinHash), it requires the pinned path to be a regular file, never a
+// symlink, and only hashes it. Each distinct pin is checked once: a factor
+// may carry another pin in another vault.
 func checkPluginPin(e *env) []Finding {
-	type pin struct{ path, sha string }
-	seen := map[string]pin{}
-	var names []string
+	type pin struct{ name, path, sha string }
+	var pins []pin
+	seen := map[pin]bool{}
 	for _, id := range e.vaultIDs() {
 		vi := e.vault(id)
 		if vi.v == nil {
@@ -163,24 +168,37 @@ func checkPluginPin(e *env) []Finding {
 			if (f.Kind != vault.FactorSE && f.Kind != vault.FactorPlugin) || f.PluginPath == "" {
 				continue
 			}
-			if _, ok := seen[f.Name]; !ok {
-				names = append(names, f.Name)
-				seen[f.Name] = pin{f.PluginPath, f.PluginSHA256}
+			p := pin{f.Name, f.PluginPath, f.PluginSHA256} // compared exactly, as the vault does
+			if !seen[p] {
+				seen[p] = true
+				pins = append(pins, p)
 			}
 		}
 	}
-	if len(names) == 0 {
+	if len(pins) == 0 {
 		return nil
 	}
 	var out []Finding
-	for _, n := range names {
-		p := seen[n]
+	for _, p := range pins {
+		name := oneLine(p.name)
+		repin := "precinto factor repin " + name
+		what := "the " + name + " unlock method's plugin " + e.show(p.path)
+		if p.sha == "" {
+			out = append(out, fail(CheckPluginPin, what+" has no pinned hash: unlocking with it fails until it is re-pinned", repin))
+			continue
+		}
+		if st, err := fsx.Lstat(p.path); err == nil && !st.IsRegular() {
+			out = append(out, fail(CheckPluginPin, what+" is no longer a regular file (precinto never runs a linked plugin): unlocking with it fails", "put the plugin binary itself at "+e.arg(p.path)+", then run: "+repin))
+			continue
+		}
 		sum, err := e.sha256File(p.path)
 		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			out = append(out, fail(CheckPluginPin, what+" is missing: unlocking with it fails", "reinstall the plugin there, then run: "+repin))
 		case err != nil:
-			out = append(out, warn(CheckPluginPin, "the "+n+" unlock method's plugin "+e.show(p.path)+" could not be checked ("+errClass(err)+"): unlocking with it may fail", "precinto factor repin "+n))
+			out = append(out, warn(CheckPluginPin, what+" could not be checked ("+errClass(err)+"): unlocking with it may fail", repin))
 		case sum != p.sha:
-			out = append(out, fail(CheckPluginPin, "the "+n+" unlock method's plugin "+e.show(p.path)+" changed since it was pinned (an upgrade?): unlocking with it fails until it is re-pinned", "precinto factor repin "+n))
+			out = append(out, fail(CheckPluginPin, what+" changed since it was pinned (an upgrade?): unlocking with it fails until it is re-pinned", repin))
 		}
 	}
 	if len(out) == 0 {
