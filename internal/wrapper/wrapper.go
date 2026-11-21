@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/precinto/precinto/internal/config"
@@ -106,7 +107,7 @@ type Options struct {
 // activity, handle lock/unlock/end events, RestoreBackground, wait, reset
 // the terminal, plan.Finish, release the lease, SealAfterExit, print one
 // summary line. Returns the child's exit code.
-func Run(ctx context.Context, o Options) (int, error) { panic("unimplemented: wrapper.Run") }
+func Run(ctx context.Context, o Options) (int, error) { return run(ctx, o) }
 
 // ProxyOptions configures the PTY proxy.
 type ProxyOptions struct {
@@ -121,12 +122,13 @@ type ProxyOptions struct {
 // Proxy runs a child on a PTY bound to the user's terminal.
 type Proxy struct {
 	cmd *exec.Cmd
+	s   *proxyState
 }
 
 // StartProxy starts cmd on a new PTY, puts tty in raw mode, propagates
 // SIGWINCH, and forwards I/O until Wait returns.
 func StartProxy(cmd *exec.Cmd, tty *os.File, o ProxyOptions) (*Proxy, error) {
-	panic("unimplemented: wrapper.StartProxy")
+	return startProxy(cmd, tty, tty, o)
 }
 
 // Overlay is the lock screen content (SPEC §16.3 C4).
@@ -143,7 +145,12 @@ type Overlay struct {
 // modes, clears the screen (and scrollback when configured), and draws the
 // overlay on the alternate screen unless the child already uses it (D30,
 // IM16).
-func (p *Proxy) Lock(o Overlay) error { panic("unimplemented: wrapper.Proxy.Lock") }
+func (p *Proxy) Lock(o Overlay) error {
+	if p == nil || p.s == nil {
+		return errFinished
+	}
+	return p.s.lock(o)
+}
 
 // Unlock clears the overlay and the screen, replays the ring from its safe
 // boundary (Scrollback.Bytes) so inline-mode TUIs such as Claude's default
@@ -153,14 +160,24 @@ func (p *Proxy) Lock(o Overlay) error { panic("unimplemented: wrapper.Proxy.Lock
 // Node/ratatui TUIs). When the ring wrapped, only its tail is replayed
 // before the repaint (output older than the ring is not shown again, SPEC
 // §19).
-func (p *Proxy) Unlock() error { panic("unimplemented: wrapper.Proxy.Unlock") }
+func (p *Proxy) Unlock() error {
+	if p == nil || p.s == nil {
+		return errFinished
+	}
+	return p.s.unlock()
+}
 
 // Locked reports whether the overlay is shown.
-func (p *Proxy) Locked() bool { panic("unimplemented: wrapper.Proxy.Locked") }
+func (p *Proxy) Locked() bool { return p != nil && p.s != nil && p.s.locked.Load() }
 
 // OverlayKeys returns keys pressed on the overlay: Enter (unlock) and
 // Ctrl-D (end session); everything else is dropped and is never activity.
-func (p *Proxy) OverlayKeys() <-chan byte { panic("unimplemented: wrapper.Proxy.OverlayKeys") }
+func (p *Proxy) OverlayKeys() <-chan byte {
+	if p == nil || p.s == nil {
+		return nil
+	}
+	return p.s.keys
+}
 
 // TerminateOptions configures Terminate.
 type TerminateOptions struct {
@@ -174,66 +191,132 @@ type TerminateOptions struct {
 // (platform.SignalGroup with the child's pid: the PTY child is the leader
 // of a session the wrapper created, never the user's terminal session;
 // R11, D57).
-func (p *Proxy) Terminate(o TerminateOptions) error { panic("unimplemented: wrapper.Proxy.Terminate") }
+func (p *Proxy) Terminate(o TerminateOptions) error {
+	if p == nil || p.s == nil {
+		return errFinished
+	}
+	return p.s.terminate(o)
+}
 
 // Child returns the child's ProcID.
-func (p *Proxy) Child() platform.ProcID { panic("unimplemented: wrapper.Proxy.Child") }
+func (p *Proxy) Child() platform.ProcID {
+	if p == nil || p.s == nil {
+		return platform.ProcID{}
+	}
+	return p.s.child
+}
 
 // Wait waits for the child, handles job control (on a stop, restore the
 // outer terminal and stop the wrapper itself; on SIGCONT re-enter raw mode,
 // continue the child and repaint, UX14) and returns its exit code.
-func (p *Proxy) Wait() (int, error) { panic("unimplemented: wrapper.Proxy.Wait") }
+func (p *Proxy) Wait() (int, error) {
+	if p == nil || p.s == nil {
+		return 1, errFinished
+	}
+	return p.s.wait()
+}
 
 // Scrollback is a bounded ring buffer of all raw child output since the
 // child started (D30, D60). It holds terminal output of the session in
 // wrapper memory only and is wiped at exit.
 type Scrollback struct {
-	buf []byte
+	buf     []byte
+	mu      sync.Mutex
+	max     int
+	start   int   // index of the oldest byte once the ring is full
+	n       int   // bytes kept
+	total   int64 // bytes written since the start (stream offset of the end)
+	wrapped bool
+	sc      scanner
+	// lines are the stream offsets of the line starts found in ground state
+	// (just after a '\n' outside any sequence), oldest first.
+	lines []int64
 }
 
 // NewScrollback returns a buffer of max bytes.
-func NewScrollback(max int) *Scrollback { panic("unimplemented: wrapper.NewScrollback") }
+func NewScrollback(max int) *Scrollback {
+	if max < 0 {
+		max = 0
+	}
+	return &Scrollback{max: max}
+}
 
 // Write appends output, dropping the oldest bytes beyond the bound.
-func (s *Scrollback) Write(b []byte) (int, error) { panic("unimplemented: wrapper.Scrollback.Write") }
+func (s *Scrollback) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.write(b)
+	return len(b), nil
+}
 
 // Bytes returns the buffered output for replay. Before the ring wraps it
 // is every byte since start; after, it starts at a safe boundary — the
 // first line start after the oldest kept byte, never inside an escape
 // sequence or UTF-8 rune — preceded by an SGR reset.
-func (s *Scrollback) Bytes() []byte { panic("unimplemented: wrapper.Scrollback.Bytes") }
+func (s *Scrollback) Bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bytes()
+}
 
 // Wrapped reports whether output was dropped (the replay is only the tail).
-func (s *Scrollback) Wrapped() bool { panic("unimplemented: wrapper.Scrollback.Wrapped") }
+func (s *Scrollback) Wrapped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wrapped
+}
 
 // Wipe zeroes the buffer.
-func (s *Scrollback) Wipe() { panic("unimplemented: wrapper.Scrollback.Wipe") }
+func (s *Scrollback) Wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.wipe()
+}
 
 // Modes tracks DEC private modes and keyboard protocol state set by the
 // child, including while locked.
 type Modes struct {
-	set map[int]bool
+	set         map[int]bool // DEC private modes the child set (value: on)
+	mu          sync.Mutex
+	sc          scanner
+	keypad      bool          // DECKPAM application keypad
+	mok         int           // xterm modifyOtherKeys level
+	kitty       [2]kittyStack // kitty keyboard flags: main and alternate screen
+	alt         int           // alternate-screen mode in use (47, 1047, 1049) or 0
+	altSwitches int           // alternate-screen transitions seen
 }
 
 // NewModes returns an empty tracker.
-func NewModes() *Modes { panic("unimplemented: wrapper.NewModes") }
+func NewModes() *Modes { return &Modes{set: map[int]bool{}} }
 
 // Feed parses child output for CSI ? Pm h/l, CSI > … u / CSI < u (kitty).
-func (m *Modes) Feed(b []byte) { panic("unimplemented: wrapper.Modes.Feed") }
+func (m *Modes) Feed(b []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.feed(b)
+}
 
 // Restore returns the sequence re-establishing the tracked modes.
-func (m *Modes) Restore() []byte { panic("unimplemented: wrapper.Modes.Restore") }
+func (m *Modes) Restore() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.restoreFrom(NewModes())
+}
 
 // Reset returns the sequence that turns every tracked mode off (TTY reset
 // at exit and before the lock overlay).
-func (m *Modes) Reset() []byte { panic("unimplemented: wrapper.Modes.Reset") }
+func (m *Modes) Reset() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.resetSeq()
+}
 
 // HumanInput reports whether b contains human keystrokes after removing
 // sequences terminals send on their own (focus CSI I/O, mouse CSI M and
 // CSI < … M/m, cursor reports CSI … R, DA replies CSI ? … c, kitty replies
 // CSI ? … u, OSC replies) and whether it contains Enter (UX15, D37).
-func HumanInput(b []byte) (human, enter bool) { panic("unimplemented: wrapper.HumanInput") }
+func HumanInput(b []byte) (human, enter bool) { return humanInput(b) }
 
 // ResetSequence is the full terminal reset of SPEC §15.4 (optionally with
 // clear screen + scrollback and iTerm2 ClearScrollback).
-func ResetSequence(clear, iterm bool) []byte { panic("unimplemented: wrapper.ResetSequence") }
+func ResetSequence(clear, iterm bool) []byte { return resetSequence(clear, iterm) }
