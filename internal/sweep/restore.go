@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"path/filepath"
 	"sort"
@@ -37,6 +38,9 @@ type restoreUnitPlan struct {
 	last     time.Time
 	mtimeNow bool
 	explicit bool
+	// mans are the decrypted manifests of entries (restoreUnit), for the
+	// per-volume free-space check.
+	mans []capsule.Manifest
 }
 
 // keyGuard holds released file keys. Readers use a key only inside with();
@@ -85,6 +89,57 @@ func (g *keyGuard) with(p string, fn func(key []byte) error) error {
 		}
 	}
 	return fmt.Errorf("%w: no key released for a capsule", ErrKeyDenied)
+}
+
+// forget destroys the released key of one capsule once it is decrypted
+// (CC-17); the sets keep their other keys. It waits for readers, so a key
+// is never wiped while in use.
+func (g *keyGuard) forget(p string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, s := range g.sets {
+		if b, ok := s.Key(p); ok && b != nil {
+			b.Destroy()
+		}
+	}
+}
+
+// maxKeysPerRequest is ipc.MaxKeysPerRequest (sweep never imports ipc): a
+// keys request names at most this many capsules (KeySource, CC-17).
+const maxKeysPerRequest = 256
+
+// keysPerRequest is the request limit of this run (ports.maxKeys lowers
+// it in tests).
+func (r *run) keysPerRequest() int {
+	if r.p.maxKeys > 0 && r.p.maxKeys < maxKeysPerRequest {
+		return r.p.maxKeys
+	}
+	return maxKeysPerRequest
+}
+
+// fetchKeys obtains the file keys of paths in requests of at most
+// keysPerRequest capsules and adds them to kg; capsules whose key kg
+// already holds are not asked for again.
+func (r *run) fetchKeys(ctx context.Context, keys KeySource, kg *keyGuard, paths []string, purpose string) error {
+	if keys == nil {
+		return fmt.Errorf("%w: no key source", ErrKeyDenied)
+	}
+	var need []string
+	for _, p := range dedupe(paths) {
+		if !kg.has(p) {
+			need = append(need, p)
+		}
+	}
+	for len(need) > 0 {
+		n := min(len(need), r.keysPerRequest())
+		fk, err := keys.FileKeys(ctx, need[:n], purpose)
+		if err != nil {
+			return err
+		}
+		kg.add(fk)
+		need = need[n:]
+	}
+	return nil
 }
 
 func (g *keyGuard) destroy() {
@@ -142,39 +197,74 @@ func (r *run) restore(ctx context.Context, keys KeySource, req RestoreRequest) (
 	if err != nil {
 		return r.finish(), err
 	}
-	var paths []string
-	for _, p := range plans {
-		for _, en := range p.entries {
-			if !kg.has(en.Path) {
-				paths = append(paths, en.Path)
-			}
+	// Keys are requested per batch of whole units, at most
+	// maxKeysPerRequest capsules (a unit with more alone, in several
+	// requests), right before those units are restored, and each unit's
+	// keys are destroyed once its capsules are decrypted (CC-17): the
+	// locked memory a restore holds stays bounded.
+	stopped := func(rest []*restoreUnitPlan) {
+		for _, p := range rest {
+			res := planResult(p)
+			res.Outcome, res.Detail = OutSkipped, "lock: restore stopped"
+			r.add(res)
 		}
-		paths = append(paths, r.snapshotBlobPaths(p)...)
 	}
-	if len(paths) > 0 {
-		fk, err := keys.FileKeys(actx, dedupe(paths), purpose)
-		if err != nil {
-			for _, p := range plans {
+	for i := 0; i < len(plans); {
+		j, n := i, 0
+		for j < len(plans) {
+			k := len(r.planPaths(plans[j]))
+			if j > i && n+k > r.keysPerRequest() {
+				break
+			}
+			n += k
+			j++
+		}
+		batch := plans[i:j]
+		if aborted.Load() {
+			stopped(plans[i:])
+			break
+		}
+		var paths []string
+		for _, p := range batch {
+			paths = append(paths, r.planPaths(p)...)
+		}
+		if err := r.fetchKeys(actx, keys, kg, paths, purpose); err != nil {
+			if aborted.Load() {
+				stopped(plans[i:])
+				break
+			}
+			for _, p := range plans[i:] {
 				r.add(failed(planResult(p), fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err))))
 			}
 			return r.finish(), nil
 		}
-		kg.add(fk)
-	}
-	for _, p := range plans {
-		if aborted.Load() {
-			res := planResult(p)
-			res.Outcome, res.Detail = OutSkipped, "lock: restore stopped"
+		for k, p := range batch {
+			if aborted.Load() {
+				stopped(plans[i+k:])
+				return r.finish(), nil
+			}
+			res := r.restoreUnit(ctx, actx, p, kg, keys, req, purpose, aborted.Load)
 			r.add(res)
-			continue
+			for _, path := range r.planPaths(p) {
+				kg.forget(path)
+			}
+			if req.StopOnErr && (res.Outcome == OutFailed || res.Outcome == OutLive) {
+				return r.finish(), nil
+			}
 		}
-		res := r.restoreUnit(ctx, actx, p, kg, keys, req, purpose, aborted.Load)
-		r.add(res)
-		if req.StopOnErr && (res.Outcome == OutFailed || res.Outcome == OutLive) {
-			break
-		}
+		i = j
 	}
 	return r.finish(), nil
+}
+
+// planPaths lists every capsule a unit's restore decrypts: its chain (or
+// snapshot) and, for snapshots, the blobs the snapshot references.
+func (r *run) planPaths(p *restoreUnitPlan) []string {
+	var out []string
+	for _, en := range p.entries {
+		out = append(out, en.Path)
+	}
+	return dedupe(append(out, r.snapshotBlobPaths(p)...))
 }
 
 func planResult(p *restoreUnitPlan) UnitResult {
@@ -274,12 +364,17 @@ func (r *run) planRestore(ctx context.Context, keys KeySource, kg *keyGuard, req
 			cands = r.filterByManifest(ctx, keys, kg, cands, sel, purpose)
 		}
 		sort.SliceStable(cands, func(a, b int) bool { return cands[a].last.After(cands[b].last) })
-		if sel.Newest && len(cands) > 1 {
-			cands = cands[:1]
+		keep := len(cands)
+		if sel.Newest && keep > 1 {
+			keep = 1
 		}
-		if sel.Recent > 0 && len(cands) > sel.Recent {
-			cands = cands[:sel.Recent]
+		if sel.Recent > 0 && keep > sel.Recent {
+			keep = sel.Recent
 		}
+		for _, p := range cands[keep:] {
+			kg.forget(p.newest.Path) // read for the selector only
+		}
+		cands = cands[:keep]
 		budget := sel.MaxBytes
 		if budget <= 0 {
 			budget = defBudget
@@ -291,6 +386,7 @@ func (r *run) planRestore(ctx context.Context, keys KeySource, kg *keyGuard, req
 			}
 			seen[p.ref.Key] = true
 			if budget > 0 && used+p.bytes > budget {
+				kg.forget(p.newest.Path)
 				res := planResult(p)
 				res.Outcome, res.Detail = OutSkipped, "budget"
 				skipped = append(skipped, res)
@@ -304,12 +400,19 @@ func (r *run) planRestore(ctx context.Context, keys KeySource, kg *keyGuard, req
 	return plans, skipped, nil
 }
 
-// selectCandidates applies the log-only filters of a selector.
+// selectCandidates applies the log-only filters of a selector. Units of
+// the global vault (global stores, generic units: no folder) are restored
+// only explicitly (D36, DC-24: restore --global [--harness H]): a selector
+// matches them only when it names them — RootID vault.GlobalID (every
+// global-vault unit), their kind (KindGlobalStore, KindGeneric) or their
+// keys — so a folder's or an everything selector never does. The CLI
+// narrows --harness H with the unit keys List reports for H.
 func (r *run) selectCandidates(groups map[string][]capslog.Entry, sel harness.Selector, seen map[string]bool) []*restoreUnitPlan {
 	keys := map[string]bool{}
 	for _, k := range sel.Keys {
 		keys[k] = true
 	}
+	namesGlobal := sel.RootID == globalVault || sel.Kind == capsule.KindGlobalStore || sel.Kind == capsule.KindGeneric || len(keys) > 0
 	var out []*restoreUnitPlan
 	for unit, entries := range groups {
 		if seen[unit] || (len(keys) > 0 && !keys[unit]) {
@@ -325,7 +428,15 @@ func (r *run) selectCandidates(groups map[string][]capslog.Entry, sel harness.Se
 		if p.ref.Kind == capsule.KindCodexBlob {
 			continue
 		}
-		if sel.RootID != "" && !contains(p.ref.RootIDs, sel.RootID) {
+		global := p.ref.VaultID == globalVault && len(p.ref.RootIDs) == 0
+		switch {
+		case global && !namesGlobal:
+			continue
+		case sel.RootID == globalVault:
+			if !global {
+				continue
+			}
+		case sel.RootID != "" && !contains(p.ref.RootIDs, sel.RootID):
 			continue
 		}
 		if sel.MaxAge > 0 && p.last.Before(r.now().Add(-sel.MaxAge)) {
@@ -356,21 +467,19 @@ func (r *run) filterByManifest(ctx context.Context, keys KeySource, kg *keyGuard
 	if len(paths) == 0 {
 		return nil
 	}
-	fk, err := keys.FileKeys(ctx, paths, purpose)
-	if err != nil {
+	if err := r.fetchKeys(ctx, keys, kg, paths, purpose); err != nil {
 		return nil
 	}
-	kg.add(fk)
 	var out []*restoreUnitPlan
 	for _, p := range cands {
 		m, err := r.readManifest(ctx, p.newest, kg)
 		if err != nil {
+			kg.forget(p.newest.Path)
 			continue
 		}
-		if sel.ProjectDir != "" && m.ProjectDir != sel.ProjectDir {
-			continue
-		}
-		if sel.Title != "" && !strings.Contains(strings.ToLower(m.Title), strings.ToLower(sel.Title)) {
+		if (sel.ProjectDir != "" && m.ProjectDir != sel.ProjectDir) ||
+			(sel.Title != "" && !strings.Contains(strings.ToLower(m.Title), strings.ToLower(sel.Title))) {
+			kg.forget(p.newest.Path) // not restored: its key goes now
 			continue
 		}
 		if !m.LastActivity.IsZero() {
@@ -580,7 +689,22 @@ func cleanRel(rel string) bool {
 // entryCheck validates every manifest entry against the trusted target
 // rules before Extract writes anything (D8, S3).
 func entryCheck(rules harness.TargetRules) func(capsule.Entry) error {
+	return checkEntries(rules, false)
+}
+
+// checkEntries is entryCheck; with skips, an entry of a base the adapter
+// reports unsafe now (TargetRules.Skip, e.g. a Claude $TMP that is not
+// 0700/owned, S7) passes with a clean rel: it is staged, never placed, and
+// reported (CC-22). An entry whose base is in neither Bases nor Skip
+// rejects the whole capsule (exit 5).
+func checkEntries(rules harness.TargetRules, skips bool) func(capsule.Entry) error {
 	return func(en capsule.Entry) error {
+		if _, skip := rules.Skip[en.Base]; skip && skips {
+			if !cleanRel(en.Rel) {
+				return fmt.Errorf("%w: entry path not clean", capsule.ErrUnsafe)
+			}
+			return nil
+		}
 		if _, ok := rules.Bases[en.Base]; !ok {
 			return fmt.Errorf("%w: entry base not allowed", capsule.ErrUnsafe)
 		}
@@ -616,6 +740,79 @@ func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.U
 		}
 	}
 	return len(held) > 0, held
+}
+
+// checkRestoreSpace requires free space on every volume a restore writes
+// (SPEC §11.5 step 2, D38): the staging volume (target, where the whole
+// unit is decrypted) needs 1.1 × all the bytes, every other volume 1.1 ×
+// the bytes placed on it (splitDevices copies them to a staging there).
+// perBase holds the planned bytes per base; bases on target's volume are
+// covered by the staging total.
+func (r *run) checkRestoreSpace(bases map[capsule.BaseID]string, target string, total int64, perBase map[capsule.BaseID]int64) error {
+	devOf := func(p string) (uint64, error) {
+		d, err := r.p.fs.OpenBase(p)
+		if err != nil {
+			return 0, err
+		}
+		defer d.Close()
+		return d.Device()
+	}
+	tdev, err := devOf(target)
+	if err != nil {
+		return err
+	}
+	need := map[uint64]int64{tdev: total}
+	at := map[uint64]string{tdev: target}
+	ids := make([]string, 0, len(perBase))
+	for id := range perBase {
+		ids = append(ids, string(id))
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		p := bases[capsule.BaseID(id)]
+		if p == "" {
+			continue
+		}
+		dev, err := devOf(p)
+		if err != nil {
+			return err
+		}
+		if dev == tdev {
+			continue
+		}
+		need[dev] += perBase[capsule.BaseID(id)]
+		if at[dev] == "" {
+			at[dev] = p
+		}
+	}
+	devs := make([]uint64, 0, len(need))
+	for dev := range need {
+		devs = append(devs, dev)
+	}
+	sort.Slice(devs, func(a, b int) bool { return devs[a] < devs[b] })
+	for _, dev := range devs {
+		if err := r.p.fs.CheckSpace(at[dev], int64(math.Ceil(1.1*float64(need[dev]))), r.e.Floor); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// plannedBytes sums the file entries of manifests per base (an upper
+// bound: generations folded into one path count each), and in total.
+func plannedBytes(mans []capsule.Manifest) (int64, map[capsule.BaseID]int64) {
+	var total int64
+	per := map[capsule.BaseID]int64{}
+	for _, m := range mans {
+		for _, en := range m.Files {
+			if en.Dir {
+				continue
+			}
+			total += en.Size
+			per[en.Base] += en.Size
+		}
+	}
+	return total, per
 }
 
 // firstBase returns a deterministic target base directory.
@@ -663,6 +860,7 @@ func (r *run) restoreUnit(ctx, actx context.Context, p *restoreUnitPlan, kg *key
 		}
 		mans[i] = m
 	}
+	p.mans = mans
 	auth, err := r.authenticate(ctx, p.ref, mans[0].UnitID, p.newest)
 	if err != nil {
 		return failed(res, err)

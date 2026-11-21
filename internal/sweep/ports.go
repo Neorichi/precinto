@@ -41,6 +41,10 @@ type dirHandle interface {
 	ReadDir(rel string) ([]fsx.Entry, error)
 	Walk(rel string, fn func(fsx.WalkEntry) error) error
 	CreateTemp(dirRel, pattern string) (*os.File, string, error)
+	// AppendLine appends one line with O_APPEND to the regular file rel
+	// (created 0600 when absent; never through a symlink, never blocking
+	// on a FIFO), then FullSyncs it (CC-05).
+	AppendLine(rel string, line []byte) error
 	Rename(oldRel, newRel string, mode fsx.RenameMode) error
 	RenameTo(oldRel string, dst dirHandle, newRel string, mode fsx.RenameMode) error
 	Link(oldRel, newRel string) error
@@ -173,6 +177,15 @@ type ports struct {
 	// tailQuiet is how long the history tail loop waits for late appends
 	// (SPEC §7.1.4 step 5: 500 ms).
 	tailQuiet time.Duration
+	// maxKeys and maxTail lower, in tests only, the capsules per keys
+	// request (maxKeysPerRequest) and the ranges per tail loop run
+	// (maxTailRanges); zero means the production limits.
+	maxKeys, maxTail int
+	// point observes, in tests only (nil in production), every failpoint
+	// of sweep's registry the run reaches, plus "capsule.committed" when
+	// capsule.Seal reports its commit rename (the SEAL-6 point): the
+	// power-loss mode stops a run there and images the disk.
+	point func(name string)
 }
 
 // prodPorts wires the real implementations.
@@ -270,6 +283,7 @@ func (x fsxDir) Walk(rel string, fn func(fsx.WalkEntry) error) error {
 func (x fsxDir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 	return x.d.CreateTemp(dirRel, pattern)
 }
+func (x fsxDir) AppendLine(rel string, line []byte) error { return x.d.AppendLine(rel, line) }
 func (x fsxDir) Rename(oldRel, newRel string, mode fsx.RenameMode) error {
 	return x.d.Rename(oldRel, newRel, mode)
 }

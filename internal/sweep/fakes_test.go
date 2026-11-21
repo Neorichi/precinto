@@ -42,6 +42,7 @@ import (
 	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
@@ -56,6 +57,7 @@ import (
 type osFS struct {
 	mu       sync.Mutex
 	free     int64            // bytes available to CheckSpace/Space
+	freeAt   map[string]int64 // path prefix → bytes available there (a volume of its own)
 	fail     map[string]error // "<op>:<abs path>" → error
 	device   map[string]uint64
 	onRename func(dst string) // called before every rename (tests)
@@ -90,7 +92,7 @@ func (f *osFS) MkdirPrivate(p string) error { return os.MkdirAll(p, 0o700) }
 func (f *osFS) CheckSpace(p string, need int64, floor fsx.Floor) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if need+floor.MinBytes > f.free {
+	if need+floor.MinBytes > f.freeOf(p) {
 		return fsx.ErrNoSpace
 	}
 	return nil
@@ -98,7 +100,20 @@ func (f *osFS) CheckSpace(p string, need int64, floor fsx.Floor) error {
 func (f *osFS) Space(p string) (uint64, uint64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return uint64(f.free), uint64(f.free) * 2, nil
+	free := f.freeOf(p)
+	return uint64(free), uint64(free) * 2, nil
+}
+
+// freeOf is the free space of the volume holding p (the longest freeAt
+// prefix, else free). Callers hold mu.
+func (f *osFS) freeOf(p string) int64 {
+	free, best := f.free, ""
+	for prefix, n := range f.freeAt {
+		if (p == prefix || strings.HasPrefix(p, prefix+string(filepath.Separator))) && len(prefix) > len(best) {
+			free, best = n, prefix
+		}
+	}
+	return free
 }
 func (f *osFS) NewStaging(preferred, target, id string) (stagingHandle, error) {
 	if err := os.MkdirAll(preferred, 0o700); err != nil {
@@ -343,6 +358,41 @@ func (d *osDir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 	}
 	return f, name, nil
 }
+
+// AppendLine mirrors fsx.Dir.AppendLine: one O_APPEND write of line plus
+// "\n" to a regular file (created 0600 when absent; symlinks and FIFOs
+// refused without blocking), then a sync.
+func (d *osDir) AppendLine(rel string, line []byte) error {
+	if l := len(line); l > 0 && line[l-1] == '\n' {
+		line = line[:l-1]
+	}
+	if len(line) > fsx.MaxLine || bytes.IndexByte(line, '\n') >= 0 {
+		return fmt.Errorf("%w: bad line for AppendLine", fsx.ErrUnsafe)
+	}
+	p, err := d.resolve(rel, false)
+	if err != nil {
+		return err
+	}
+	if err := d.fs.failure("append", p); err != nil {
+		return &fs.PathError{Op: "write", Path: p, Err: err}
+	}
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENXIO) {
+			return fmt.Errorf("%w: not a regular file", fsx.ErrUnsafe)
+		}
+		return err
+	}
+	defer f.Close()
+	if st, err := fsx.Fstat(f); err != nil || !st.IsRegular() {
+		return fmt.Errorf("%w: not a regular file", fsx.ErrUnsafe)
+	}
+	if _, err := f.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
 func (d *osDir) renameFiles(src, dst string, mode fsx.RenameMode) error {
 	if d.fs.onRename != nil {
 		d.fs.onRename(dst)
@@ -484,18 +534,20 @@ func (d *osDir) Device() (uint64, error) {
 // fakeCodec writes a test-only capsule format: a magic line, a header line
 // (its SHA-256 is the provenance key; the file key derives from it) and a
 // JSON body with the manifest and base64 contents. It keeps the two-pass
-// identity checks, the OnPhase milestones and the no-replace rename of the
-// real capsule.Seal, and validates entries on Extract like the real one.
+// identity checks, the OnPhase milestones, the no-replace rename and the
+// failpoints of the real capsule.Seal (capsule.streamed after each input's
+// share of the temporary, capsule.tmp_written, capsule.renamed), and
+// validates entries on Extract like the real one.
 type fakeCodec struct {
 	mu            sync.Mutex
 	betweenPasses func()
-	sealErr       error // returned before writing anything
-	tmpErr        error // returned while writing the temporary
-	corrupt       bool  // flip a byte in the temporary: ErrVerify
-	stanzas       int   // header stanzas (default 3)
-	midTmp        func()
+	sealErr       error  // returned before writing anything
+	tmpErr        error  // returned while writing the temporary
+	corrupt       bool   // flip a byte in the temporary: ErrVerify
+	stanzas       int    // header stanzas (default 3)
 	afterRename   func() // right after the commit rename (where Seal evaluates capsule.renamed)
 	duringExtract func(n int)
+	traceSeal     func(unit string, start bool) // around every Seal (CONC-1 traces)
 	seals         int
 }
 
@@ -558,8 +610,12 @@ func sum(b []byte) string {
 func (c *fakeCodec) Seal(ctx context.Context, r sealRequest) (*capsule.Sealed, error) {
 	c.mu.Lock()
 	c.seals++
-	sealErr, tmpErr, corrupt, stanzas, between, mid, renamed := c.sealErr, c.tmpErr, c.corrupt, c.stanzas, c.betweenPasses, c.midTmp, c.afterRename
+	sealErr, tmpErr, corrupt, stanzas, between, renamed, trace := c.sealErr, c.tmpErr, c.corrupt, c.stanzas, c.betweenPasses, c.afterRename, c.traceSeal
 	c.mu.Unlock()
+	if trace != nil {
+		trace(r.Manifest.UnitKey, true)
+		defer trace(r.Manifest.UnitKey, false)
+	}
 	if stanzas == 0 {
 		stanzas = capsule.HeaderStanzas
 	}
@@ -621,21 +677,24 @@ func (c *fakeCodec) Seal(ctx context.Context, r sealRequest) (*capsule.Sealed, e
 		return nil, err
 	}
 	cleanup := func() { tmp.Close(); _ = r.Out.Remove(name) }
-	half := len(file) / 2
-	if _, err := tmp.Write(file[:half]); err != nil {
-		cleanup()
-		return nil, err
-	}
-	if mid != nil {
-		mid()
-	}
-	if tmpErr != nil {
-		cleanup()
-		return nil, tmpErr
-	}
-	if _, err := tmp.Write(file[half:]); err != nil {
-		cleanup()
-		return nil, err
+	// Pass 2 streams one share of the temporary per input and evaluates
+	// capsule.streamed after each (SEAL-2: :<n> at the middle input).
+	parts := max(len(r.Inputs), 1)
+	for k := 0; k < parts; k++ {
+		if _, err := tmp.Write(file[k*len(file)/parts : (k+1)*len(file)/parts]); err != nil {
+			cleanup()
+			return nil, err
+		}
+		if k == 0 && tmpErr != nil {
+			cleanup()
+			return nil, tmpErr
+		}
+		if k < len(r.Inputs) {
+			if err := failpoint.Hit("capsule.streamed"); err != nil {
+				cleanup()
+				return nil, err
+			}
+		}
 	}
 	if corrupt {
 		if _, err := tmp.WriteAt([]byte{'#'}, int64(len(header)+len(bb)/2)); err != nil {
@@ -957,6 +1016,8 @@ type fakeKeys struct {
 	purposes  []string
 	requested []string
 	sets      []*fakeKeySet
+	sizes     []int // capsules named by each request
+	alive     []int // keys of earlier requests still alive at each request
 }
 
 type fakeKeySet struct {
@@ -970,6 +1031,18 @@ func (k *fakeKeys) FileKeys(ctx context.Context, ps []string, purpose string) (F
 	defer k.mu.Unlock()
 	k.purposes = append(k.purposes, purpose)
 	k.requested = append(k.requested, ps...)
+	k.sizes = append(k.sizes, len(ps))
+	alive := 0
+	for _, s := range k.sets {
+		s.mu.Lock()
+		for _, b := range s.keys {
+			if !s.destroyed && b.IsAlive() {
+				alive++
+			}
+		}
+		s.mu.Unlock()
+	}
+	k.alive = append(k.alive, alive)
 	if k.deny {
 		return nil, ErrKeyDenied
 	}
@@ -1125,6 +1198,10 @@ type fakeAdapter struct {
 	mdPaths  map[string][]string
 	allow    func(ref harness.UnitRef, unitID string, b capsule.BaseID, rel string) bool
 	extra    []harness.Unit
+	last     func(e capsule.Entry) bool   // TargetRules.Last
+	skip     map[capsule.BaseID]string    // TargetRules.Skip: bases taken out of Bases with a reason
+	owners   map[string][]platform.ProcID // sid → ledger owners (Unit.Procs, Scope.Procs)
+	onScan   func(s harness.Scope)        // observes every Scan's scope
 }
 
 func (a *fakeAdapter) ID() harness.ID { return a.id }
@@ -1141,7 +1218,7 @@ func (a *fakeAdapter) sessionUnit(h harness.Home, sid string) (harness.Unit, boo
 		a.te.t.Fatal(err)
 	}
 	u := harness.Unit{Harness: harness.ClaudeCode, Kind: capsule.KindClaudeSession, Key: key, UnitID: sid, VaultID: rootID,
-		RootIDs: []string{rootID}, Home: h, Mode: harness.GenLayered}
+		RootIDs: []string{rootID}, Home: h, Mode: harness.GenLayered, Procs: a.owners[sid]}
 	match := func(rel string) bool {
 		for _, c := range strings.Split(rel, "/") {
 			if c == sid || strings.HasPrefix(c, sid+".") || strings.HasPrefix(c, sid+"-") {
@@ -1252,6 +1329,9 @@ func sqliteGroup(rel string) string {
 }
 
 func (a *fakeAdapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) ([]harness.Unit, error) {
+	if a.onScan != nil {
+		a.onScan(s)
+	}
 	var out []harness.Unit
 	inScope := func(u harness.Unit) bool {
 		if len(s.RootIDs) > 0 {
@@ -1267,6 +1347,18 @@ func (a *fakeAdapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) 
 		}
 		if len(s.SIDs) > 0 && !contains(s.SIDs, u.UnitID) {
 			return false
+		}
+		if len(s.Procs) > 0 {
+			// Only sessions whose ledger owner is one of the processes.
+			owned := false
+			for _, p := range u.Procs {
+				for _, q := range s.Procs {
+					owned = owned || p == q
+				}
+			}
+			if u.Kind != capsule.KindClaudeSession || !owned {
+				return false
+			}
 		}
 		if len(s.Kinds) > 0 {
 			ok := false
@@ -1352,7 +1444,17 @@ func (a *fakeAdapter) Targets(ctx context.Context, e harness.Env, ref harness.Un
 	if ref.Kind == capsule.KindCodexHome {
 		mode = harness.GenSnapshot
 	}
-	return harness.TargetRules{Bases: bases, Allow: allow, Policy: policy, Mode: mode}, nil
+	rules := harness.TargetRules{Bases: bases, Allow: allow, Policy: policy, Mode: mode, Last: a.last}
+	for b, why := range a.skip {
+		if _, ok := bases[b]; ok {
+			if rules.Skip == nil {
+				rules.Skip = map[capsule.BaseID]string{}
+			}
+			delete(bases, b)
+			rules.Skip[b] = why
+		}
+	}
+	return rules, nil
 }
 
 func (a *fakeAdapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, argv []string) (harness.LaunchPlan, error) {
@@ -1441,6 +1543,9 @@ func newTestEnvWith(t *testing.T, h *testkit.Home) *testEnv {
 			Host: paths.FromMap(map[string]string{"HOME": h.HomeDir, "PATH": "/usr/bin:/bin"})},
 		Log: capslog.Open(h.Layout.CapsuleLog), Journal: journal.Open(h.Layout.JournalDir),
 		Procs: h.Procs, Clock: h.Clock, Sealer: "precinto test", Parallel: 2,
+		// Only the quiet window is read from it (the live port is faked):
+		// shorter than the tests' 60 s contexts, so the D63 wait happens.
+		Live: &live.Engine{Quiet: 10 * time.Second},
 	}
 	te.keys = &fakeKeys{capsules: h.Layout.CapsulesDir}
 	te.cc = harness.Home{Harness: harness.ClaudeCode, ID: "0123456789abcdef", Default: true, Bases: map[capsule.BaseID]string{

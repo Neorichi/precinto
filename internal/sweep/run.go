@@ -45,9 +45,13 @@ type run struct {
 	markers map[string]map[string][]string
 
 	// quietMu serializes the D63 quiet-window wait; quietTried makes it
-	// happen at most once per run.
+	// happen at most once per run, quietDone records that it completed.
 	quietMu    sync.Mutex
 	quietTried bool
+	quietDone  bool
+
+	// dec holds the final result of every unit the run decided.
+	dec decisions
 }
 
 // wallClock is used when Env.Clock is nil.
@@ -98,10 +102,14 @@ func (r *run) finish() *Report {
 }
 
 // hit evaluates a failpoint of sweep's registry (docs/TESTPLAN.md §4); ""
-// means no point at this call site.
-func hit(name string) error {
+// means no point at this call site. Tests may observe every point the run
+// reaches (ports.point: the power-loss mode stops a run there).
+func (r *run) hit(name string) error {
 	if name == "" {
 		return nil
+	}
+	if r.p.point != nil {
+		r.p.point(name)
 	}
 	return failpoint.Hit(name)
 }

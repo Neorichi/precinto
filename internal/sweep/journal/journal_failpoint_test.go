@@ -18,6 +18,7 @@ import (
 // once its write succeeded; a failed Advance leaves the previous milestone
 // both on disk and in memory (D58).
 func TestAdvanceFailureKeepsThePreviousMilestone(t *testing.T) {
+	failpoint.Reset() // hit counts are process-wide: count from this test on
 	defer failpoint.Reset()
 	j := newJournal(t)
 	r, err := j.Begin(journal.KindSeal, "claude-code", "u1")
@@ -48,6 +49,7 @@ func TestAdvanceFailureKeepsThePreviousMilestone(t *testing.T) {
 // TestBeginFailureWritesNothing: an injected error before the first write
 // leaves no record and no temporary.
 func TestBeginFailureWritesNothing(t *testing.T) {
+	failpoint.Reset() // hit counts are process-wide: count from this test on
 	defer failpoint.Reset()
 	j := newJournal(t)
 	failpoint.Set("journal.save=errno:ENOSPC")

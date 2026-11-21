@@ -2,7 +2,6 @@ package sweep
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -95,7 +94,7 @@ func (te *testEnv) snapshotOf(t *testing.T) map[string][]byte {
 func (te *testEnv) sealCodex(t *testing.T) UnitResult {
 	t.Helper()
 	u := te.codexUnit(t)
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	return outcome(t, rep, u.Key)
 }
@@ -241,7 +240,7 @@ func TestCodexSealRefusesALeasedHome(t *testing.T) {
 	te.codexHome(t)
 	te.live.set(te.codexKey(), live.Verdict{Live: true, Evidence: []live.Evidence{{Reason: live.ReasonLease}}})
 	u := te.codexUnit(t)
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutLeased || !errors.Is(rep.Err(), ErrLive) {
 		t.Fatalf("result %+v %v", res, rep.Err())
 	}
@@ -281,7 +280,7 @@ func TestCodexDivergenceAndReconcile(t *testing.T) {
 			if res := te.restoreCodex(t); res.Outcome != OutConflict || len(te.logged(te.codexKey())) != 2 {
 				t.Fatalf("second attempt %+v", res)
 			}
-			rep, err := te.run().reconcileCodex(context.Background(), te.keys, rootID, prefer)
+			rep, err := te.run().reconcileCodex(tctx(t), te.keys, rootID, prefer)
 			mustNoErr(t, err)
 			if rep.Count(OutFailed) != 0 {
 				t.Fatalf("reconcile %+v", rep.Units)

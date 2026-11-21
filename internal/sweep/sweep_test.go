@@ -1,11 +1,13 @@
 package sweep_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/harness"
@@ -13,6 +15,16 @@ import (
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/testkit"
 )
+
+// testCtx is the context of an exported call in a test: it ends with the
+// test and after 60 s at the latest, so a stuck call fails the test with
+// a timeout instead of hanging the package (FX-G4-02).
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
 
 // envOf is an Env over a fake HOME using only scaffold-implemented
 // dependencies (enough for the exported metadata helpers).

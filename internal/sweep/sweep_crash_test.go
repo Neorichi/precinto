@@ -12,9 +12,7 @@ package sweep
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -36,8 +34,6 @@ func kill() {
 // arm arms a failpoint spec or a test seam ("hook:<name>").
 func arm(te *testEnv, spec string) {
 	switch spec {
-	case "hook:midTmp":
-		te.codec.midTmp = kill
 	case "hook:extract":
 		te.codec.duringExtract = func(n int) {
 			if n == 2 {
@@ -55,6 +51,7 @@ func crashCase(t *testing.T, spec string, setup, act, check func(te *testEnv)) {
 		if os.Getenv("SWEEP_CRASH_TEST") != t.Name() {
 			t.Skip("another crash case")
 		}
+		holdLifeline()
 		te := newTestEnvWith(t, homeAt(t, dir, os.Getenv("SWEEP_CRASH_RUN")))
 		arm(te, spec)
 		act(te)
@@ -62,16 +59,7 @@ func crashCase(t *testing.T, spec string, setup, act, check func(te *testEnv)) {
 	}
 	te := newTestEnv(t)
 	setup(te)
-	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "SWEEP_CRASH_DIR="+te.h.Dir, "SWEEP_CRASH_RUN="+te.h.RunDir, "SWEEP_CRASH_TEST="+t.Name())
-	out, err := cmd.CombinedOutput()
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		t.Fatalf("child was not killed (%v):\n%s", err, out)
-	}
-	if ws, ok := ee.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
-		t.Fatalf("child status %v, want SIGKILL:\n%s", ee, out)
-	}
+	runCrashChild(t, "SWEEP_CRASH_DIR="+te.h.Dir, "SWEEP_CRASH_RUN="+te.h.RunDir, "SWEEP_CRASH_TEST="+t.Name())
 	check(te)
 }
 
@@ -82,7 +70,7 @@ func sessionSetup(te *testEnv) { te.writeSession(sid1, "", nil) }
 func sealAct(te *testEnv) {
 	te.claude.sids = []string{sid1}
 	u := te.scanSession(sid1)
-	te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	te.run().sealCommand(tctx(te.t), []harness.Unit{u}, Options{})
 }
 
 // unitFiles is the plaintext of the session before the crash.
@@ -110,7 +98,7 @@ func rolledBack(t *testing.T, te *testEnv, st crashState) {
 			t.Fatalf("an unlogged capsule %s left", name)
 		}
 	}
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, st.u.Key); res.Outcome != OutSealed {
 		t.Fatalf("seal after recovery %+v", res)
 	}
@@ -146,8 +134,22 @@ func sealCrash(t *testing.T, spec string, forward bool) {
 // SEAL-1: SIGKILL after prepared.
 func TestCrashSEAL1AfterPrepared(t *testing.T) { sealCrash(t, "seal.prepared", false) }
 
-// SEAL-2: SIGKILL at 50 % of the temporary write.
-func TestCrashSEAL2MidTemporary(t *testing.T) { sealCrash(t, "hook:midTmp", false) }
+// SEAL-2: SIGKILL at 50 % of the temporary write: after the middle input
+// of the session is streamed (capsule.streamed, which the fake codec
+// evaluates like capsule.Seal).
+func TestCrashSEAL2MidTemporary(t *testing.T) {
+	var st crashState
+	crashCase(t, "capsule.streamed:"+itoa(sessionInputs/2), func(te *testEnv) {
+		sessionSetup(te)
+		st = capture(te)
+		if n := len(st.u.Files); n != sessionInputs {
+			t.Fatalf("the synthetic session has %d inputs, want %d", n, sessionInputs)
+		}
+	}, sealAct, func(te *testEnv) { rolledBack(t, te, st) })
+}
+
+// sessionInputs is the number of files of sessionSetup's session.
+const sessionInputs = 10
 
 // SEAL-3: SIGKILL after the temporary is FullSynced, before verify.
 func TestCrashSEAL3AfterTmpWritten(t *testing.T) { sealCrash(t, "seal.tmp_written", false) }
@@ -214,7 +216,7 @@ func TestCrashSealRescue(t *testing.T) {
 			_, _ = w.WriteString(`{"uuid":"00000000-0000-4000-8000-00000000dddd"}` + "\n")
 			return nil
 		}
-		te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+		te.run().sealCommand(tctx(te.t), []harness.Unit{u}, Options{})
 	}, func(te *testEnv) {
 		te.checkRecovered()
 		te.plaintextGone(st.u)
@@ -239,7 +241,7 @@ func restoreSetup(st *crashState) func(te *testEnv) {
 func restoreAct(te *testEnv) {
 	te.claude.sids = []string{sid1}
 	key := te.sessionKey(sid1)
-	te.run().restore(context.Background(), te.keys, RestoreRequest{Units: []harness.UnitRef{{Harness: harness.ClaudeCode, Kind: capsule.KindClaudeSession, Key: key}}})
+	te.run().restore(tctx(te.t), te.keys, RestoreRequest{Units: []harness.UnitRef{{Harness: harness.ClaudeCode, Kind: capsule.KindClaudeSession, Key: key}}})
 }
 
 // REST-1: SIGKILL during staging decrypt: nothing placed.
@@ -268,7 +270,7 @@ func restoredForward(t *testing.T, te *testEnv, st crashState) {
 		t.Fatal("staging left")
 	}
 	// The unit re-seals as unchanged (the receipt survived recovery).
-	rep, _ = te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ = te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, st.u.Key); res.Outcome != OutUnchanged {
 		t.Fatalf("re-seal after a rolled-forward restore %+v", res)
 	}
@@ -315,34 +317,7 @@ func historySetup(te *testEnv) {
 	appendLines(te.t, te.historyPath(), lines...)
 }
 
-func historyAct(te *testEnv) { te.run().rotateHistory(context.Background()) }
-
-// historyCheck: after recovery every line is exactly once in history.jsonl
-// or a generation, protected lines only in generations (no duplicates
-// appended, nothing lost).
-func historyCheck(t *testing.T, te *testEnv, all []string) {
-	te.checkRecovered()
-	inFile := map[string]int{}
-	for _, l := range te.historyLines() {
-		inFile[l]++
-	}
-	sealed := map[string]bool{}
-	for _, l := range te.sealedHistory() {
-		sealed[l] = true
-	}
-	for _, l := range all {
-		if testHistoryLine([]byte(l)).Project == te.h.Root {
-			if inFile[l] != 0 || !sealed[l] {
-				t.Fatalf("protected line: in file %d, sealed %v", inFile[l], sealed[l])
-			}
-		} else if inFile[l] != 1 || sealed[l] {
-			t.Fatalf("kept line: in file %d times, sealed %v", inFile[l], sealed[l])
-		}
-	}
-	if holds, _ := filepath.Glob(filepath.Join(te.h.ClaudeConfig, ".precinto-hold-*")); len(holds) != 0 {
-		t.Fatalf("hold left %v", holds)
-	}
-}
+func historyAct(te *testEnv) { te.run().rotateHistory(tctx(te.t)) }
 
 func historyCrash(t *testing.T, spec string, tail bool) {
 	var all []string
@@ -401,7 +376,7 @@ func TestCrashCODX1BetweenBlobs(t *testing.T) {
 	}, func(te *testEnv) {
 		te.useCodex(t)
 		u := te.codexUnit(t)
-		te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+		te.run().sealCommand(tctx(te.t), []harness.Unit{u}, Options{})
 	}, func(te *testEnv) {
 		te.useCodex(t)
 		te.checkRecovered()
@@ -426,7 +401,7 @@ func TestCrashCODX1BetweenBlobs(t *testing.T) {
 func TestCrashCodexBeforeManifestRename(t *testing.T) {
 	crashCase(t, "codex.manifest", func(te *testEnv) { te.codexHome(t) }, func(te *testEnv) {
 		te.useCodex(t)
-		te.run().sealCommand(context.Background(), []harness.Unit{te.codexUnit(t)}, Options{})
+		te.run().sealCommand(tctx(te.t), []harness.Unit{te.codexUnit(t)}, Options{})
 	}, func(te *testEnv) {
 		te.useCodex(t)
 		te.checkRecovered()

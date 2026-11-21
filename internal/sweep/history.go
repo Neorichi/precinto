@@ -28,6 +28,14 @@ const (
 	globalClaudeLk  = "global-claude-code"
 )
 
+// maxTailRanges bounds one run of the tail loop: a writer that never
+// pauses leaves the rotation at rewritten, and the next sweep's recovery
+// resumes it from the journaled offset (ports.maxTail lowers it in tests).
+const maxTailRanges = 1000
+
+// errTailBusy stops a tail loop whose hold inode keeps growing.
+var errTailBusy = errors.New("sweep: history is still being appended; the next sweep resumes the rotation")
+
 // RotateHistory extracts protected-root lines of Claude's history.jsonl
 // into per-root history generations with the hold-link protocol (D21, D36,
 // SPEC §7.1.4). Only when no Claude process is running anywhere.
@@ -257,7 +265,7 @@ func (ro *rotation) run(ctx context.Context) *UnitResult {
 		if err := r.jr.Advance(rec, journal.PhaseHeld); err != nil {
 			return fail(err)
 		}
-		if err := hit("history.held"); err != nil {
+		if err := r.hit("history.held"); err != nil {
 			return fail(err)
 		}
 	}
@@ -282,7 +290,7 @@ func (ro *rotation) run(ctx context.Context) *UnitResult {
 		if err := r.jr.Advance(rec, journal.PhaseSealed); err != nil {
 			return fail(err)
 		}
-		if err := hit("history.sealed"); err != nil {
+		if err := r.hit("history.sealed"); err != nil {
 			return fail(err)
 		}
 	}
@@ -309,7 +317,7 @@ func (ro *rotation) run(ctx context.Context) *UnitResult {
 			if err := ro.rewrite(split.kept); err != nil {
 				return fail(err)
 			}
-			if err := hit("history.renamed"); err != nil {
+			if err := r.hit("history.renamed"); err != nil {
 				return fail(err)
 			}
 		}
@@ -321,6 +329,11 @@ func (ro *rotation) run(ctx context.Context) *UnitResult {
 	}
 	if rec.Phase == journal.PhaseRewritten {
 		if err := ro.tail(ctx); err != nil {
+			if errors.Is(err, errTailBusy) {
+				// The record stays at rewritten: recovery resumes the tail.
+				res.Outcome, res.Detail = OutSkipped, "history_pending: still being appended"
+				return &res
+			}
 			return fail(err)
 		}
 		// Step 6: extracted paste-cache files and the hold go.
@@ -484,7 +497,7 @@ func (ro *rotation) sealRoot(ctx context.Context, rootID string, lines [][]byte,
 	if ne, ok := newestEntry(entries); ok {
 		parent, lineage = ne.Gen, capsule.LineageSuccessor
 	}
-	g, err := r.nextGen(key, caps)
+	g, err := r.nextGen(ctx, key, caps)
 	if err != nil {
 		return 0, err
 	}
@@ -555,9 +568,16 @@ func (ro *rotation) tail(ctx context.Context) error {
 	r, rec := ro.r, ro.rec
 	quietFor := time.Duration(0)
 	step := min(100*time.Millisecond, max(r.p.tailQuiet, time.Millisecond))
-	for {
+	limit := maxTailRanges
+	if r.p.maxTail > 0 && r.p.maxTail < limit {
+		limit = r.p.maxTail
+	}
+	for ranges := 0; ; {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if ranges >= limit {
+			return errTailBusy
 		}
 		st, err := ro.base.Lstat(rec.Hold)
 		if err != nil {
@@ -596,6 +616,7 @@ func (ro *rotation) tail(ctx context.Context) error {
 			end = len(chunk)
 		}
 		quietFor = 0
+		ranges++
 		rec.Pending = rec.Offset + int64(end)
 		if end > len(data[rec.Offset:]) {
 			rec.Pending = int64(len(data))
@@ -617,7 +638,7 @@ func (ro *rotation) tail(ctx context.Context) error {
 		if err := ro.appendKept(split.kept); err != nil {
 			return err
 		}
-		if err := hit("history.tail"); err != nil {
+		if err := r.hit("history.tail"); err != nil {
 			return err
 		}
 		rec.Offset = rec.Pending
@@ -627,9 +648,11 @@ func (ro *rotation) tail(ctx context.Context) error {
 	}
 }
 
-// appendKept appends kept lines to history.jsonl with O_APPEND, skipping
-// lines already present byte-for-byte after new_base (line union: a
-// re-run never appends a line twice, HIST-4).
+// appendKept appends kept lines to history.jsonl with O_APPEND relative to
+// the Claude home's directory handle (fsx.Dir.AppendLine: never through a
+// symlink, never a FIFO, CC-05), skipping lines already present
+// byte-for-byte after new_base (line union: a re-run never appends a line
+// twice, HIST-4).
 func (ro *rotation) appendKept(kept [][]byte) error {
 	if len(kept) == 0 {
 		return nil
@@ -644,9 +667,8 @@ func (ro *rotation) appendKept(kept [][]byte) error {
 			have[string(l)] = true
 		}
 	}
-	abs := filepath.Join(ro.cfgDir, historyRel)
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		if err := fsx.AppendLine(abs, nil); err != nil {
+		if err := ro.base.AppendLine(historyRel, nil); err != nil {
 			return err
 		}
 	}
@@ -654,7 +676,7 @@ func (ro *rotation) appendKept(kept [][]byte) error {
 		if have[string(l)] || len(l) > fsx.MaxLine {
 			continue
 		}
-		if err := fsx.AppendLine(abs, l); err != nil {
+		if err := ro.base.AppendLine(historyRel, l); err != nil {
 			return err
 		}
 		have[string(l)] = true
@@ -791,11 +813,9 @@ func (r *run) mergeHome(ctx context.Context, keys KeySource, h harness.Home, key
 	}
 	kg := &keyGuard{}
 	defer kg.destroy()
-	fk, err := keys.FileKeys(ctx, paths, "restore")
-	if err != nil {
+	if err := r.fetchKeys(ctx, keys, kg, paths, "restore"); err != nil {
 		return failed(res, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err)))
 	}
-	kg.add(fk)
 	rules := harness.TargetRules{Bases: map[capsule.BaseID]string{capsule.BaseClaudeConfig: cfgDir},
 		Allow: func(b capsule.BaseID, rel string) bool {
 			if b != capsule.BaseClaudeConfig {
@@ -858,6 +878,7 @@ func (r *run) mergeHome(ctx context.Context, keys KeySource, h harness.Home, key
 		if err != nil {
 			return failed(res, err)
 		}
+		kg.forget(en.Path) // decrypted: its key goes now (CC-17)
 		for _, s := range staged {
 			if s.Entry.Rel == historyRel {
 				b, _, err := readAllBounded(sub.Dir(), s.StagedRel, maxHistoryBytes)
@@ -887,9 +908,9 @@ func (r *run) mergeHome(ctx context.Context, keys KeySource, h harness.Home, key
 		}
 		return r.p.historyLine(missing[a]).Timestamp.Before(r.p.historyLine(missing[b]).Timestamp)
 	})
-	abs := filepath.Join(cfgDir, historyRel)
+	// Appends go through the home's directory handle (CC-05).
 	if len(cur) > 0 && cur[len(cur)-1] != '\n' {
-		if err := fsx.AppendLine(abs, nil); err != nil {
+		if err := base.AppendLine(historyRel, nil); err != nil {
 			return failed(res, err)
 		}
 	}
@@ -897,7 +918,7 @@ func (r *run) mergeHome(ctx context.Context, keys KeySource, h harness.Home, key
 		if len(l) > fsx.MaxLine {
 			continue
 		}
-		if err := fsx.AppendLine(abs, l); err != nil {
+		if err := base.AppendLine(historyRel, l); err != nil {
 			return failed(res, err)
 		}
 	}

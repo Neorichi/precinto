@@ -3,7 +3,6 @@
 package sweep
 
 import (
-	"context"
 	"testing"
 
 	"github.com/precinto/precinto/internal/fsx/failpoint"
@@ -19,7 +18,7 @@ func TestRecoverContinuesALoggedCapsuleAsCommitted(t *testing.T) {
 	u := te.scanSession(sid1)
 	failpoint.Reset()
 	failpoint.Set("seal.logged=errno:EIO")
-	res := te.run().sealOne(context.Background(), u, Options{}, true)
+	res := te.run().sealOne(tctx(t), u, Options{}, true)
 	failpoint.Reset()
 	if res.Outcome == OutSealed {
 		t.Fatalf("the seal succeeded although seal.logged failed: %+v", res)

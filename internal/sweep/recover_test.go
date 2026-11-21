@@ -2,7 +2,6 @@ package sweep
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,15 +38,15 @@ func crash() { panic(crashed{}) }
 func (te *testEnv) checkRecovered() *Report {
 	te.t.Helper()
 	r := te.run()
-	mustNoErr(te.t, r.recoverAll(context.Background()))
+	mustNoErr(te.t, r.recoverAll(tctx(te.t)))
 	rep := r.finish()
 	r2 := te.run()
-	mustNoErr(te.t, r2.recoverAll(context.Background()))
+	mustNoErr(te.t, r2.recoverAll(tctx(te.t)))
 	if len(r2.finish().Units) != 0 {
 		te.t.Fatal("O6: a second recovery found work")
 	}
 	q := te.run()
-	mustNoErr(te.t, q.quarantine(context.Background()))
+	mustNoErr(te.t, q.quarantine(tctx(te.t)))
 	if n := q.finish().Count(OutQuarantined); n != 0 {
 		te.t.Fatalf("O7: %d of precinto's own capsules quarantined", n)
 	}
@@ -93,29 +92,45 @@ func (te *testEnv) unitDirEntries(key string) []string {
 }
 
 // SEAL-2 / SEAL-3: a crash while the temporary is written or before it is
-// verified leaves the journaled temporary (capsule.TmpName); recovery
-// removes it.
+// verified leaves the journaled temporary (capsule.TmpName) and the record
+// at prepared or tmp_written, generation 1 reserved; recovery removes the
+// temporary and keeps the plaintext. The state is built as a SIGKILL
+// leaves it (the crash matrix kills real seals at capsule.streamed and
+// seal.tmp_written).
 func TestRecoverRemovesAnInterruptedTemporary(t *testing.T) {
 	t.Parallel()
-	te := newTestEnv(t)
-	te.writeSession(sid1, "", nil)
-	u := te.scanSession(sid1)
-	orig := te.original(u)
-	te.codec.midTmp = crash
-	simulateCrash(t, func() { te.run().sealOne(context.Background(), u, Options{}, true) })
-	if ents := te.unitDirEntries(u.Key); len(ents) != 1 || ents[0] != capsule.TmpName("g000001.pcap") {
-		t.Fatalf("crash state: %v", ents)
-	}
-	te.codec.midTmp = nil
-	te.checkRecovered()
-	te.plaintextIntact(orig)
-	if ents := te.unitDirEntries(u.Key); len(ents) != 0 {
-		t.Fatalf("leftovers: %v", ents)
-	}
-	// The next seal takes a new number: gaps are allowed (D58).
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
-	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed || res.Gen != 2 {
-		t.Fatalf("next seal %+v", res)
+	for _, phase := range []journal.Phase{journal.PhasePrepared, journal.PhaseTmpWritten} {
+		te := newTestEnv(t)
+		te.writeSession(sid1, "", nil)
+		u := te.scanSession(sid1)
+		orig := te.original(u)
+		r := te.run()
+		_, caps, err := r.openCapsDir("claude-code", u.Key, true)
+		mustNoErr(t, err)
+		if n, err := r.nextGen(tctx(t), u.Key, caps); err != nil || n != 1 {
+			t.Fatalf("reserve %d %v", n, err)
+		}
+		rec, err := te.e.Journal.Begin(journal.KindSeal, "claude-code", u.Key)
+		mustNoErr(t, err)
+		for _, f := range u.Files {
+			rec.Files = append(rec.Files, journal.File{Base: string(f.Base), Dir: u.Home.Bases[f.Base], Rel: f.Rel, Snap: f.Snap})
+		}
+		rec.Tmp, rec.Capsule, rec.Gen = capsule.TmpName("g000001.pcap"), "g000001.pcap", 1
+		mustNoErr(t, te.e.Journal.Save(rec))
+		if phase != journal.PhasePrepared {
+			mustNoErr(t, te.e.Journal.Advance(rec, phase))
+		}
+		writeAt(t, filepath.Join(caps.Path(), rec.Tmp), []byte(fakeMagic+"half a capsule"))
+		te.checkRecovered()
+		te.plaintextIntact(orig)
+		if ents := te.unitDirEntries(u.Key); len(ents) != 0 {
+			t.Fatalf("%s: leftovers: %v", phase, ents)
+		}
+		// The next seal takes a new number: gaps are allowed (D58).
+		rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
+		if res := outcome(t, rep, u.Key); res.Outcome != OutSealed || res.Gen != 2 {
+			t.Fatalf("%s: next seal %+v", phase, res)
+		}
 	}
 }
 
@@ -127,7 +142,7 @@ func TestRecoverDeletesAnUnloggedCapsule(t *testing.T) {
 	u := te.scanSession(sid1)
 	orig := te.original(u)
 	te.codec.afterRename = crash
-	simulateCrash(t, func() { te.run().sealOne(context.Background(), u, Options{}, true) })
+	simulateCrash(t, func() { te.run().sealOne(tctx(t), u, Options{}, true) })
 	if ents := te.unitDirEntries(u.Key); len(ents) != 1 || ents[0] != "g000001.pcap" {
 		t.Fatalf("crash state: %v", ents)
 	}
@@ -140,7 +155,7 @@ func TestRecoverDeletesAnUnloggedCapsule(t *testing.T) {
 	if ents := te.unitDirEntries(u.Key); len(ents) != 0 {
 		t.Fatalf("unlogged capsule left: %v", ents)
 	}
-	rep, _ = te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ = te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Gen != 2 {
 		t.Fatalf("number reused: %+v", res)
 	}
@@ -163,7 +178,7 @@ func TestRecoverResumesIdentityCheckedUnlinks(t *testing.T) {
 			crash()
 		}
 	}
-	simulateCrash(t, func() { te.run().sealOne(context.Background(), u, Options{}, true) })
+	simulateCrash(t, func() { te.run().sealOne(tctx(t), u, Options{}, true) })
 	te.fs.onUnlink = nil
 	// A surviving file changes before recovery: it must stay.
 	for _, p := range te.sessionFiles(u) {
@@ -193,7 +208,7 @@ func TestRecoverResumesIdentityCheckedUnlinks(t *testing.T) {
 	// The survivor is plaintext of the unit with no receipt line (its
 	// sealed hash is unknown): it seals as the next generation, nothing
 	// hides the others (SEAL-9, lineage partial or diverged).
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed || res.Gen != 2 {
 		t.Fatalf("next seal %+v", res)
 	}
@@ -214,7 +229,7 @@ func TestRecoverRollsAStagedRestoreForward(t *testing.T) {
 		}
 	}
 	simulateCrash(t, func() {
-		te.run().restore(context.Background(), te.keys, RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+		te.run().restore(tctx(t), te.keys, RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	})
 	te.fs.onRename = nil
 	if exists(transcriptOf(u)) {
@@ -248,7 +263,7 @@ func TestRecoverAfterACrashDuringStaging(t *testing.T) {
 		}
 	}
 	simulateCrash(t, func() {
-		te.run().restore(context.Background(), te.keys, RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+		te.run().restore(tctx(t), te.keys, RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	})
 	te.codec.duringExtract = nil
 	te.checkRecovered()
@@ -275,7 +290,7 @@ func TestRecoverSkipsAnOperationInFlight(t *testing.T) {
 	lk, err := te.run().lockUnit(key)
 	mustNoErr(t, err)
 	r := te.run()
-	mustNoErr(t, r.recoverAll(context.Background()))
+	mustNoErr(t, r.recoverAll(tctx(t)))
 	if p, _ := te.e.Journal.Pending(); len(p) != 1 {
 		t.Fatal("recovered a record whose operation still runs")
 	}
@@ -288,7 +303,7 @@ func TestRecoverSkipsAnOperationInFlight(t *testing.T) {
 	f.WriteString(fakeMagic + "{}\n")
 	f.Close()
 	q := te.run()
-	mustNoErr(t, q.quarantine(context.Background()))
+	mustNoErr(t, q.quarantine(tctx(t)))
 	if q.finish().Count(OutQuarantined) != 0 {
 		t.Fatal("quarantined a capsule named by a pending record")
 	}

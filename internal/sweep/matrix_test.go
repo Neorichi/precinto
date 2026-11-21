@@ -35,7 +35,7 @@ func TestSealVerificationFailuresKeepPlaintext(t *testing.T) {
 			u := te.scanSession(sid1)
 			orig := te.original(u)
 			tc.set(te.codec)
-			rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+			rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 			mustNoErr(t, err)
 			if res := outcome(t, rep, u.Key); res.Outcome != OutFailed || !errors.Is(rep.Err(), tc.want) {
 				t.Fatalf("result %+v, Err %v", res, rep.Err())
@@ -94,7 +94,7 @@ func TestConcurrentSealersSealEachUnitOnce(t *testing.T) {
 	for _, sid := range sids {
 		units = append(units, te.scanSession(sid))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(tctx(t), time.Minute)
 	defer cancel()
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -151,7 +151,7 @@ func TestInodeSwapBeforeUnlinkKeepsTheFile(t *testing.T) {
 		mustNoErr(t, os.Chtimes(tmp, st.ModTime(), st.ModTime()))
 		mustNoErr(t, os.Rename(tmp, victim))
 	}
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
 		t.Fatalf("result %+v", res)
 	}
@@ -165,7 +165,7 @@ func TestInodeSwapBeforeUnlinkKeepsTheFile(t *testing.T) {
 		t.Fatalf("receipt %+v", rd)
 	}
 	te.fs.onUnlink = nil
-	rep, _ = te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ = te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutUnchanged || exists(victim) {
 		t.Fatalf("retry %+v (victim left %v)", res, exists(victim))
 	}
@@ -184,7 +184,7 @@ func TestTranscriptDerivedNotesAreSealed(t *testing.T) {
 	te.claude.mdPaths[sid1] = []string{p}
 	// The session is sealed first (its transcript goes into the capsule):
 	// the note candidate survives in the pending index.
-	te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if got := te.run().pendingNotes(rootID); len(got) != 1 || got[0] != p {
 		t.Fatalf("pending notes %v", got)
 	}

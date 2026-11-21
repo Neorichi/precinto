@@ -2,7 +2,6 @@ package sweep
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -31,7 +30,7 @@ func (te *testEnv) sealedSession(sid string, mod func(*claudetest.Session)) (har
 	for _, p := range te.sessionFiles(u) {
 		orig[p] = readFile(te.t, p)
 	}
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, err := te.run().sealCommand(tctx(te.t), []harness.Unit{u}, Options{})
 	mustNoErr(te.t, err)
 	if res := outcome(te.t, rep, u.Key); res.Outcome != OutSealed {
 		te.t.Fatalf("seal %+v", res)
@@ -45,7 +44,7 @@ func refOf(u harness.Unit) harness.UnitRef {
 
 func (te *testEnv) restoreUnits(req RestoreRequest) *Report {
 	te.t.Helper()
-	rep, err := te.run().restore(context.Background(), te.keys, req)
+	rep, err := te.run().restore(tctx(te.t), te.keys, req)
 	mustNoErr(te.t, err)
 	return rep
 }
@@ -110,7 +109,7 @@ func TestRestoreMasksModes(t *testing.T) {
 	p := filepath.Join(u.Home.Bases[u.Files[0].Base], u.Files[0].Rel)
 	mustNoErr(t, os.Chmod(p, 0o755))
 	u = te.scanSession(sid1)
-	te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	if st, _ := fsx.Lstat(p); st.Perm() != 0o700 {
 		t.Fatalf("mode %v, want 0700", st.Perm())
@@ -164,7 +163,7 @@ func (te *testEnv) forge(key string, man capsule.Manifest, files map[string][]by
 		inputs = append(inputs, sealInput{Base: capsule.BaseClaudeConfig, Dir: src, Rel: rel, Snap: st})
 	}
 	name := capsule.GenName(gen)
-	s, err := te.codec.Seal(context.Background(), sealRequest{Manifest: man, Inputs: inputs, Recipients: recipientSet{fpr: "fpr-x"}, Out: caps, Name: name})
+	s, err := te.codec.Seal(tctx(te.t), sealRequest{Manifest: man, Inputs: inputs, Recipients: recipientSet{fpr: "fpr-x"}, Out: caps, Name: name})
 	mustNoErr(te.t, err)
 	mustNoErr(te.t, te.e.Log.Append(capslog.Entry{Path: logPathOf("claude-code", key, name), SHA256: s.SHA256, HeaderSHA256: s.HeaderSHA256,
 		Size: s.Size, Kind: string(capsule.KindClaudeSession), Harness: "claude-code", Unit: key, VaultID: rootID, RootIDs: []string{rootID},
@@ -321,7 +320,7 @@ func TestRestorePlacementTable(t *testing.T) {
 // last uuid of orig (what Claude writes after a move, E8).
 func fragmentAfter(t *testing.T, orig []byte) []byte {
 	t.Helper()
-	l, err := testScanLinks(context.Background(), bytes.NewReader(orig))
+	l, err := testScanLinks(tctx(t), bytes.NewReader(orig))
 	mustNoErr(t, err)
 	last := ""
 	for _, line := range bytes.Split(bytes.TrimSpace(orig), []byte("\n")) {
@@ -346,7 +345,7 @@ func TestFragmentAfterSealRestoresMerged(t *testing.T) {
 	frag := fragmentAfter(t, origs[tr])
 	writeAt(t, tr, frag)
 	u2 := te.scanSession(sid1)
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u2}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u2}, Options{})
 	res := outcome(t, rep, u.Key)
 	if res.Outcome != OutSealed || res.Gen != 2 || res.Lineage != capsule.LineageDiverged {
 		t.Fatalf("fragment seal %+v", res)
@@ -392,10 +391,10 @@ func TestLayeredConflictKeepsBothVersions(t *testing.T) {
 	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	// gen 1 has no x.txt; seal x.txt v1 as gen 2, then change it (not an
 	// append) and seal gen 3 (diverged).
-	te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	writeAt(t, p, []byte("two\n"))
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Lineage != capsule.LineageDiverged {
 		t.Fatalf("lineage %+v", res)
 	}
@@ -604,7 +603,7 @@ func TestRestoreReevaluatesWhenTheTargetAppears(t *testing.T) {
 		}
 	}
 	// The merge re-seals as a new generation (F was never sealed).
-	rep, _ = te.run().sealCommand(context.Background(), []harness.Unit{te.scanSession(sid1)}, Options{})
+	rep, _ = te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed || res.Gen != 2 {
 		t.Fatalf("re-seal after a merge %+v", res)
 	}
@@ -636,7 +635,7 @@ func TestRecoverRollsBackAPreparedRestore(t *testing.T) {
 	rec.Staging = st.Path()
 	mustNoErr(t, te.e.Journal.Save(rec))
 	r := te.run()
-	mustNoErr(t, r.recoverAll(context.Background()))
+	mustNoErr(t, r.recoverAll(tctx(t)))
 	if exists(st.Path()) {
 		t.Fatal("REST-1: staging not removed")
 	}
@@ -661,7 +660,7 @@ func TestProjectDirSelectorMatchesTheUnitProjectDir(t *testing.T) {
 	u := te.scanSession(sid1)
 	start := filepath.Join(te.h.Root, "svc")
 	u.ProjectDir = start
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
 		t.Fatalf("seal %+v", res)
@@ -675,5 +674,240 @@ func TestProjectDirSelectorMatchesTheUnitProjectDir(t *testing.T) {
 	rep = te.restoreUnits(RestoreRequest{Select: []harness.Selector{{Kind: capsule.KindClaudeSession, RootID: rootID, ProjectDir: start, Recent: 5}}})
 	if outcome(t, rep, u.Key).Outcome != OutRestored {
 		t.Fatalf("selector of the start dir: %+v", rep.Units)
+	}
+}
+
+// CC-22 (REST-3): entries the adapter marks TargetRules.Last are placed
+// after every other entry, whatever their depth; without the rule the
+// shallowest JSONL (<sid>.jsonl) still goes last.
+func TestRestorePlacesLastEntriesLast(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	u, _ := te.sealedSession(sid1, nil)
+	// The deepest subagent transcript is the adapter's Last entry here.
+	var last string
+	for _, f := range u.Files {
+		if f.Placement == harness.PlaceJSONLAppend && !f.Last && (last == "" || depth(f.Rel) > depth(last)) {
+			last = f.Rel
+		}
+	}
+	if last == "" {
+		t.Fatal("the synthetic session has no subagent transcript")
+	}
+	te.claude.last = func(en capsule.Entry) bool { return en.Rel == last }
+	var order []string
+	te.fs.onRename = func(dst string) {
+		if strings.HasPrefix(dst, te.h.ClaudeConfig+string(filepath.Separator)) || strings.HasPrefix(dst, te.h.ClaudeTmp+string(filepath.Separator)) {
+			order = append(order, dst)
+		}
+	}
+	rep := te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+	if res := outcome(t, rep, u.Key); res.Outcome != OutRestored {
+		t.Fatalf("restore %+v", res)
+	}
+	if len(order) < 2 || order[len(order)-1] != filepath.Join(te.h.ClaudeConfig, filepath.FromSlash(last)) {
+		t.Fatalf("placement order ends with %v, want the Last entry", order[max(0, len(order)-2):])
+	}
+	if order[len(order)-2] != transcriptOf(u) {
+		t.Fatalf("before the Last entry: %s, want the main transcript (depth order)", filepath.Base(order[len(order)-2]))
+	}
+}
+
+// CC-22 (S7): a base the adapter reports unsafe now (TargetRules.Skip) is
+// skipped and reported, the rest of the unit restores, and the capsule
+// keeps the skipped entries for a later restore.
+func TestRestoreSkipsAnUnsafeBase(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	u, orig := te.sealedSession(sid1, nil)
+	var inTmp, inConfig []string
+	for _, f := range u.Files {
+		p := filepath.Join(u.Home.Bases[f.Base], filepath.FromSlash(f.Rel))
+		if f.Base == capsule.BaseClaudeTmp {
+			inTmp = append(inTmp, p)
+		} else {
+			inConfig = append(inConfig, p)
+		}
+	}
+	if len(inTmp) == 0 || len(inConfig) == 0 {
+		t.Fatalf("the synthetic session needs files in both bases (%d tmp, %d config)", len(inTmp), len(inConfig))
+	}
+	te.claude.skip = map[capsule.BaseID]string{capsule.BaseClaudeTmp: "unsafe tmp"}
+	rep := te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+	var restored, skipped *UnitResult
+	for i := range rep.Units {
+		switch r := &rep.Units[i]; {
+		case r.Unit == u.Key && r.Outcome == OutRestored:
+			restored = r
+		case r.Unit == u.Key && r.Outcome == OutSkipped:
+			skipped = r
+		}
+	}
+	if restored == nil || skipped == nil || skipped.Detail != "unsafe tmp" || skipped.Files != len(inTmp) {
+		t.Fatalf("report %+v", rep.Units)
+	}
+	if rep.Err() != nil {
+		t.Fatalf("Err %v", rep.Err())
+	}
+	for _, p := range inConfig {
+		if !bytes.Equal(readFile(t, p), orig[p]) {
+			t.Fatalf("%s not restored", filepath.Base(p))
+		}
+	}
+	for _, p := range inTmp {
+		if exists(p) {
+			t.Fatalf("%s written under the unsafe base", filepath.Base(p))
+		}
+	}
+	// Once the base is safe again the capsule still has them.
+	te.claude.skip = nil
+	for _, p := range inConfig {
+		mustNoErr(t, os.Remove(p))
+	}
+	mustNoErr(t, os.Remove(filepath.Join(te.h.Layout.ReceiptsDir, u.Key+".json")))
+	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+	for p, b := range orig {
+		if !bytes.Equal(readFile(t, p), b) {
+			t.Fatalf("%s not restored once the base was safe", filepath.Base(p))
+		}
+	}
+}
+
+// CC-17 (FX-G4-13): a restore asks for keys in requests of at most
+// maxKeysPerRequest capsules — whole units per request, a unit with more
+// capsules alone in several — right before those units are restored, and
+// every key of a restored unit is destroyed before the next batch is
+// asked for.
+func TestRestoreRequestsKeysInBatches(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	te.p.maxKeys = 2
+	var refs []harness.UnitRef
+	for _, sid := range []string{sid1, sid2, "00000000-0000-4000-8000-0000000000a3"} {
+		u, _ := te.sealedSession(sid, nil)
+		refs = append(refs, refOf(u))
+	}
+	before := len(te.keys.sizes)
+	rep := te.restoreUnits(RestoreRequest{Units: refs})
+	if n := rep.Count(OutRestored); n != len(refs) {
+		t.Fatalf("restored %d of %d: %+v", n, len(refs), rep.Units)
+	}
+	// Three one-capsule units with a limit of two: two batches.
+	if sizes, alive := te.keys.sizes[before:], te.keys.alive[before:]; len(sizes) != 2 || sizes[0] != 2 || sizes[1] != 1 || alive[0] != 0 || alive[1] != 0 {
+		t.Fatalf("requests %v, keys alive at each %v; want [2 1] and none alive", sizes, alive)
+	}
+	// A snapshot needs itself and its blobs: more than a request holds,
+	// so it is asked for alone, in requests of at most two.
+	te.codexHome(t)
+	cu := te.codexUnit(t)
+	if res := te.sealCodex(t); res.Outcome != OutSealed {
+		t.Fatalf("codex seal %+v", res)
+	}
+	before = len(te.keys.sizes)
+	if res := te.restoreCodex(t); res.Outcome != OutRestored {
+		t.Fatalf("codex restore %+v", res)
+	}
+	sizes, alive := te.keys.sizes[before:], te.keys.alive[before:]
+	total := 0
+	for i, n := range sizes {
+		total += n
+		if n == 0 || n > te.p.maxKeys {
+			t.Fatalf("request %d named %d capsules (limit %d): %v", i, n, te.p.maxKeys, sizes)
+		}
+	}
+	if len(sizes) < 2 || alive[0] != 0 || total != 1+blobCount(te) {
+		t.Fatalf("snapshot requests %v (alive %v) for %d blobs of %s", sizes, alive, blobCount(te), short(cu.Key))
+	}
+	if !te.keys.allDestroyed() {
+		t.Fatal("keys left alive after the restore")
+	}
+}
+
+// The limit is ipc.MaxKeysPerRequest (KeySource doc, CC-17).
+func TestMaxKeysPerRequestIsTheProtocolLimit(t *testing.T) {
+	t.Parallel()
+	if n := newTestEnv(t).run().keysPerRequest(); maxKeysPerRequest != 256 || n != 256 {
+		t.Fatalf("keys per request %d (constant %d), want 256 (ipc.MaxKeysPerRequest)", n, maxKeysPerRequest)
+	}
+}
+
+// FX-G4-15 (SPEC §11.5 step 2): free space is checked on every volume a
+// restore writes: the staging volume for the whole unit and each other
+// volume for the files placed on it. A full $TMP volume skips the unit
+// (nothing placed) even when the staging volume has room.
+func TestRestoreChecksSpaceOnEveryVolume(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	u, orig := te.sealedSession(sid1, nil)
+	var tmpBytes int64
+	for _, f := range u.Files {
+		if f.Base == capsule.BaseClaudeTmp {
+			tmpBytes += f.Snap.Size
+		}
+	}
+	if tmpBytes == 0 {
+		t.Fatal("the synthetic session has no $TMP files")
+	}
+	te.fs.device = map[string]uint64{te.h.ClaudeTmp: 0x7e57}
+	te.fs.freeAt = map[string]int64{te.h.ClaudeTmp: tmpBytes} // < 1.1 × the bytes placed there
+	rep := te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+	if res := outcome(t, rep, u.Key); res.Outcome != OutSkipped || !strings.HasPrefix(res.Detail, codeNoSpace+":") {
+		t.Fatalf("restore onto a full $TMP volume %+v", res)
+	}
+	for p := range orig {
+		if exists(p) {
+			t.Fatalf("%s placed although a volume lacked space", filepath.Base(p))
+		}
+	}
+	te.fs.freeAt = map[string]int64{te.h.ClaudeTmp: 2*tmpBytes + 4096}
+	rep = te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+	if res := outcome(t, rep, u.Key); res.Outcome != OutRestored {
+		t.Fatalf("restore with room %+v", res)
+	}
+	for p, b := range orig {
+		if !bytes.Equal(readFile(t, p), b) {
+			t.Fatalf("%s not restored", filepath.Base(p))
+		}
+	}
+}
+
+// FX-G4-19 (D36, DC-24): global-vault units (global stores, generic units)
+// are restored only when a selector names them — RootID "global", their
+// kind or their keys — never by a folder's selector or an everything
+// selector.
+func TestGlobalUnitsAreSelectedOnlyExplicitly(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	session, store, generic := strings.Repeat("a1", 16), strings.Repeat("b2", 16), strings.Repeat("c3", 16)
+	en := logEntryFor(session, 1)
+	mustNoErr(t, te.e.Log.Append(en))
+	g := logEntryFor(store, 1)
+	g.Path, g.Kind, g.VaultID, g.RootIDs = "claude-code/"+store+"/g000001.pcap", string(capsule.KindGlobalStore), "global", nil
+	mustNoErr(t, te.e.Log.Append(g))
+	x := logEntryFor(generic, 1)
+	x.Path, x.Kind, x.Harness, x.VaultID, x.RootIDs = "gemini/"+generic+"/g000001.pcap", string(capsule.KindGeneric), "gemini", "global", nil
+	mustNoErr(t, te.e.Log.Append(x))
+	for _, tc := range []struct {
+		name string
+		sel  harness.Selector
+		want []string
+	}{
+		{"everything", harness.Selector{}, []string{session}},
+		{"the folder", harness.Selector{RootID: rootID}, []string{session}},
+		{"restore --global", harness.Selector{RootID: "global"}, []string{store, generic}},
+		{"global stores", harness.Selector{Kind: capsule.KindGlobalStore}, []string{store}},
+		{"generic units", harness.Selector{Kind: capsule.KindGeneric}, []string{generic}},
+		{"by key (--harness H, keys from List)", harness.Selector{Keys: []string{generic}}, []string{generic}},
+	} {
+		r := te.run()
+		plans, _, err := r.planRestore(tctx(t), te.keys, &keyGuard{}, RestoreRequest{Select: []harness.Selector{tc.sel}}, "restore")
+		mustNoErr(t, err)
+		var got []string
+		for _, p := range plans {
+			got = append(got, p.ref.Key)
+		}
+		if !sameSet(got, tc.want) {
+			t.Fatalf("%s: selected %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

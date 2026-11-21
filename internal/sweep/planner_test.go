@@ -2,7 +2,6 @@ package sweep
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -204,9 +203,9 @@ func TestKeyGuard(t *testing.T) {
 	te := newTestEnv(t)
 	te.writeSession(sid1, "", nil)
 	u := te.scanSession(sid1)
-	te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	en := te.logged(u.Key)[0]
-	fk, err := te.keys.FileKeys(context.Background(), []string{en.Path}, "restore")
+	fk, err := te.keys.FileKeys(tctx(t), []string{en.Path}, "restore")
 	mustNoErr(t, err)
 	kg := &keyGuard{}
 	kg.add(fk)

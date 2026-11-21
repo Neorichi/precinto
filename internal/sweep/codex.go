@@ -7,13 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
@@ -47,18 +44,23 @@ func (r *run) refsPath(unit string) string {
 	return filepath.Join(r.l.GensDir, unit+".refs.json")
 }
 
+// maxRefsBytes bounds a snapshot refs index read (blob keys only).
+const maxRefsBytes = 64 << 20
+
+// readRefs reads state/gens/<unit>.refs.json (readState: regular,
+// bounded, never blocking); anything unreadable reads as empty, which
+// makes prune keep every blob (fail safe).
 func (r *run) readRefs(unit string) snapRefs {
 	refs := snapRefs{V: 1, Gens: map[string][]string{}}
 	if !validKey(unit) {
 		return refs
 	}
-	f, err := os.OpenFile(r.refsPath(unit), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	b, err := readState(r.refsPath(unit), maxRefsBytes)
 	if err != nil {
 		return refs
 	}
-	defer f.Close()
 	var got snapRefs
-	if err := json.NewDecoder(f).Decode(&got); err == nil && got.Gens != nil {
+	if err := json.Unmarshal(b, &got); err == nil && got.Gens != nil {
 		refs.Gens = got.Gens
 	}
 	return refs
@@ -389,12 +391,12 @@ func (r *run) sealSnapshot(ctx context.Context, us *unitSeal, lp lineagePlan, ke
 		if err := r.jr.Save(rec); err != nil {
 			return failed(res, err)
 		}
-		if err := hit("codex.blob"); err != nil {
+		if err := r.hit("codex.blob"); err != nil {
 			return failed(res, err)
 		}
 	}
 	// The manifest generation: every content file with its blob.
-	n, err := r.nextGen(u.Key, us.caps)
+	n, err := r.nextGen(ctx, u.Key, us.caps)
 	if err != nil {
 		r.collectBlobs(rec)
 		_ = r.jr.Done(rec)
@@ -448,7 +450,7 @@ func (r *run) sealSnapshot(ctx context.Context, us *unitSeal, lp lineagePlan, ke
 		// change request on capsule.SealRequest).
 		req:          sealRequest{Manifest: man, Dirs: entries, Recipients: us.recips},
 		entry:        entry,
-		beforeRename: func() error { return hit("codex.manifest") },
+		beforeRename: func() error { return r.hit("codex.manifest") },
 	}
 	if _, err := r.commit(ctx, spec); err != nil {
 		if !keepRecord(err) {
@@ -468,7 +470,7 @@ func (r *run) sealSnapshot(ctx context.Context, us *unitSeal, lp lineagePlan, ke
 		return res
 	}
 	ur := r.unlinkFiles(ctx, u, us.bases, rec, false, unitSealPoints)
-	r.pruneDirs(u, us.bases, rec)
+	ignored := r.pruneDirs(u, us.bases, rec)
 	if err := r.rewriteReceiptBlobs(u, us.bases, rec, shas, blobOf, n, us.rd); err != nil {
 		return failed(res, err)
 	}
@@ -480,7 +482,7 @@ func (r *run) sealSnapshot(ctx context.Context, us *unitSeal, lp lineagePlan, ke
 		res.Outcome, res.Class = OutRemoveFailed, fsx.ClassAccess
 		res.Detail = fmt.Sprintf("%d file(s) could not be removed", ur.removeFailed)
 	}
-	return res
+	return prunedDetail(res, ignored)
 }
 
 // collectBlobs removes the blobs an uncommitted snapshot wrote (CODX-1:
@@ -676,12 +678,8 @@ func (r *run) restoreSnapshot(ctx, actx context.Context, p *restoreUnitPlan, a a
 		if err := r.checkProvenance(authEntry); err != nil {
 			return failed(res, err)
 		}
-		if !kg.has(authEntry.Path) {
-			fk, err := keys.FileKeys(actx, []string{authEntry.Path}, purpose)
-			if err != nil {
-				return failed(res, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err)))
-			}
-			kg.add(fk)
+		if err := r.fetchKeys(actx, keys, kg, []string{authEntry.Path}, purpose); err != nil {
+			return failed(res, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err)))
 		}
 		m, err := r.readManifest(actx, authEntry, kg)
 		if err != nil {
@@ -693,6 +691,18 @@ func (r *run) restoreSnapshot(ctx, actx context.Context, p *restoreUnitPlan, a a
 		man = m
 	}
 	res.Gen = p.newest.Gen
+	// A snapshot places all or nothing: a base the adapter reports unsafe
+	// now (TargetRules.Skip) skips the whole unit, reported; the capsule
+	// keeps it.
+	for _, en := range man.Files {
+		if why, skip := a.rules.Skip[en.Base]; skip {
+			res.Outcome, res.Detail = OutSkipped, why
+			if res.Detail == "" {
+				res.Detail = "unsafe base"
+			}
+			return res
+		}
+	}
 	check := entryCheck(a.rules)
 	for _, en := range man.Files {
 		if err := check(en); err != nil {
@@ -741,18 +751,12 @@ func (r *run) restoreSnapshot(ctx, actx context.Context, p *restoreUnitPlan, a a
 		}
 		need = append(need, be)
 	}
-	var missing []string
+	var blobPaths []string
 	for _, be := range need {
-		if !kg.has(be.Path) {
-			missing = append(missing, be.Path)
-		}
+		blobPaths = append(blobPaths, be.Path)
 	}
-	if len(missing) > 0 {
-		fk, err := keys.FileKeys(actx, missing, purpose)
-		if err != nil {
-			return failed(res, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err)))
-		}
-		kg.add(fk)
+	if err := r.fetchKeys(actx, keys, kg, blobPaths, purpose); err != nil {
+		return failed(res, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err)))
 	}
 	var bytes int64
 	for _, be := range need {
@@ -762,7 +766,11 @@ func (r *run) restoreSnapshot(ctx, actx context.Context, p *restoreUnitPlan, a a
 	if target == "" {
 		return failed(res, fmt.Errorf("%w: no target base", harness.ErrUnregistered))
 	}
-	if err := r.p.fs.CheckSpace(target, int64(math.Ceil(1.1*float64(bytes))), r.e.Floor); err != nil {
+	perBase := map[capsule.BaseID]int64{}
+	for _, en := range man.Files {
+		perBase[en.Base] += en.Size
+	}
+	if err := r.checkRestoreSpace(a.rules.Bases, target, bytes, perBase); err != nil {
 		res = failed(res, noSpace(err))
 		res.Outcome = OutSkipped
 		return res
@@ -816,6 +824,7 @@ func (r *run) restoreSnapshot(ctx, actx context.Context, p *restoreUnitPlan, a a
 			}
 			return rollback(noSpace(err), "")
 		}
+		kg.forget(be.Path) // decrypted: its key goes now (CC-17)
 		if k, err := harness.UnitKeyFor(r.e.Harness.Salt, capsule.KindCodexBlob, harness.Codex, "", firstRoot(be.RootIDs, r), bm.UnitID); err != nil || k != be.Unit {
 			return rollback(fmt.Errorf("%w: blob id does not match its key", harness.ErrUnitKey), "")
 		}
@@ -1053,7 +1062,7 @@ func (r *run) recommitSnapshot(ctx context.Context, keys KeySource, src capslog.
 	}
 	kg := &keyGuard{}
 	defer kg.destroy()
-	fk, err := keys.FileKeys(ctx, []string{src.Path}, "restore")
+	fk, err := keys.FileKeys(ctx, []string{src.Path}, "restore") // one capsule (≤ maxKeysPerRequest)
 	if err != nil {
 		return failed(res, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err)))
 	}
@@ -1075,7 +1084,7 @@ func (r *run) recommitSnapshot(ctx context.Context, keys KeySource, src capslog.
 	}
 	defer capsRoot.Close()
 	defer caps.Close()
-	n, err := r.nextGen(src.Unit, caps)
+	n, err := r.nextGen(ctx, src.Unit, caps)
 	if err != nil {
 		return failed(res, err)
 	}
@@ -1101,7 +1110,7 @@ func (r *run) recommitSnapshot(ctx context.Context, keys KeySource, src capslog.
 	spec := &commitSpec{rec: rec, unitDir: caps, outDir: caps, capsuleRel: name, name: name,
 		logPath: logPathOf(src.Harness, src.Unit, name), gen: n,
 		req:   sealRequest{Manifest: man, Dirs: m.Files, Recipients: recips},
-		entry: en, beforeRename: func() error { return hit("codex.manifest") }}
+		entry: en, beforeRename: func() error { return r.hit("codex.manifest") }}
 	if _, err := r.commit(ctx, spec); err != nil {
 		if !keepRecord(err) {
 			_ = r.jr.Done(rec)

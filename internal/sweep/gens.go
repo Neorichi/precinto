@@ -48,21 +48,22 @@ func generationOf(en capslog.Entry) Generation {
 // generation whose capsule recovery removed), and nothing may assume
 // consecutive numbers (lineage uses logged Parent links, D58).
 func NextGen(e Env, unit string) (uint64, error) {
-	return newRun(e, ports{}).nextGen(unit, nil)
+	return newRun(e, ports{}).nextGen(context.Background(), unit, nil)
 }
 
 // nextGen implements NextGen. The counter is read and written under the
-// gens lock; the new value is max(counter, highest logged generation,
-// highest generation file in capsDir) + 1, so a lost or damaged counter
-// file can never make a number repeat.
-func (r *run) nextGen(unit string, capsDir dirHandle) (uint64, error) {
+// gens lock (waited for at most a minute, and never past ctx); the new
+// value is max(counter, highest logged generation, highest generation
+// file in capsDir) + 1, so a lost or damaged counter file can never make a
+// number repeat.
+func (r *run) nextGen(ctx context.Context, unit string, capsDir dirHandle) (uint64, error) {
 	if !validKey(unit) {
 		return 0, fmt.Errorf("%w: invalid unit key", harness.ErrUnitKey)
 	}
 	if err := ensurePrivateDir(r.l.GensDir); err != nil {
 		return 0, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	lk, err := r.waitLockName(ctx, "gens")
 	if err != nil {
@@ -100,19 +101,15 @@ func (r *run) nextGen(unit string, capsDir dirHandle) (uint64, error) {
 	return n, nil
 }
 
-// readCounter reads a generation counter; a missing or undecodable file
-// reads as 0 (the log and the store then decide, see nextGen).
+// readCounter reads a generation counter; a missing, undecodable or
+// non-regular file (a FIFO, a device) reads as 0: the log and the store
+// then decide (see nextGen), and the new value replaces it atomically.
 func readCounter(p string) (uint64, error) {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, fs.ErrNotExist) {
+	b, err := readState(p, 64)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, fsx.ErrUnsafe), errors.Is(err, errStateTooLarge):
 		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 64))
-	if err != nil {
+	case err != nil:
 		return 0, err
 	}
 	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
@@ -120,6 +117,42 @@ func readCounter(p string) (uint64, error) {
 		return 0, nil
 	}
 	return n, nil
+}
+
+// errStateTooLarge: a precinto state file is larger than its bound.
+var errStateTooLarge = errors.New("sweep: state file too large")
+
+// readState reads one of precinto's own state files (counters, refs, the
+// pending-notes index): opened O_RDONLY|O_NOFOLLOW|O_NONBLOCK, so a
+// symlink is refused and a FIFO never blocks, required to be a regular
+// file (fsx.ErrUnsafe otherwise) and at most max bytes (errStateTooLarge).
+func readState(p string, max int64) ([]byte, error) {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: %s is a symlink", fsx.ErrUnsafe, filepath.Base(p))
+		}
+		return nil, err
+	}
+	defer f.Close()
+	st, err := fsx.Fstat(f)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsRegular() {
+		return nil, fmt.Errorf("%w: %s is not a regular file", fsx.ErrUnsafe, filepath.Base(p))
+	}
+	if st.Size > max {
+		return nil, errStateTooLarge
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, errStateTooLarge
+	}
+	return b, nil
 }
 
 // LoadReceipt reads the receipt of a unit (ok=false if none).

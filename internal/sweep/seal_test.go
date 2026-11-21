@@ -55,7 +55,7 @@ func TestSealSessionEndToEnd(t *testing.T) {
 	if len(files) < 5 {
 		t.Fatalf("synthetic session too small: %d files", len(files))
 	}
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{Reason: "session-end"})
+	rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{Reason: "session-end"})
 	mustNoErr(t, err)
 	res := outcome(t, rep, u.Key)
 	if res.Outcome != OutSealed || res.Gen != 1 || res.Lineage != capsule.LineageFresh {
@@ -100,7 +100,7 @@ func TestSealRefusesOnTripwireAndKeepsPlaintext(t *testing.T) {
 	u := te.scanSession(sid1)
 	before := snapshotTree(t, te.h.ClaudeConfig)
 	te.vaults.tripwire[rootID] = true
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutFailed {
 		t.Fatalf("result %+v", res)
@@ -132,7 +132,7 @@ func TestSealNeverTouchesALiveUnit(t *testing.T) {
 			u := te.scanSession(sid1)
 			before := snapshotTree(t, te.h.Dir)
 			te.live.set(u.Key, live.Verdict{Live: true, Evidence: []live.Evidence{tc.ev}})
-			rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+			rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 			mustNoErr(t, err)
 			if res := outcome(t, rep, u.Key); res.Outcome != tc.want || len(res.Evidence) != 1 {
 				t.Fatalf("result %+v", res)
@@ -156,7 +156,7 @@ func TestSealProbeErrorMeansLive(t *testing.T) {
 	te.writeSession(sid1, "", nil)
 	u := te.scanSession(sid1)
 	te.claude.probeErr = errors.New("registry unreadable")
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutLive {
 		t.Fatalf("result %+v", res)
 	}
@@ -180,7 +180,7 @@ func TestSealAbortsWhenAFileChangesBetweenPasses(t *testing.T) {
 		_, _ = f.WriteString(`{"uuid":"00000000-0000-4000-8000-00000000ffff"}` + "\n")
 		f.Close()
 	}
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutLive {
 		t.Fatalf("result %+v", res)
@@ -222,7 +222,7 @@ func TestSealHazardsAreReportedNeverTouched(t *testing.T) {
 	if len(u.Hazards) < 3 {
 		t.Fatalf("fake adapter hazards %+v", u.Hazards)
 	}
-	rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	res := outcome(t, rep, u.Key)
 	if res.Outcome != OutSealed || len(res.Hazards) < 3 {
@@ -245,7 +245,7 @@ func TestUnchangedResealDropsPlaintextWithoutANewGeneration(t *testing.T) {
 	te := newTestEnv(t)
 	te.writeSession(sid1, "", nil)
 	u := te.scanSession(sid1)
-	ctx := context.Background()
+	ctx := tctx(t)
 	if rep, _ := te.run().sealCommand(ctx, []harness.Unit{u}, Options{}); outcome(t, rep, u.Key).Outcome != OutSealed {
 		t.Fatal("first seal")
 	}
@@ -285,7 +285,7 @@ func TestRemoveFailedRetriesAsUnchanged(t *testing.T) {
 	u := te.scanSession(sid1)
 	victim := filepath.Join(u.Home.Bases[u.Files[0].Base], u.Files[0].Rel)
 	te.fs.inject("unlink", victim, syscall.EACCES)
-	ctx := context.Background()
+	ctx := tctx(t)
 	rep, err := te.run().sealCommand(ctx, []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutRemoveFailed || res.Gen != 1 {
@@ -331,7 +331,7 @@ func TestNoSpaceKeepsPlaintext(t *testing.T) {
 			te.writeSession(sid1, "", nil)
 			u := te.scanSession(sid1)
 			tc.set(te)
-			rep, err := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+			rep, err := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 			mustNoErr(t, err)
 			res := outcome(t, rep, u.Key)
 			if res.Outcome != OutFailed || res.Class != fsx.ClassNoSpace {
@@ -358,7 +358,7 @@ func TestGenerationsIgnoreTheWallClock(t *testing.T) {
 	t.Parallel()
 	te := newTestEnv(t)
 	te.writeSession(sid1, "", nil)
-	ctx := context.Background()
+	ctx := tctx(t)
 	u := te.scanSession(sid1)
 	te.run().sealCommand(ctx, []harness.Unit{u}, Options{})
 	te.h.Clock.StepWall(-2 * time.Hour)
@@ -429,7 +429,7 @@ func TestRescueCapturesALateAppend(t *testing.T) {
 		}
 		return nil
 	}
-	ctx := context.Background()
+	ctx := tctx(t)
 	rep, err := te.run().sealCommand(ctx, []harness.Unit{u}, Options{})
 	mustNoErr(t, err)
 	res := outcome(t, rep, u.Key)
@@ -470,7 +470,7 @@ func TestLedgerSnapshotLengthIsArchived(t *testing.T) {
 		te.ledger.raw[k] = append(te.ledger.raw[k], []byte(`{"v":1,"type":"end"}`+"\n")...)
 		te.ledger.mu.Unlock()
 	}
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
 		t.Fatalf("result %+v", res)
 	}
@@ -513,7 +513,7 @@ func TestSealParallelismIsBounded(t *testing.T) {
 	for _, sid := range sids {
 		units = append(units, te.scanSession(sid))
 	}
-	rep, _ := te.run().sealCommand(context.Background(), units, Options{})
+	rep, _ := te.run().sealCommand(tctx(t), units, Options{})
 	if rep.Count(OutSealed) != 6 {
 		t.Fatalf("sealed %d of 6: %+v", rep.Count(OutSealed), rep.Units)
 	}
@@ -533,7 +533,7 @@ func TestSealParallelismIsBounded(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		big = append(big, te.scanSession("00000000-0000-4000-8000-0000000000c"+itoa(i)))
 	}
-	te.run().sealCommand(context.Background(), big, Options{})
+	te.run().sealCommand(tctx(t), big, Options{})
 	if peak != 1 {
 		t.Fatalf("big units ran %d at once, want alone", peak)
 	}
@@ -545,7 +545,7 @@ func TestDryRunChangesNothing(t *testing.T) {
 	te.writeSession(sid1, "", nil)
 	u := te.scanSession(sid1)
 	before := snapshotTree(t, te.h.Dir)
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{DryRun: true})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{DryRun: true})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed || res.Detail != "dry-run" {
 		t.Fatalf("result %+v", res)
 	}
@@ -575,7 +575,7 @@ func TestSealWaitsForTheWriterToExit(t *testing.T) {
 		return nil
 	}
 	id := procInfo(4242, 99).ID
-	rep, _ := te.run().sealCommand(context.Background(), []harness.Unit{u}, Options{WaitFor: &id})
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{WaitFor: &id})
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed || waits < 3 {
 		t.Fatalf("result %+v after %d waits", res, waits)
 	}
@@ -588,8 +588,51 @@ func TestSealWaitsForTheWriterToExit(t *testing.T) {
 		return nil
 	}
 	u2 := te.scanSession(sid2)
-	rep, _ = te.run().sealCommand(context.Background(), []harness.Unit{u2}, Options{WaitFor: &id2, Deadline: te.h.Clock.Now().Add(500 * time.Millisecond)})
+	rep, _ = te.run().sealCommand(tctx(t), []harness.Unit{u2}, Options{WaitFor: &id2, Deadline: te.h.Clock.Now().Add(500 * time.Millisecond)})
 	if res := outcome(t, rep, u2.Key); res.Outcome != OutLive {
 		t.Fatalf("deadline result %+v", res)
+	}
+}
+
+// CC-19: Unit.Prune lists "<base id>:<rel>" entries only: a directory is
+// pruned only under the base its entry names (the same rel under another
+// base stays), a listed directory that still holds a foreign file stays,
+// and a bare rel is ignored and reported.
+func TestPruneOnlyListedBaseDirectories(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	cc, tmp := te.h.ClaudeConfig, te.h.ClaudeTmp
+	for _, p := range []string{
+		filepath.Join(cc, "x", sid1, "a.txt"), filepath.Join(tmp, "x", sid1, "a.txt"),
+		filepath.Join(tmp, "keep", sid1, "b.txt"),
+	} {
+		writeAt(t, p, []byte("unit file\n"))
+	}
+	writeAt(t, filepath.Join(tmp, "keep", "foreign.txt"), []byte("not ours\n"))
+	key := te.sessionKey(sid1)
+	u := harness.Unit{Harness: harness.ClaudeCode, Kind: capsule.KindClaudeSession, Key: key, UnitID: sid1, VaultID: rootID,
+		RootIDs: []string{rootID}, Home: te.cc, Mode: harness.GenLayered,
+		Prune: []string{"claude_tmp:x/" + sid1, "claude_tmp:keep/" + sid1, "claude_tmp:keep", "x/" + sid1}}
+	for _, f := range []struct {
+		base capsule.BaseID
+		rel  string
+	}{{capsule.BaseClaudeConfig, "x/" + sid1 + "/a.txt"}, {capsule.BaseClaudeTmp, "x/" + sid1 + "/a.txt"}, {capsule.BaseClaudeTmp, "keep/" + sid1 + "/b.txt"}} {
+		st, err := fsx.Lstat(filepath.Join(te.cc.Bases[f.base], filepath.FromSlash(f.rel)))
+		mustNoErr(t, err)
+		u.Files = append(u.Files, harness.File{Base: f.base, Rel: f.rel, Snap: st, Placement: harness.PlaceExact})
+	}
+	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
+	res := outcome(t, rep, key)
+	if res.Outcome != OutSealed || res.Detail != "1 prune entry without a known base ignored" {
+		t.Fatalf("result %+v", res)
+	}
+	if exists(filepath.Join(tmp, "x", sid1)) || exists(filepath.Join(tmp, "keep", sid1)) {
+		t.Fatal("a listed, emptied directory was kept")
+	}
+	if !exists(filepath.Join(cc, "x", sid1)) {
+		t.Fatal("a directory under a base its entry does not name was pruned (bare rel)")
+	}
+	if !exists(filepath.Join(tmp, "keep", "foreign.txt")) {
+		t.Fatal("a listed directory holding a foreign file was removed")
 	}
 }

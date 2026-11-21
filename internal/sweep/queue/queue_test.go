@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -164,5 +165,31 @@ func TestConcurrentEnqueuesGetDistinctIDs(t *testing.T) {
 func TestRelativeDirectoryRefused(t *testing.T) {
 	if _, err := queue.Enqueue("state/queue", queue.Request{}); err == nil {
 		t.Fatal("relative queue directory accepted")
+	}
+}
+
+// FX-G4-20: a FIFO named like a request is skipped without blocking.
+func TestListNeverBlocksOnAFIFORequest(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "queue")
+	id, err := queue.Enqueue(dir, queue.Request{Harness: "claude-code", SID: "s", Reason: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "fifo-request.json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []queue.Request)
+	go func() {
+		reqs, _ := queue.List(dir)
+		done <- reqs
+	}()
+	select {
+	case reqs := <-done:
+		if len(reqs) != 1 || reqs[0].ID != id {
+			t.Fatalf("List = %+v", reqs)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("List blocked on a FIFO")
 	}
 }

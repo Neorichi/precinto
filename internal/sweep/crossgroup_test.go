@@ -31,6 +31,7 @@ import (
 	"github.com/precinto/precinto/internal/harness/codex/codextest"
 	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
@@ -46,10 +47,54 @@ const (
 
 // stack is a fake HOME with every real component wired like cmd/precinto.
 type stack struct {
-	h    *testkit.Home
-	e    sweep.Env
-	fx   *vaulttest.Fixture
-	keys *vaultKeys
+	h     *testkit.Home
+	e     sweep.Env
+	fx    *vaulttest.Fixture
+	keys  *vaultKeys
+	clock *liveClock
+}
+
+// liveClock is the wall clock plus the waits a run skipped: Sleep advances
+// it instead of sleeping (D63's quiet window passes at once), and it never
+// falls behind real time, so files a test or a restore creates now are
+// never "in the future" for the liveness engine (R16), whatever the date
+// (a fake clock fixed at testkit.Epoch falls behind once that hour has
+// passed).
+type liveClock struct {
+	mu     sync.Mutex
+	origin time.Time
+	ahead  time.Duration
+}
+
+func newLiveClock() *liveClock { return &liveClock{origin: time.Now()} }
+
+func (c *liveClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.ahead).Round(0).UTC()
+}
+
+func (c *liveClock) Mono() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Since(c.origin) + c.ahead
+}
+
+// Advance moves the clock d ahead of real time.
+func (c *liveClock) Advance(d time.Duration) {
+	if d > 0 {
+		c.mu.Lock()
+		c.ahead += d
+		c.mu.Unlock()
+	}
+}
+
+// sleepOn is an Env.Sleep that advances c instead of sleeping.
+func sleepOn(c *liveClock) func(ctx context.Context, d time.Duration) error {
+	return func(ctx context.Context, d time.Duration) error {
+		c.Advance(d)
+		return ctx.Err()
+	}
 }
 
 func newStack(t *testing.T) *stack {
@@ -62,24 +107,21 @@ func newStack(t *testing.T) *stack {
 	}
 	led := ledger.Open(h.Layout.SessionsDir)
 	// D63: the engine needs two looks a quiet window apart; the run's single
-	// wait advances the fake clock (Env.Sleep) instead of sleeping.
-	eng := &live.Engine{Procs: h.Procs, Clock: h.Clock, LeasesDir: h.Layout.LeasesDir, Observer: live.NewObserver(h.Clock),
+	// wait advances the clock (Env.Sleep) instead of sleeping.
+	clk := newLiveClock()
+	eng := &live.Engine{Procs: h.Procs, Clock: clk, LeasesDir: h.Layout.LeasesDir, Observer: live.NewObserver(clk),
 		Quiet: 10 * time.Second, HoldCap: 24 * time.Hour}
 	cfg := h.Cfg
 	cfg.Policy.QuietWindow = config.Duration(10 * time.Second)
 	henv := harness.Env{Cfg: cfg, Layout: h.Layout, Ledger: led,
 		Index: func(id string) *ledger.Index { return ledger.OpenIndex(h.Layout.ProjectsDir, id) },
-		Live:  eng, Procs: h.Procs, Clock: h.Clock, Salt: salt, Host: h.Env}
-	s := &stack{h: h, fx: fx}
+		Live:  eng, Procs: h.Procs, Clock: clk, Salt: salt, Host: h.Env}
+	s := &stack{h: h, fx: fx, clock: clk}
 	s.keys = &vaultKeys{fx: fx, capsules: h.Layout.CapsulesDir, log: capslog.Open(h.Layout.CapsuleLog)}
 	s.e = sweep.Env{Cfg: cfg, Harness: henv, Adapters: []harness.Adapter{claude.New(), codex.New()}, Vaults: fx.Store,
 		Log: capslog.Open(h.Layout.CapsuleLog), Journal: journal.Open(h.Layout.JournalDir), Live: eng, Procs: h.Procs,
-		Clock: h.Clock, Grants: func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil },
-		Floor: fsx.Floor{}, Sealer: "precinto crossgroup", Parallel: 2,
-		Sleep: func(ctx context.Context, d time.Duration) error {
-			h.Clock.Advance(d)
-			return ctx.Err()
-		}}
+		Clock: clk, Grants: func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil },
+		Floor: fsx.Floor{}, Sealer: "precinto crossgroup", Parallel: 2, Sleep: sleepOn(clk)}
 	return s
 }
 
@@ -160,11 +202,17 @@ func (k *vaultKeys) FileKeys(ctx context.Context, paths []string, purpose string
 // hooks do).
 func (s *stack) session(t *testing.T, sid, marker string) []string {
 	t.Helper()
+	return s.sessionIn(t, sid, marker, s.h.Root)
+}
+
+// sessionIn is session started with cwd (its project directory follows).
+func (s *stack) sessionIn(t *testing.T, sid, marker, cwd string) []string {
+	t.Helper()
 	l := claudetest.New(t, s.h.Dir)
-	paths := l.WriteSession(t, claudetest.Session{SID: sid, Cwd: s.h.Root, Marker: marker, Subagents: 1,
-		ModTime: testkit.Epoch.Add(-time.Hour)})
+	paths := l.WriteSession(t, claudetest.Session{SID: sid, Cwd: cwd, Marker: marker, Subagents: 1,
+		ModTime: s.clock.Now().Add(-time.Hour)})
 	if err := s.e.Harness.Ledger.Append(ledger.Event{Type: ledger.TypeTaint, Harness: string(harness.ClaudeCode), SID: sid,
-		Roots: []string{xRoot}, Cwd: s.h.Root, ConfigDir: s.h.ClaudeConfig, TmpDir: s.h.ClaudeTmp}); err != nil {
+		Roots: []string{xRoot}, Cwd: cwd, ConfigDir: s.h.ClaudeConfig, TmpDir: s.h.ClaudeTmp}); err != nil {
 		t.Fatal(err)
 	}
 	return paths
@@ -195,8 +243,9 @@ func resultOfKind(rep *sweep.Report, k capsule.Kind, o sweep.Outcome) *sweep.Uni
 // session into a verified capsule, deletes the plaintext, leaks nothing;
 // the restore brings back exact bytes.
 func TestCrossgroupClaudeSessionRoundTrip(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	mrk := testkit.Marker(t)
 	paths := s.session(t, xSID, mrk)
 	sessionPaths := filterSID(paths, xSID)
@@ -252,8 +301,9 @@ func filterSID(paths []string, sid string) []string {
 // SEC-1 with real ciphertext: a capsule sealed to the vault but never
 // logged is quarantined, never restored, and gets no key.
 func TestCrossgroupForgedCapsuleIsQuarantined(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	s.session(t, xSID, "")
 	rep, _ := sweep.Sweep(ctx, s.e, sweep.Options{})
 	res := resultOfKind(rep, capsule.KindClaudeSession, sweep.OutSealed)
@@ -281,8 +331,9 @@ func TestCrossgroupForgedCapsuleIsQuarantined(t *testing.T) {
 // SEC-2 with real crypto: a logged capsule whose manifest names another
 // session's id under this unit's key is refused (exit 5), zero writes.
 func TestCrossgroupManifestUnitIDIsAuthenticated(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	s.session(t, xSID, "")
 	rep, _ := sweep.Sweep(ctx, s.e, sweep.Options{})
 	res := resultOfKind(rep, capsule.KindClaudeSession, sweep.OutSealed)
@@ -350,8 +401,9 @@ func snapshotFiles(t *testing.T, dir string) map[string]bool {
 // D16/D51 with the real file system: notes seal with a marker and come
 // back at the marker location or their relpath.
 func TestCrossgroupNotes(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	p := filepath.Join(s.h.Root, "docs", "notes.md")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
@@ -359,7 +411,7 @@ func TestCrossgroupNotes(t *testing.T) {
 	if err := os.WriteFile(p, []byte("# notes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	old := testkit.Epoch.Add(-time.Hour)
+	old := s.clock.Now().Add(-time.Hour)
 	_ = os.Chtimes(p, old, old)
 	if err := s.e.Harness.Ledger.Append(ledger.Event{Type: ledger.TypeMarkdown, Harness: "claude-code", SID: xSID, Path: p, Roots: []string{xRoot}}); err != nil {
 		t.Fatal(err)
@@ -384,8 +436,9 @@ func TestCrossgroupNotes(t *testing.T) {
 
 // D31/D42 with the real Codex adapter: snapshot seal and exact restore.
 func TestCrossgroupCodexHome(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	home := s.h.Layout.CodexHome(xRoot)
 	if err := os.MkdirAll(filepath.Dir(home), 0o700); err != nil {
 		t.Fatal(err)
@@ -417,8 +470,9 @@ func TestCrossgroupCodexHome(t *testing.T) {
 
 // D21/D36 with the real history parser: rotation and merge-back.
 func TestCrossgroupHistoryRotation(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	l := claudetest.New(t, s.h.Dir)
 	l.WriteHistory(t, s.h.Root, xSID, 4, testkit.Marker(t))
 	l.WriteHistory(t, filepath.Join(s.h.HomeDir, "elsewhere"), xSID2, 2, testkit.Marker(t))
@@ -443,8 +497,9 @@ func TestCrossgroupHistoryRotation(t *testing.T) {
 
 // D39/D28: a denied key source writes nothing.
 func TestCrossgroupDeniedKeys(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	paths := s.session(t, xSID, "")
 	rep, _ := sweep.Sweep(ctx, s.e, sweep.Options{})
 	res := resultOfKind(rep, capsule.KindClaudeSession, sweep.OutSealed)
@@ -460,5 +515,176 @@ func TestCrossgroupDeniedKeys(t *testing.T) {
 		if _, err := os.Lstat(p); err == nil {
 			t.Fatal("written without a key")
 		}
+	}
+}
+
+// D73 (CC-23, FX-G4-03): the -c/--continue selectors of the real
+// PlanLaunch match Manifest.ProjectDir, the session's realpath'd start
+// cwd, exactly: the session started in the folder comes back, the one
+// started in a subdirectory does not, and a launch through a symlinked
+// path selects the same session.
+func TestCrossgroupContinueSelectsTheFolderSession(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	ctx := testCtx(t)
+	sub := filepath.Join(s.h.Root, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inRoot := filterSID(s.sessionIn(t, xSID, "", s.h.Root), xSID)
+	inSub := filterSID(s.sessionIn(t, xSID2, "", sub), xSID2)
+	orig := contents(t, inRoot)
+	rep, err := sweep.Sweep(ctx, s.e, sweep.Options{Reason: "lock", Lock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, u := range rep.Units {
+		if u.Kind == capsule.KindClaudeSession && u.Outcome == sweep.OutSealed {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("sealed %d sessions: %+v", n, rep.Units)
+	}
+	link := filepath.Join(s.h.Dir, "acme-link")
+	if err := os.Symlink(s.h.Root, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, cwd := range []string{s.h.Root, link} {
+		plan, err := claude.New().PlanLaunch(ctx, s.e.Harness, cwd, []string{"/usr/local/bin/claude", "-c"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Resume.Kind != harness.ResumeContinue || len(plan.Sync) == 0 || len(plan.Background) == 0 {
+			t.Fatalf("%s: plan %+v", filepath.Base(cwd), plan.Resume)
+		}
+		// The background selector restores every recent match (not only
+		// the newest), so a subdirectory session that matched would show.
+		sel := append(append([]harness.Selector(nil), plan.Sync...), plan.Background...)
+		rep, err = sweep.Restore(ctx, s.e, s.keys, sweep.RestoreRequest{Select: sel, Purpose: "restore"})
+		if err != nil || rep.Err() != nil {
+			t.Fatalf("%s: restore %+v %v", filepath.Base(cwd), rep, err)
+		}
+		for p, b := range orig {
+			if got, err := os.ReadFile(p); err != nil || !bytes.Equal(got, b) {
+				t.Fatalf("%s: the folder's session was not restored (%s)", filepath.Base(cwd), filepath.Base(p))
+			}
+		}
+		for _, p := range inSub {
+			if _, err := os.Lstat(p); err == nil {
+				t.Fatalf("%s: the subdirectory's session was selected (%s)", filepath.Base(cwd), filepath.Base(p))
+			}
+		}
+		// Seal it again (unchanged) for the next launch.
+		rep, _ = sweep.Sweep(ctx, s.e, sweep.Options{Reason: "lock", Lock: true})
+		if resultOfKind(rep, capsule.KindClaudeSession, sweep.OutUnchanged) == nil {
+			t.Fatalf("%s: re-seal %+v", filepath.Base(cwd), rep.Units)
+		}
+	}
+}
+
+// CC-21 (FX-G4-09, R4): the wrapper's seal after exit is scoped to its own
+// child (Scope.Procs = [child], WaitFor the child): it seals the session
+// the child owned and leaves another restored session of the unlocked
+// folder in place.
+func TestCrossgroupSealScopedToTheChildKeepsOtherSessions(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	ctx := testCtx(t)
+	s.e.Grants = func(context.Context) (map[string]bool, error) { return map[string]bool{xRoot: true}, nil }
+	// Session B was sealed earlier and restored under the current grant.
+	other := filterSID(s.session(t, xSID2, ""), xSID2)
+	rep, err := sweep.Seal(ctx, s.e, scanSIDs(t, s, xSID2), sweep.Options{Reason: "manual"})
+	if err != nil || rep.Count(sweep.OutSealed) != 1 {
+		t.Fatalf("seal B %+v %v", rep, err)
+	}
+	b := resultOfKind(rep, capsule.KindClaudeSession, sweep.OutSealed)
+	rep, err = sweep.Restore(ctx, s.e, s.keys, sweep.RestoreRequest{Units: []harness.UnitRef{{Harness: harness.ClaudeCode,
+		Kind: capsule.KindClaudeSession, Key: b.Unit}}})
+	if err != nil || rep.Count(sweep.OutRestored) != 1 {
+		t.Fatalf("restore B %+v %v", rep, err)
+	}
+	// Session A runs as the wrapper's child, which has exited now.
+	child := platform.ProcID{PID: 4711, StartUS: 42}
+	own := filterSID(s.session(t, xSID, ""), xSID)
+	if err := s.e.Harness.Ledger.Append(ledger.Event{Type: ledger.TypeStart, Harness: string(harness.ClaudeCode), SID: xSID,
+		Proc: child, Cwd: s.h.Root, ConfigDir: s.h.ClaudeConfig}); err != nil {
+		t.Fatal(err)
+	}
+	units, err := claude.New().Scan(ctx, s.e.Harness, harness.Scope{RootIDs: []string{xRoot}, Procs: []platform.ProcID{child}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range units {
+		if u.UnitID != xSID {
+			t.Fatalf("the child's scope found another unit: %s", u.Kind)
+		}
+	}
+	rep, err = sweep.Seal(ctx, s.e, units, sweep.Options{Reason: "wrapper-exit", WaitFor: &child})
+	if err != nil || rep.Count(sweep.OutSealed) != 1 {
+		t.Fatalf("seal after exit %+v %v", rep, err)
+	}
+	for _, p := range own {
+		if _, err := os.Lstat(p); err == nil {
+			t.Fatalf("the child's session was left: %s", filepath.Base(p))
+		}
+	}
+	for _, p := range other {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("another restored session of the unlocked folder was sealed: %s", filepath.Base(p))
+		}
+	}
+}
+
+// scanSIDs scans the named sessions with the real Claude adapter.
+func scanSIDs(t *testing.T, s *stack, sids ...string) []harness.Unit {
+	t.Helper()
+	units, err := claude.New().Scan(testCtx(t), s.e.Harness, harness.Scope{SIDs: sids, Kinds: []capsule.Kind{capsule.KindClaudeSession}})
+	if err != nil || len(units) != len(sids) {
+		t.Fatalf("scan %d units %v", len(units), err)
+	}
+	return units
+}
+
+// SEC-20 / SPEC §9.5 (FX-G4-10, D63): a forged registry entry naming the
+// session with the live pid of another program holds it live, but only
+// weakly: in a locked folder the sweep, after its quiet wait, reports it
+// hold-capped and keeps the plaintext, and PlaintextSummary counts it under
+// hold-capped.
+func TestCrossgroupLivenessSpoofIsHoldCapped(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	ctx := testCtx(t)
+	paths := filterSID(s.session(t, xSID, ""), xSID)
+	const pid = 4343
+	s.h.Procs.Add(platform.ProcInfo{ID: platform.ProcID{PID: pid, StartUS: time.Now().Add(-time.Minute).UnixMicro()},
+		PPID: 1, UID: os.Getuid(), State: platform.StateRunning, Exe: "/usr/bin/yes"})
+	claudetest.New(t, s.h.Dir).WriteRegistry(t, pid, xSID, s.h.Root, "idle", true)
+	rep, err := sweep.Sweep(ctx, s.e, sweep.Options{Reason: "lock", Lock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := resultOfKind(rep, capsule.KindClaudeSession, sweep.OutLive)
+	if res == nil || res.Detail != "hold-capped" {
+		t.Fatalf("spoofed session %+v", rep.Units)
+	}
+	for _, p := range paths {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("a session held live was sealed: %s", filepath.Base(p))
+		}
+	}
+	sum, err := sweep.PlaintextSummary(ctx, s.e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, p := range sum {
+		if p.RootID == xRoot {
+			n = p.ByReason["hold-capped"]
+		}
+	}
+	if n == 0 {
+		t.Fatalf("PlaintextSummary %+v, want files under hold-capped", sum)
 	}
 }

@@ -109,7 +109,7 @@ func TestRotateHistoryMovesRootLinesAndTheirPastes(t *testing.T) {
 	}
 	pastes, _ := filepath.Glob(filepath.Join(te.h.ClaudeConfig, "paste-cache", "*"))
 	r := te.run()
-	r.rotateHistory(context.Background())
+	r.rotateHistory(tctx(t))
 	rep := r.finish()
 	if rep.Count(OutSealed) != 1 {
 		t.Fatalf("rotation %+v", rep.Units)
@@ -139,7 +139,7 @@ func TestRotateHistoryMovesRootLinesAndTheirPastes(t *testing.T) {
 	// Merge-back restores the lines and pastes; a second merge adds
 	// nothing (HIST-5).
 	mr := te.run()
-	mr.mergeHistory(context.Background(), te.keys, rootID)
+	mr.mergeHistory(tctx(t), te.keys, rootID)
 	if res := outcome(t, mr.finish(), te.historyKey()); res.Outcome != OutMerged || res.Files != len(extracted) {
 		t.Fatalf("merge %+v", res)
 	}
@@ -158,7 +158,7 @@ func TestRotateHistoryMovesRootLinesAndTheirPastes(t *testing.T) {
 		t.Fatalf("pastes after merge %d, want %d", len(back), len(pastes))
 	}
 	mr2 := te.run()
-	mr2.mergeHistory(context.Background(), te.keys, rootID)
+	mr2.mergeHistory(tctx(t), te.keys, rootID)
 	if res := outcome(t, mr2.finish(), te.historyKey()); res.Outcome != OutUnchanged {
 		t.Fatalf("second merge %+v", res)
 	}
@@ -175,7 +175,7 @@ func TestRotateHistoryWaitsWhileClaudeRuns(t *testing.T) {
 	jkey, _ := te.run().historyJournalKey(te.cc)
 	te.claude.probe[jkey] = []live.Evidence{{Reason: live.ReasonProcess}}
 	r := te.run()
-	r.rotateHistory(context.Background())
+	r.rotateHistory(tctx(t))
 	if res := outcome(t, r.finish(), jkey); res.Outcome != OutLive {
 		t.Fatalf("result %+v", res)
 	}
@@ -190,7 +190,7 @@ func TestRotateHistoryLeavesUnprotectedHistoryAlone(t *testing.T) {
 	appendLines(t, te.historyPath(), historyLineFor("/somewhere/else", "p", 1, ""), "not json")
 	before, _ := fsx.Lstat(te.historyPath())
 	r := te.run()
-	r.rotateHistory(context.Background())
+	r.rotateHistory(tctx(t))
 	if len(r.finish().Units) != 0 {
 		t.Fatal("rotation reported work")
 	}
@@ -208,7 +208,7 @@ func TestRotateHistoryUsesTheDeepestRoot(t *testing.T) {
 	te.e.Harness.Cfg = te.h.Cfg
 	appendLines(t, te.historyPath(), historyLineFor(filepath.Join(te.h.Root, "inner", "x"), "deep", 1, ""), historyLineFor(te.h.Root, "top", 2, ""))
 	r := te.run()
-	r.rotateHistory(context.Background())
+	r.rotateHistory(tctx(t))
 	r.finish()
 	innerKey, _ := harness.UnitKeyFor(te.e.Harness.Salt, capsule.KindClaudeHistory, harness.ClaudeCode, te.cc.ID, inner.ID, "")
 	if len(te.logged(innerKey)) != 1 || len(te.logged(te.historyKey())) != 1 {
@@ -268,13 +268,13 @@ func TestRotateHistoryUnderConcurrentAppends(t *testing.T) {
 	te.p.tailQuiet = 30 * time.Millisecond
 	te.p.sleep = func(ctx context.Context, d time.Duration) error { time.Sleep(d); return nil }
 	r := te.run()
-	r.rotateHistory(context.Background())
+	r.rotateHistory(tctx(t))
 	wg.Wait()
 	close(stop)
 	// Lines that landed in the new file after the rename are extracted by
 	// the next rotation.
 	r2 := te.run()
-	r2.rotateHistory(context.Background())
+	r2.rotateHistory(tctx(t))
 	all := append(append([]string(nil), seed...), written...)
 	inFile := map[string]int{}
 	for _, l := range te.historyLines() {
@@ -305,7 +305,7 @@ func TestMergeHistoryWhileAppending(t *testing.T) {
 	}
 	appendLines(t, te.historyPath(), mine...)
 	r := te.run()
-	r.rotateHistory(context.Background())
+	r.rotateHistory(tctx(t))
 	r.finish()
 	var wg sync.WaitGroup
 	var theirs []string
@@ -319,7 +319,7 @@ func TestMergeHistoryWhileAppending(t *testing.T) {
 		}
 	}()
 	mr := te.run()
-	mr.mergeHistory(context.Background(), te.keys, rootID)
+	mr.mergeHistory(tctx(t), te.keys, rootID)
 	wg.Wait()
 	got := map[string]int{}
 	for _, l := range te.historyLines() {
@@ -369,12 +369,12 @@ func TestShellSnapshotsArePruned(t *testing.T) {
 	// While Claude runs nothing is touched.
 	jkey, _ := te.run().historyJournalKey(te.cc)
 	te.claude.probe[jkey] = []live.Evidence{{Reason: live.ReasonProcess}}
-	te.run().rotateHistory(context.Background())
+	te.run().rotateHistory(tctx(t))
 	if !exists(old) {
 		t.Fatal("pruned while Claude runs")
 	}
 	delete(te.claude.probe, jkey)
-	te.run().rotateHistory(context.Background())
+	te.run().rotateHistory(tctx(t))
 	if exists(old) {
 		t.Fatal("stale snapshot kept")
 	}
@@ -395,17 +395,124 @@ func TestPruneKeepsEveryHistoryGeneration(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		appendLines(t, te.historyPath(), historyLineFor(te.h.Root, "r"+itoa(i), int64(i), ""))
 		r := te.run()
-		r.rotateHistory(context.Background())
+		r.rotateHistory(tctx(t))
 		r.finish()
 	}
 	if n := len(te.logged(te.historyKey())); n != 5 {
 		t.Fatalf("%d history generations", n)
 	}
-	te.run().prune(context.Background(), PruneOptions{KeepLast: 1, Diverged: true})
+	te.run().prune(tctx(t), PruneOptions{KeepLast: 1, Diverged: true})
 	if n := len(te.logged(te.historyKey())); n != 5 {
 		t.Fatalf("prune deleted history: %d left", n)
 	}
 	if got := te.sealedHistory(); len(got) != 5 {
 		t.Fatalf("sealed lines %d", len(got))
+	}
+}
+
+// CC-05: the tail loop reads and appends history.jsonl only through the
+// home's directory handle: a history.jsonl swapped for a symlink after the
+// rename is refused (ClassUnsafe), and the file it points to is never
+// written.
+func TestHistoryTailNeverAppendsThroughASymlink(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	appendLines(t, te.historyPath(), historyLineFor(te.h.Root, "root", 1, ""), historyLineFor("/elsewhere", "other", 2, ""))
+	held, err := os.OpenFile(te.historyPath(), os.O_WRONLY|os.O_APPEND, 0)
+	mustNoErr(t, err)
+	defer held.Close()
+	canary := filepath.Join(te.h.Dir, "canary")
+	writeAt(t, canary, []byte("canary\n"))
+	swapped := false
+	te.p.sleep = func(ctx context.Context, d time.Duration) error {
+		if !swapped {
+			swapped = true
+			// A writer that opened the file before the rename appends to
+			// the hold inode; history.jsonl itself becomes a symlink.
+			_, _ = held.WriteString(historyLineFor("/elsewhere", "late", 3, "") + "\n")
+			mustNoErr(t, os.Remove(te.historyPath()))
+			mustNoErr(t, os.Symlink(canary, te.historyPath()))
+		}
+		return ctx.Err()
+	}
+	r := te.run()
+	r.rotateHistory(tctx(t))
+	rep := r.finish()
+	if res := outcome(t, rep, te.historyJournalKey(t)); res.Outcome != OutFailed || res.Class != fsx.ClassUnsafe {
+		t.Fatalf("rotation %+v", res)
+	}
+	if string(readFile(t, canary)) != "canary\n" {
+		t.Fatal("a kept line was appended through the symlink")
+	}
+}
+
+// A writer that never pauses: the tail loop stops after its limit of
+// ranges (maxTailRanges; three here) with the rotation still journaled (history_pending), and the next
+// sweep's recovery finishes it once the writer stopped; no line is lost or
+// doubled.
+func TestHistoryTailStopsForAWriterThatNeverPauses(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	te.p.maxTail = 3
+	all := []string{historyLineFor(te.h.Root, "root", 1, ""), historyLineFor("/elsewhere", "other", 2, "")}
+	appendLines(t, te.historyPath(), all...)
+	held, err := os.OpenFile(te.historyPath(), os.O_WRONLY|os.O_APPEND, 0)
+	mustNoErr(t, err)
+	defer held.Close()
+	n := 0
+	te.p.sleep = func(ctx context.Context, d time.Duration) error {
+		n++
+		ln := historyLineFor("/elsewhere", "late "+itoa(n), int64(100+n), "")
+		if n%2 == 0 {
+			ln = historyLineFor(te.h.Root, "late "+itoa(n), int64(100+n), "")
+		}
+		_, _ = held.WriteString(ln + "\n")
+		all = append(all, ln)
+		return ctx.Err()
+	}
+	r := te.run()
+	r.rotateHistory(tctx(t))
+	if res := outcome(t, r.finish(), te.historyJournalKey(t)); res.Outcome != OutSkipped || res.Detail != "history_pending: still being appended" {
+		t.Fatalf("busy tail %+v", res)
+	}
+	if p, _ := te.e.Journal.Pending(); len(p) != 1 {
+		t.Fatalf("pending records %d, want the rotation", len(p))
+	}
+	te.p.sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
+	historyCheck(t, te, all)
+}
+
+// historyJournalKey is the report key of a rotation of the default home.
+func (te *testEnv) historyJournalKey(t *testing.T) string {
+	t.Helper()
+	k, err := te.run().historyJournalKey(te.cc)
+	mustNoErr(t, err)
+	return k
+}
+
+// historyCheck: after recovery every line is exactly once in history.jsonl
+// or a generation, protected lines only in generations (no duplicates
+// appended, nothing lost).
+func historyCheck(t *testing.T, te *testEnv, all []string) {
+	te.checkRecovered()
+	inFile := map[string]int{}
+	for _, l := range te.historyLines() {
+		inFile[l]++
+	}
+	sealed := map[string]bool{}
+	for _, l := range te.sealedHistory() {
+		sealed[l] = true
+	}
+	for _, l := range all {
+		if testHistoryLine([]byte(l)).Project == te.h.Root {
+			if inFile[l] != 0 || !sealed[l] {
+				t.Fatalf("protected line: in file %d, sealed %v", inFile[l], sealed[l])
+			}
+		} else if inFile[l] != 1 || sealed[l] {
+			t.Fatalf("kept line: in file %d times, sealed %v", inFile[l], sealed[l])
+		}
+	}
+	if holds, _ := filepath.Glob(filepath.Join(te.h.ClaudeConfig, ".precinto-hold-*")); len(holds) != 0 {
+		t.Fatalf("hold left %v", holds)
 	}
 }

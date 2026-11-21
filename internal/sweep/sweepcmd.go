@@ -16,6 +16,7 @@ import (
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 // Sweep is `precinto sweep`: take state/locks/sweep.lock (TryLock; if busy,
@@ -30,32 +31,53 @@ func Sweep(ctx context.Context, e Env, o Options) (*Report, error) {
 }
 
 func (r *run) sweep(ctx context.Context, o Options) (*Report, error) {
-	lk, err := r.lockName("sweep")
-	if errors.Is(err, fsx.ErrLocked) {
-		if !o.Wait {
-			if terr := r.touch(r.l.SweepRequested); terr != nil {
-				return r.finish(), terr
-			}
-			return r.finish(), ErrBusy
-		}
-		lk, err = r.waitLockName(ctx, "sweep")
-	}
+	lk, err := r.sweepLock(ctx, o)
 	if err != nil {
 		return r.finish(), err
 	}
 	defer lk.Unlock()
 	for pass := 0; pass < 2; pass++ {
-		if pass == 1 && !r.exists(r.l.SweepRequested) {
-			break
+		po := o
+		if pass == 1 {
+			if !r.exists(r.l.SweepRequested) || o.DryRun {
+				break // a dry run leaves the request to a real sweep
+			}
+			po = rescanOptions(o)
 		}
 		r.clear(r.l.SweepRequested)
 		if err := ctx.Err(); err != nil {
 			return r.finish(), err
 		}
-		r.sweepOnce(ctx, o)
+		r.resetQuiet()
+		r.sweepOnce(ctx, po)
 	}
 	_ = r.touch(r.l.SweepLast)
 	return r.finish(), nil
+}
+
+// rescanOptions are the options of the rescan a lock holder runs for the
+// sweeps it turned away (they only touched sweep.requested, SPEC §10.2):
+// every locked folder, whatever the holder's own scope, so a lock sweep of
+// another folder (`sweep --lock --root R`) is never lost.
+func rescanOptions(o Options) Options {
+	return Options{Reason: "sweep", Quiet: o.Quiet, Lock: o.Lock, Deadline: o.Deadline}
+}
+
+// sweepLock takes state/locks/sweep.lock without waiting: when another
+// process holds it, sweep.requested is touched (the holder rescans once
+// before it exits) and ErrBusy is returned, unless o.Wait (SPEC §10.2).
+func (r *run) sweepLock(ctx context.Context, o Options) (*fsx.Lock, error) {
+	lk, err := r.lockName("sweep")
+	if errors.Is(err, fsx.ErrLocked) {
+		if !o.Wait {
+			if terr := r.touch(r.l.SweepRequested); terr != nil {
+				return nil, terr
+			}
+			return nil, ErrBusy
+		}
+		lk, err = r.waitLockName(ctx, "sweep")
+	}
+	return lk, err
 }
 
 // sweepOnce is one pass of a sweep.
@@ -65,44 +87,61 @@ func (r *run) sweepOnce(ctx context.Context, o Options) {
 	} else {
 		r.add(UnitResult{Outcome: OutFailed, Detail: codeFailed + ": unreadable journal records; quarantine skipped"})
 	}
-	r.drainQueue(ctx, o)
+	// Queued sessions are sealed whatever their folder's state, together
+	// with the sweep's own units, so that one quiet-window wait covers
+	// both (D63).
+	qs, jobs := r.queueJobs(ctx, o)
+	queued := map[string]bool{}
+	for _, j := range jobs {
+		queued[j.u.Key] = true
+	}
 	unlocked := r.unlocked(ctx)
+	// A sweep scoped to processes (Scope.Procs: a wrapper's own sessions,
+	// CC-21) seals those sessions only: no notes, no global stores.
+	own := len(o.Scope.Procs) > 0
 	// Markdown candidates are gathered before sessions are sealed: their
 	// ledgers and transcripts move into capsules (S6, S13).
 	notes := map[string]map[string]*noteCand{}
 	for _, root := range r.e.Cfg.Roots {
-		if r.inScope(o.Scope, root.ID) && !unlocked[root.ID] && root.MD != config.MDOff {
+		if !own && r.inScope(o.Scope, root.ID) && !unlocked[root.ID] && root.MD != config.MDOff {
 			notes[root.ID] = r.noteCandidates(ctx, root)
 		}
 	}
-	var sealable []harness.Unit
 	for _, u := range r.scanAll(ctx, o) {
+		if queued[u.Key] {
+			continue // sealed for its queued request
+		}
 		if !r.unitLocked(u, unlocked) {
 			r.add(UnitResult{Harness: string(u.Harness), Kind: u.Kind, Unit: u.Key, Outcome: OutSkipped,
 				Files: len(u.Files), Bytes: unitBytes(u), Detail: "restored: folder unlocked"})
 			continue
 		}
-		if u.Adopted && !o.Adopt && !r.adoptByPolicy(u) {
+		if u.Adopted && !o.Adopt && !o.Scope.Adopt && !r.adoptByPolicy(u) && !r.managed(u.Key) {
 			r.add(UnitResult{Harness: string(u.Harness), Kind: u.Kind, Unit: u.Key, Outcome: OutSkipped,
 				Files: len(u.Files), Bytes: unitBytes(u), Detail: "adopted: seal --adopt"})
 			continue
 		}
-		sealable = append(sealable, u)
+		jobs = append(jobs, sealJob{u: u, o: o})
 	}
 	// D63: every subject of this run gets its first look before the
-	// single quiet-window wait: sessions in sealAll's first pass, notes and
-	// history here.
-	rotate := !unlocked[globalVault] && (len(o.Scope.RootIDs) == 0 || o.Scope.Global)
+	// single quiet-window wait: sessions in sealJobs' first pass, notes,
+	// the writers of notes that are not sealed with them, and history here.
+	sealing := map[string]bool{}
+	for _, j := range jobs {
+		sealing[j.u.Key] = true
+	}
+	rotate := !own && !unlocked[globalVault] && (len(o.Scope.RootIDs) == 0 || o.Scope.Global)
 	primed := false
 	for _, root := range r.e.Cfg.Roots {
-		if c, ok := notes[root.ID]; ok && r.primeNotes(ctx, root, c) {
+		if c, ok := notes[root.ID]; ok && r.primeNotes(ctx, root, c, sealing) {
 			primed = true
 		}
 	}
 	if rotate && r.primeHistory(ctx) {
 		primed = true
 	}
-	r.sealAllPrimed(ctx, sealable, o, false, primed)
+	results := r.sealJobs(ctx, jobs, o.Deadline, false, primed)
+	r.finishQueue(qs, results)
 	if rotate {
 		r.rotateHistory(ctx)
 	}
@@ -113,8 +152,22 @@ func (r *run) sweepOnce(ctx context.Context, o Options) {
 	}
 }
 
-// globalVault is the vault of unattributable global stores (D1, D36).
-const globalVault = "global"
+// managed reports whether precinto already holds generations of the unit
+// or restored it (a receipt): such a unit is sealed by sweeps even when
+// the adapter found it only by its project or transcripts (the ledger
+// moved into its capsule, S13), never left behind as adopted plaintext.
+// Any doubt (unreadable receipt or log) keeps the adoption rule.
+func (r *run) managed(key string) bool {
+	if _, ok, err := r.loadReceipt(key); err == nil && ok {
+		return true
+	}
+	entries, err := r.log.Unit(key)
+	return err == nil && len(entries) > 0
+}
+
+// globalVault is the vault of unattributable global stores and generic
+// units (D1, D36, D33): vault.GlobalID.
+const globalVault = vault.GlobalID
 
 // unlocked returns the unlocked root ids; an error or no Grants means
 // "every root is locked" (R4).
@@ -144,6 +197,17 @@ func (r *run) unitLocked(u harness.Unit, unlocked map[string]bool) bool {
 	return true
 }
 
+// adoptInScope reports a folder in scope whose policy seals adopted
+// sessions (md = "all", SPEC §7.1.1).
+func (r *run) adoptInScope(s harness.Scope) bool {
+	for _, root := range r.e.Cfg.Roots {
+		if root.MD == config.MDAll && r.inScope(s, root.ID) {
+			return true
+		}
+	}
+	return false
+}
+
 // adoptByPolicy: md = "all" sweeps also seal adopted sessions (SPEC §7.1.1).
 func (r *run) adoptByPolicy(u harness.Unit) bool {
 	for _, id := range u.RootIDs {
@@ -159,8 +223,15 @@ func (r *run) inScope(s harness.Scope, rootID string) bool {
 	return len(s.RootIDs) == 0 || contains(s.RootIDs, rootID)
 }
 
-// scanAll scans every adapter (generic inventories only for Dormant).
+// scanAll scans every adapter (generic inventories only for Dormant) with
+// the run's scope, Procs included (CC-21). Sessions found only by their
+// transcripts' cwd are asked for (Scope.Adopt) when the run seals them:
+// seal --adopt, or a folder in scope with md = "all" (S6).
 func (r *run) scanAll(ctx context.Context, o Options) []harness.Unit {
+	scope := o.Scope
+	if o.Adopt || r.adoptInScope(scope) {
+		scope.Adopt = true
+	}
 	var out []harness.Unit
 	for _, ad := range r.e.Adapters {
 		if ad == nil {
@@ -173,7 +244,7 @@ func (r *run) scanAll(ctx context.Context, o Options) []harness.Unit {
 		if o.Dormant == "" && !builtin {
 			continue // experimental inventories seal only via seal --dormant (D33)
 		}
-		units, err := ad.Scan(ctx, r.e.Harness, o.Scope)
+		units, err := ad.Scan(ctx, r.e.Harness, scope)
 		if err != nil {
 			r.add(failed(UnitResult{Harness: string(ad.ID())}, err))
 			continue
@@ -209,12 +280,35 @@ func (r *run) clear(p string) {
 
 // DrainQueue processes state/queue requests whose wait conditions hold.
 func DrainQueue(ctx context.Context, e Env, o Options) (*Report, error) {
-	r := newRun(e, prodPorts(e))
+	return newRun(e, prodPorts(e)).drainCommand(ctx, o)
+}
+
+// drainCommand is DrainQueue. Only the sweep-lock holder drains the queue
+// (SPEC §10.6): a worker that finds the lock held touches sweep.requested
+// and returns ErrBusy (the CLI exits 0), and the holder runs a rescan —
+// the queue drain included — before it exits; this worker does the same
+// for sweeps it turned away. At most one process seals queued and swept
+// units at a time, each with at most Env.Parallel seals and large units
+// alone (R19, CONC-1).
+func (r *run) drainCommand(ctx context.Context, o Options) (*Report, error) {
 	if err := ctx.Err(); err != nil {
 		return r.finish(), err
 	}
+	lk, err := r.sweepLock(ctx, o)
+	if err != nil {
+		return r.finish(), err
+	}
+	defer lk.Unlock()
 	r.recoverAll(ctx)
 	r.drainQueue(ctx, o)
+	if r.exists(r.l.SweepRequested) && ctx.Err() == nil {
+		// A sweep (or another queue worker) was turned away while this
+		// worker held the lock: run it, the queue drain included.
+		r.clear(r.l.SweepRequested)
+		r.resetQuiet()
+		r.sweepOnce(ctx, rescanOptions(o))
+		_ = r.touch(r.l.SweepLast)
+	}
 	return r.finish(), nil
 }
 
@@ -232,17 +326,39 @@ func backoff(n int, noSpace bool) time.Duration {
 	return d
 }
 
-// drainQueue seals the queued sessions whose writer is gone (SPEC §10.6).
+// drainQueue seals the queued sessions whose writer is gone (SPEC §10.6),
+// all requests in one pair of decision passes around the run's single
+// quiet-window wait (D63).
 func (r *run) drainQueue(ctx context.Context, o Options) {
+	qs, jobs := r.queueJobs(ctx, o)
+	if len(jobs) == 0 {
+		return
+	}
+	r.finishQueue(qs, r.sealJobs(ctx, jobs, o.Deadline, false, false))
+}
+
+// queuedReq is a queue request being drained and the jobs that seal it.
+type queuedReq struct {
+	req  queue.Request
+	jobs []int // indices into the job list
+}
+
+// queueJobs turns the requests whose wait conditions hold into seal jobs,
+// reporting (and removing) the requests that need nothing more. A unit
+// named by several requests is sealed once.
+func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob) {
 	reqs, err := queue.List(r.l.QueueDir)
 	if err != nil {
 		r.add(failed(UnitResult{}, err))
-		return
+		return nil, nil
 	}
 	now := r.now()
+	var qs []queuedReq
+	var jobs []sealJob
+	at := map[string]int{} // unit key → job index
 	for _, q := range reqs {
 		if ctx.Err() != nil {
-			return
+			break
 		}
 		if !q.NotBefore.IsZero() && now.Before(q.NotBefore) {
 			continue
@@ -272,16 +388,6 @@ func (r *run) drainQueue(ctx context.Context, o Options) {
 			r.retry(q, false)
 			continue
 		}
-		var mine []harness.Unit
-		for _, u := range units {
-			if (q.UnitKey != "" && u.Key == q.UnitKey) || (q.SID != "" && u.UnitID == q.SID) {
-				mine = append(mine, u)
-			}
-		}
-		if len(mine) == 0 {
-			_ = queue.Remove(r.l.QueueDir, q.ID) // nothing left in plaintext
-			continue
-		}
 		qo := o
 		qo.Reason = q.Reason
 		if !q.WaitFor.IsZero() {
@@ -290,11 +396,42 @@ func (r *run) drainQueue(ctx context.Context, o Options) {
 			w := q.WaitFor
 			qo.WaitFor = &w
 		}
-		results := r.sealAll(ctx, mine, qo, false)
+		qr := queuedReq{req: q}
+		for _, u := range units {
+			if !((q.UnitKey != "" && u.Key == q.UnitKey) || (q.SID != "" && u.UnitID == q.SID)) {
+				continue
+			}
+			k, ok := at[u.Key]
+			if !ok {
+				k = len(jobs)
+				at[u.Key] = k
+				jobs = append(jobs, sealJob{u: u, o: qo})
+			}
+			qr.jobs = append(qr.jobs, k)
+		}
+		if len(qr.jobs) == 0 {
+			_ = queue.Remove(r.l.QueueDir, q.ID) // nothing left in plaintext
+			continue
+		}
+		qs = append(qs, qr)
+	}
+	return qs, jobs
+}
+
+// finishQueue removes the requests whose units are done and backs off the
+// others (at least 60 s after a full disk, SPEC §17).
+func (r *run) finishQueue(qs []queuedReq, results []UnitResult) {
+	for _, q := range qs {
 		done, noSpaceSeen := true, false
-		for _, res := range results {
-			switch res.Outcome {
-			case OutSealed, OutUnchanged, OutSkipped, OutInaccessible:
+		for _, k := range q.jobs {
+			if k >= len(results) {
+				done = false
+				continue
+			}
+			switch res := results[k]; {
+			case res.Outcome == OutSkipped && res.Detail == "deadline":
+				done = false // not attempted: the next drain does it
+			case res.Outcome == OutSealed, res.Outcome == OutUnchanged, res.Outcome == OutSkipped, res.Outcome == OutInaccessible:
 			default:
 				done = false
 				if strings.HasPrefix(res.Detail, codeNoSpace+":") {
@@ -303,9 +440,9 @@ func (r *run) drainQueue(ctx context.Context, o Options) {
 			}
 		}
 		if done {
-			_ = queue.Remove(r.l.QueueDir, q.ID)
+			_ = queue.Remove(r.l.QueueDir, q.req.ID)
 		} else {
-			r.retry(q, noSpaceSeen)
+			r.retry(q.req, noSpaceSeen)
 		}
 	}
 }
@@ -333,8 +470,8 @@ func Quarantine(ctx context.Context, e Env) (*Report, error) {
 	return r.finish(), err
 }
 
-// quarantine moves every unlogged capsule (and stray operation directory)
-// of the store into quarantine/<op-id>/, mirroring its store path. It
+// quarantine moves every unlogged capsule of the store into
+// quarantine/<op-id>/, mirroring its store path. It
 // refuses to act while any journal record is unreadable or still pending:
 // such a record could name a capsule that is precinto's own (O7).
 func (r *run) quarantine(ctx context.Context) error {

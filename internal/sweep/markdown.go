@@ -291,7 +291,7 @@ func SealMarkdown(ctx context.Context, e Env, root config.Root, o Options) (*Rep
 	}
 	r.recoverAll(ctx)
 	cands := r.noteCandidates(ctx, root)
-	if r.primeNotes(ctx, root, cands) {
+	if r.primeNotes(ctx, root, cands, nil) {
 		r.waitQuiet(ctx, o.Deadline) // D63: one look, one quiet window, then decide
 	}
 	r.sealMarkdown(ctx, root, o, cands)
@@ -430,6 +430,7 @@ func (r *run) sealMarkdown(ctx context.Context, root config.Root, o Options, can
 	}
 	defer rootDir.Close()
 	gc := &gitCache{}
+	var unlocked map[string]bool
 	quiet := r.e.Cfg.Policy.QuietWindow.D()
 	for _, rel := range rels {
 		if ctx.Err() != nil {
@@ -440,7 +441,7 @@ func (r *run) sealMarkdown(ctx context.Context, root config.Root, o Options, can
 		st, err := rootDir.Lstat(rel)
 		if err != nil {
 			if isMissing(err) {
-				r.forgetPendingNote(root.ID, filepath.Join(root.Path, filepath.FromSlash(rel)))
+				r.forgetPendingNote(ctx, root.ID, filepath.Join(root.Path, filepath.FromSlash(rel)))
 				continue
 			}
 			r.add(failed(res, err))
@@ -468,11 +469,17 @@ func (r *run) sealMarkdown(ctx context.Context, root config.Root, o Options, can
 		default:
 			if v, isLive := r.noteLive(ctx, u, c); isLive {
 				res = liveResult(res, v, false, "")
+				if unlocked == nil {
+					unlocked = r.unlocked(ctx)
+				}
+				if r.holdCapped(res, u, unlocked) {
+					res.Detail = reasonHoldCapped
+				}
 				break
 			}
 			res = r.sealLayered(ctx, u, o, false)
 			if res.Outcome == OutSealed || res.Outcome == OutUnchanged {
-				r.forgetPendingNote(root.ID, abs)
+				r.forgetPendingNote(ctx, root.ID, abs)
 			}
 		}
 		r.add(res)
@@ -509,9 +516,13 @@ func (r *run) rootBusy(ctx context.Context, root config.Root) (bool, error) {
 
 // noteLive decides a note's liveness (I1): live while a session that wrote
 // it is live, plus the engine's lease and stability evidence for the note
-// itself.
+// itself. A writer this run sealed is not live (its plaintext is in its
+// capsule now).
 func (r *run) noteLive(ctx context.Context, u harness.Unit, c *noteCand) (live.Verdict, bool) {
 	for _, w := range c.writers {
+		if r.sealedNow(w.Key) {
+			continue
+		}
 		if v, isLive := r.checkLive(ctx, adapterFor(r.e, w.Harness), w, nil); isLive {
 			return v, true
 		}
@@ -920,9 +931,14 @@ type notesIndex struct {
 
 func (r *run) notesIndexPath() string { return r.l.NotesIndex }
 
+// maxNotesIndexBytes bounds the pending-notes index read (paths only).
+const maxNotesIndexBytes = 16 << 20
+
+// readNotesIndex reads state/notes.json (readState: regular, bounded,
+// never blocking on a FIFO); anything unreadable reads as empty.
 func (r *run) readNotesIndex() notesIndex {
 	idx := notesIndex{V: 1, Roots: map[string][]string{}}
-	b, err := os.ReadFile(r.notesIndexPath())
+	b, err := readState(r.notesIndexPath(), maxNotesIndexBytes)
 	if err != nil {
 		return idx
 	}
@@ -933,8 +949,8 @@ func (r *run) readNotesIndex() notesIndex {
 	return idx
 }
 
-func (r *run) updateNotesIndex(fn func(*notesIndex)) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (r *run) updateNotesIndex(ctx context.Context, fn func(*notesIndex)) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	lk, err := r.waitLockName(ctx, "notes")
 	if err != nil {
@@ -956,8 +972,8 @@ func (r *run) pendingNotes(rootID string) []string {
 }
 
 // forgetPendingNote drops a note from the index.
-func (r *run) forgetPendingNote(rootID, abs string) {
-	r.updateNotesIndex(func(idx *notesIndex) {
+func (r *run) forgetPendingNote(ctx context.Context, rootID, abs string) {
+	r.updateNotesIndex(ctx, func(idx *notesIndex) {
 		var keep []string
 		for _, p := range idx.Roots[rootID] {
 			if p != abs {
@@ -1005,7 +1021,7 @@ func (r *run) rememberNotes(ctx context.Context, ad harness.Adapter, u harness.U
 	if len(byRoot) == 0 {
 		return
 	}
-	r.updateNotesIndex(func(idx *notesIndex) {
+	r.updateNotesIndex(ctx, func(idx *notesIndex) {
 		for id, ps := range byRoot {
 			idx.Roots[id] = dedupe(append(idx.Roots[id], ps...))
 		}

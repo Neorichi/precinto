@@ -16,6 +16,7 @@ import (
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/live"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep/capslog"
@@ -49,77 +50,65 @@ func (r *run) sealCommand(ctx context.Context, units []harness.Unit, o Options) 
 
 // sealAll seals units with at most Env.Parallel (default 2) seals at once;
 // a unit above 1 GiB runs alone (R19). Results keep the input order.
-// Units live only by a first observation are decided again after the
-// run's single quiet-window wait (D63).
+// Units live only by evidence the run's single quiet-window wait resolves
+// are decided again after it (D63, sealJobs).
 func (r *run) sealAll(ctx context.Context, units []harness.Unit, o Options, explicit bool) []UnitResult {
-	return r.sealAllPrimed(ctx, units, o, explicit, false)
+	return r.sealJobs(ctx, jobsOf(units, o), o.Deadline, explicit, false)
 }
 
-// sealAllPrimed is sealAll; primed reports that other subjects of the run
-// (notes, history) were observed for the first time and need the wait too.
-func (r *run) sealAllPrimed(ctx context.Context, units []harness.Unit, o Options, explicit, primed bool) []UnitResult {
-	results := r.sealUnits(ctx, units, o, explicit)
-	var again []int
-	for i, res := range results {
-		if unobservedResult(res) {
-			again = append(again, i)
-		}
-	}
-	if (len(again) > 0 || primed) && r.waitQuiet(ctx, o.Deadline) && len(again) > 0 {
-		sub := make([]harness.Unit, len(again))
-		for k, i := range again {
-			sub[k] = units[i]
-		}
-		for k, res := range r.sealUnits(ctx, sub, o, explicit) {
-			results[again[k]] = res
-		}
-	}
-	for _, res := range results {
-		r.add(res)
-	}
-	return results
-}
-
-// sealUnits is one decision pass over units (no report entries).
-func (r *run) sealUnits(ctx context.Context, units []harness.Unit, o Options, explicit bool) []UnitResult {
+// sealPass is one decision pass over jobs (no report entries): at most
+// Env.Parallel (default 2) seals at once, a unit above 1 GiB alone (R19).
+// Only this goroutine takes tokens, so a big unit waits for the running
+// seals to return theirs; every wait ends with ctx, and the jobs not
+// started then are reported skipped.
+func (r *run) sealPass(ctx context.Context, jobs []sealJob, explicit bool) []UnitResult {
 	par := r.e.Parallel
 	if par <= 0 {
 		par = 2
 	}
 	tokens := make(chan struct{}, par)
-	var bigMu sync.Mutex
-	results := make([]UnitResult, len(units))
+	results := make([]UnitResult, len(jobs))
 	var wg sync.WaitGroup
-	for i, u := range units {
-		if ctx.Err() != nil || (!o.Deadline.IsZero() && r.now().After(o.Deadline)) {
-			res := resultOf(u)
+	for i, j := range jobs {
+		if ctx.Err() != nil || (!j.o.Deadline.IsZero() && r.now().After(j.o.Deadline)) {
+			res := resultOf(j.u)
 			res.Outcome, res.Detail = OutSkipped, "deadline"
 			results[i] = res
 			continue
 		}
 		n := 1
-		if unitBytes(u) > bigUnit {
+		if unitBytes(j.u) > bigUnit {
 			n = par
 		}
-		if n > 1 {
-			bigMu.Lock()
+		got := 0
+	acquire:
+		for got < n {
+			select {
+			case tokens <- struct{}{}:
+				got++
+			case <-ctx.Done():
+				break acquire
+			}
 		}
-		for k := 0; k < n; k++ {
-			tokens <- struct{}{}
-		}
-		if n > 1 {
-			bigMu.Unlock()
+		if got < n {
+			for ; got > 0; got-- {
+				<-tokens
+			}
+			res := resultOf(j.u)
+			res.Outcome, res.Detail = OutSkipped, "deadline"
+			results[i] = res
+			continue
 		}
 		wg.Add(1)
-		go func(i, n int, u harness.Unit) {
+		go func(i, n int, j sealJob) {
 			defer wg.Done()
 			defer func() {
 				for k := 0; k < n; k++ {
 					<-tokens
 				}
 			}()
-			results[i] = r.sealOne(ctx, u, o, explicit)
-		}(i, n, u)
+			results[i] = r.sealOne(ctx, j.u, j.o, explicit)
+		}(i, n, j)
 	}
 	wg.Wait()
 	return results
@@ -444,6 +433,9 @@ func (r *run) sealLayered(ctx context.Context, u harness.Unit, o Options, explic
 		return res
 	}
 	r.rememberNotes(ctx, ad, u)
+	if err := r.indexProject(u); err != nil {
+		return failed(res, err)
+	}
 	capsRoot, caps, err := r.openCapsDir(storeOf(u.Harness, u.Kind), u.Key, true)
 	if err != nil {
 		return failed(res, err)
@@ -455,6 +447,70 @@ func (r *run) sealLayered(ctx context.Context, u harness.Unit, o Options, explic
 		return us.dropUnchanged(ctx)
 	}
 	return us.sealNew(ctx, lp)
+}
+
+// indexProject records the projects/<P> directories of a Claude session
+// in the project index before its plaintext goes (DC-30, SPEC §11.2): once
+// the session's ledger moved into its capsule (S13) the index still ties
+// the project to the session's roots, so a restored session is found and
+// sealed again at the next lock, and a deleted projects/<P> is recreated
+// at restore. An index that already records the roots and the start cwd
+// is not rewritten.
+func (r *run) indexProject(u harness.Unit) error {
+	if u.Kind != capsule.KindClaudeSession || r.e.Harness.Index == nil || len(u.RootIDs) == 0 {
+		return nil
+	}
+	cfg := u.Home.Bases[capsule.BaseClaudeConfig]
+	if cfg == "" || !filepath.IsAbs(cfg) {
+		return nil
+	}
+	x := r.e.Harness.Index(string(u.Harness))
+	if x == nil {
+		return nil
+	}
+	var cwds []string
+	if filepath.IsAbs(u.ProjectDir) {
+		cwds = []string{u.ProjectDir}
+	}
+	for _, p := range projectDirsOf(u) {
+		if have, ok, err := x.Lookup(cfg, p); err == nil && ok && subset(u.RootIDs, have.RootIDs) && subset(cwds, have.Cwds) {
+			continue
+		}
+		if err := x.Put(ledger.Project{Harness: string(u.Harness), ConfigDir: cfg, Slug: p, Cwds: cwds,
+			RootIDs: append([]string(nil), u.RootIDs...)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// projectDirsOf lists the projects/<P> directory names a session's files
+// live in, as found on disk (precinto never computes Claude slugs).
+func projectDirsOf(u harness.Unit) []string {
+	var out []string
+	for _, f := range u.Files {
+		if f.Base != capsule.BaseClaudeConfig {
+			continue
+		}
+		rest, ok := strings.CutPrefix(f.Rel, "projects/")
+		if !ok {
+			continue
+		}
+		if p, _, ok := strings.Cut(rest, "/"); ok && p != "" {
+			out = append(out, p)
+		}
+	}
+	return dedupe(out)
+}
+
+// subset reports whether every value of a is in b.
+func subset(a, b []string) bool {
+	for _, v := range a {
+		if !contains(b, v) {
+			return false
+		}
+	}
+	return true
 }
 
 // noSpace normalizes a free-space failure to ErrNoSpace (SPEC §17).
@@ -518,7 +574,7 @@ func (us *unitSeal) journalFiles() []journal.File {
 // sealNew writes a new generation, then deletes the originals.
 func (us *unitSeal) sealNew(ctx context.Context, lp lineagePlan) UnitResult {
 	r, u, res := us.r, us.u, us.res
-	n, err := r.nextGen(u.Key, us.caps)
+	n, err := r.nextGen(ctx, u.Key, us.caps)
 	if err != nil {
 		return failed(res, err)
 	}
@@ -619,14 +675,14 @@ func (us *unitSeal) dropUnchanged(ctx context.Context) UnitResult {
 		_ = r.jr.Done(rec)
 		return failed(res, err)
 	}
-	if err := hit(unitSealPoints.prepared); err != nil {
+	if err := r.hit(unitSealPoints.prepared); err != nil {
 		return failed(res, err)
 	}
 	if err := r.jr.Advance(rec, journal.PhaseCommitted); err != nil {
 		_ = r.jr.Done(rec)
 		return failed(res, err)
 	}
-	if err := hit(unitSealPoints.committed); err != nil {
+	if err := r.hit(unitSealPoints.committed); err != nil {
 		return failed(res, err)
 	}
 	res.Gen, res.Lineage = us.rd.Gen, capsule.LineageSuccessor
@@ -656,12 +712,13 @@ func (us *unitSeal) entry(gen, parent uint64, l capsule.Lineage, last time.Time)
 func (us *unitSeal) finishUnlink(ctx context.Context, rec *journal.Record, gen uint64, shas map[fileKey]string, ok Outcome, ledN int64) UnitResult {
 	r, u, res := us.r, us.u, us.res
 	var ur unlinkResult
+	ignored := 0
 	if err := us.beforeUnlink(); err != nil {
 		ur.stayed = len(rec.Files)
 		res.Detail = "marker: " + safeMsg(err)
 	} else {
 		ur = r.unlinkFiles(ctx, u, us.bases, rec, true, unitSealPoints)
-		r.pruneDirs(u, us.bases, rec)
+		ignored = r.pruneDirs(u, us.bases, rec)
 	}
 	newest := gen
 	if g, sealedShas, err := r.rescue(ctx, u, rec, ur.kept, gen, us.files, us.recips, us.caps, us.bases); err != nil {
@@ -678,7 +735,7 @@ func (us *unitSeal) finishUnlink(ctx context.Context, rec *journal.Record, gen u
 	if err := r.rewriteReceipt(u.Key, u.Kind, string(u.Harness), us.bases, rec, shas, newest, us.rd, u.Home.Bases); err != nil {
 		return failed(res, err)
 	}
-	if err := hit("seal.receipt"); err != nil {
+	if err := r.hit("seal.receipt"); err != nil {
 		return failed(res, err)
 	}
 	if sid := sessionLedgerSID(u); sid != "" && ledN > 0 && ur.removedAll {
@@ -703,7 +760,7 @@ func (us *unitSeal) finishUnlink(ctx context.Context, rec *journal.Record, gen u
 	case ur.stayed > 0:
 		res.Detail = fmt.Sprintf("%d file(s) changed after hashing stay for the next generation", ur.stayed)
 	}
-	return res
+	return prunedDetail(res, ignored)
 }
 
 // keptFD is the open descriptor of an unlinked file, kept for the rescue
@@ -811,7 +868,7 @@ func (r *run) unlinkFiles(ctx context.Context, u harness.Unit, bases map[capsule
 			journalOK = false // stop deleting: the journal must stay truthful
 			continue
 		}
-		_ = hit("seal.unlinking")
+		_ = r.hit("seal.unlinking")
 	}
 	ur.removedAll = true
 	for _, jf := range rec.Files {
@@ -823,26 +880,36 @@ func (r *run) unlinkFiles(ctx context.Context, u harness.Unit, bases map[capsule
 }
 
 // pruneDirs removes directories emptied by the seal: only directories the
-// adapter listed in Unit.Prune that held files of this unit, deepest
-// first, never non-empty ones.
-func (r *run) pruneDirs(u harness.Unit, bases map[capsule.BaseID]dirHandle, rec *journal.Record) {
+// adapter listed in Unit.Prune ("<base id>:<rel>" entries, CC-19) that held
+// files of this unit, deepest first, never non-empty ones, never a base
+// root and never above the listed directory. It returns the number of
+// entries it ignored: a bare rel, an unknown base, or a rel that is not
+// clean (an adapter bug, reported by the caller).
+func (r *run) pruneDirs(u harness.Unit, bases map[capsule.BaseID]dirHandle, rec *journal.Record) int {
 	if len(u.Prune) == 0 {
-		return
+		return 0
+	}
+	type entry struct {
+		base capsule.BaseID
+		rel  string
+	}
+	var entries []entry
+	ignored := 0
+	for _, p := range u.Prune {
+		b, rel, ok := strings.Cut(p, ":")
+		if !ok || b == "" || u.Home.Bases[capsule.BaseID(b)] == "" || !cleanRel(rel) {
+			ignored++
+			continue
+		}
+		entries = append(entries, entry{base: capsule.BaseID(b), rel: rel})
 	}
 	for id, d := range bases {
 		var rels []string
-		for _, p := range u.Prune {
-			pb, prel := capsule.BaseID(""), p
-			if b, rest, ok := strings.Cut(p, ":"); ok && u.Home.Bases[capsule.BaseID(b)] != "" {
-				pb, prel = capsule.BaseID(b), rest
-			}
-			if pb != "" && pb != id {
+		for _, e := range entries {
+			if e.base != id {
 				continue
 			}
-			prel = strings.Trim(path.Clean("/"+prel), "/")
-			if prel == "" {
-				continue
-			}
+			prel := e.rel
 			for _, jf := range rec.Files {
 				fid := capsule.BaseID(jf.Base)
 				if fid != id || !jf.Done || !strings.HasPrefix(jf.Rel, prel+"/") {
@@ -867,6 +934,16 @@ func (r *run) pruneDirs(u harness.Unit, bases map[capsule.BaseID]dirHandle, rec 
 			rels = rels[:0]
 		}
 	}
+	return ignored
+}
+
+// prunedDetail reports prune entries an adapter listed in a form sweep
+// ignores (bare rels, unknown bases), without overwriting another detail.
+func prunedDetail(res UnitResult, ignored int) UnitResult {
+	if ignored > 0 && res.Detail == "" {
+		res.Detail = fmt.Sprintf("%d prune entr%s without a known base ignored", ignored, map[bool]string{true: "y", false: "ies"}[ignored == 1])
+	}
+	return res
 }
 
 // rescue implements SPEC §10.3 step 7: after the grace, each kept
@@ -897,7 +974,7 @@ func (r *run) rescue(ctx context.Context, u harness.Unit, rec *journal.Record, k
 	if len(grown) == 0 {
 		return 0, nil, nil
 	}
-	g, err := r.nextGen(u.Key, caps)
+	g, err := r.nextGen(ctx, u.Key, caps)
 	if err != nil {
 		return 0, nil, err
 	}

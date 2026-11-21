@@ -607,7 +607,7 @@ func (r *run) retainFile(ctx context.Context, keys KeySource, rd receiptDisk, b 
 	}
 	defer capsRoot.Close()
 	defer caps.Close()
-	g, err := r.nextGen(rd.Unit, caps)
+	g, err := r.nextGen(ctx, rd.Unit, caps)
 	if err != nil {
 		return err
 	}
@@ -688,14 +688,13 @@ func (r *run) list(ctx context.Context, o ListOptions) ([]UnitInfo, error) {
 			}
 		}
 	}
+	unlocked := r.unlocked(ctx)
 	for _, ad := range r.e.Adapters {
 		if ad == nil {
 			continue
 		}
-		units, err := ad.Scan(ctx, r.e.Harness, harness.Scope{RootIDs: o.RootIDs})
-		if err != nil {
-			continue
-		}
+		// A home that could not be read still lets the others count.
+		units, _ := ad.Scan(ctx, r.e.Harness, harness.Scope{RootIDs: o.RootIDs})
 		for _, u := range units {
 			if !wantRoot(append(append([]string(nil), u.RootIDs...), u.VaultID)) {
 				continue
@@ -708,12 +707,8 @@ func (r *run) list(ctx context.Context, o ListOptions) ([]UnitInfo, error) {
 			}
 			info.Plaintext = true
 			info.Bytes = unitBytes(u)
-			if info.Reason == "" {
-				if _, isLive := r.checkLive(ctx, ad, u, nil); isLive {
-					info.Reason = "running"
-				} else {
-					info.Reason = "deferred"
-				}
+			if info.Reason == "" || info.Reason == "restored" {
+				info.Reason = r.plaintextReason(ctx, ad, u, unlocked)
 			}
 		}
 	}
@@ -746,17 +741,16 @@ func (r *run) fillTitles(ctx context.Context, keys KeySource, byUnit map[string]
 	if len(paths) == 0 {
 		return
 	}
-	fk, err := keys.FileKeys(ctx, paths, "list")
-	if err != nil {
+	kg := &keyGuard{}
+	defer kg.destroy()
+	if err := r.fetchKeys(ctx, keys, kg, paths, "list"); err != nil {
 		return
 	}
-	kg := &keyGuard{}
-	kg.add(fk)
-	defer kg.destroy()
 	for unit, n := range newest {
 		if m, err := r.readManifest(ctx, n, kg); err == nil && checkManifest(m, n) == nil {
 			byUnit[unit].Title = m.Title
 		}
+		kg.forget(n.Path)
 	}
 }
 
@@ -781,6 +775,104 @@ func (r *run) quarantinedUnits() map[string]bool {
 	return out
 }
 
+// plaintextReason classifies a unit's plaintext for status and ls from
+// what is on disk now, without new state (SPEC §9.5, §16.4, D63): one look
+// only, so evidence the next sweep's quiet wait resolves (a first
+// observation, a restore within the window) is "deferred", while weak
+// evidence that never resolves by waiting holds a unit of a locked folder
+// "hold-capped". A locked folder's unit whose plaintext still matches a
+// committed receipt is "remove-failed" (the seal committed, the unlink was
+// refused); EACCES/EPERM met while summarizing is "inaccessible".
+func (r *run) plaintextReason(ctx context.Context, ad harness.Adapter, u harness.Unit, unlocked map[string]bool) string {
+	if r.inaccessibleUnit(u) {
+		return "inaccessible"
+	}
+	locked := r.unitLocked(u, unlocked)
+	rd, hasRc, err := r.loadReceipt(u.Key)
+	if err != nil && isAccess(err) {
+		return "inaccessible"
+	}
+	var rcp *receiptDisk
+	if hasRc {
+		rcp = &rd
+	}
+	if v, isLive := r.checkLive(ctx, ad, u, rcp); isLive {
+		switch {
+		case !weakOnly(v.Evidence):
+			return "running"
+		case !quietOnly(v.Evidence):
+			if locked {
+				return reasonHoldCapped
+			}
+			return "running"
+		}
+	}
+	switch {
+	case hasRc && !locked:
+		return "restored"
+	case hasRc && r.removeFailed(u, rd):
+		return "remove-failed"
+	}
+	return "deferred"
+}
+
+// inaccessibleUnit reports a unit whose scan met EACCES/EPERM, or whose
+// files can no longer be lstat'ed for that reason (TCC, §17).
+func (r *run) inaccessibleUnit(u harness.Unit) bool {
+	if accessHazards(u) > 0 {
+		return true
+	}
+	for _, f := range u.Files {
+		b := u.Home.Bases[f.Base]
+		if b == "" {
+			continue
+		}
+		if _, err := fsx.Lstat(filepath.Join(b, filepath.FromSlash(f.Rel))); err != nil && isAccess(err) {
+			return true
+		}
+	}
+	return false
+}
+
+// accessHazards counts the entries a scan could not read (EACCES/EPERM).
+func accessHazards(u harness.Unit) int {
+	n := 0
+	for _, h := range u.Hazards {
+		if h.Hazard == fsx.HazardAccess {
+			n++
+		}
+	}
+	return n
+}
+
+// removeFailed reports plaintext identical to a committed receipt: the
+// receipt's generation is logged and every file of the unit is listed in
+// it with the identity it had when that generation was sealed or placed.
+func (r *run) removeFailed(u harness.Unit, rd receiptDisk) bool {
+	if len(u.Files) == 0 {
+		return false
+	}
+	entries, err := r.log.Unit(u.Key)
+	if err != nil {
+		return false
+	}
+	committed := false
+	for _, en := range entries {
+		committed = committed || en.Gen == rd.Gen
+	}
+	if !committed {
+		return false
+	}
+	idx := receiptIndex(&rd)
+	for _, f := range u.Files {
+		rf, ok := idx[fileKey{f.Base, f.Rel}]
+		if !ok || !f.Snap.Unchanged(rf.Snap) {
+			return false
+		}
+	}
+	return true
+}
+
 // PlaintextSummary scans without sealing.
 func PlaintextSummary(ctx context.Context, e Env) ([]Plaintext, error) {
 	r := newRun(e, prodPorts(e))
@@ -797,30 +889,24 @@ func (r *run) plaintextSummary(ctx context.Context) ([]Plaintext, error) {
 		}
 		return p
 	}
+	unlocked := r.unlocked(ctx)
 	for _, ad := range r.e.Adapters {
 		if ad == nil {
 			continue
 		}
-		units, err := ad.Scan(ctx, r.e.Harness, harness.Scope{Adopt: true})
-		if err != nil {
-			continue
-		}
+		// A home that could not be read still lets the others count.
+		units, _ := ad.Scan(ctx, r.e.Harness, harness.Scope{Adopt: true})
 		for _, u := range units {
 			id := u.VaultID
 			if len(u.RootIDs) > 0 {
 				id = u.RootIDs[0]
 			}
-			reason := "deferred"
-			if _, ok, err := r.loadReceipt(u.Key); err == nil && ok {
-				reason = "restored"
-			}
-			if _, isLive := r.checkLive(ctx, ad, u, nil); isLive {
-				reason = "running"
-			}
+			reason := r.plaintextReason(ctx, ad, u, unlocked)
+			n := len(u.Files) + accessHazards(u)
 			p := get(id)
-			p.Files += len(u.Files)
+			p.Files += n
 			p.Bytes += unitBytes(u)
-			p.ByReason[reason] += len(u.Files)
+			p.ByReason[reason] += n
 		}
 		if ad.ID() == harness.ClaudeCode {
 			if homes, err := ad.Homes(ctx, r.e.Harness); err == nil {

@@ -96,7 +96,7 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 	if err != nil {
 		return nil, &commitError{err: err}
 	}
-	if err := hit(c.points.prepared); err != nil {
+	if err := r.hit(c.points.prepared); err != nil {
 		return nil, &commitError{err: err}
 	}
 	req := c.req
@@ -108,10 +108,14 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 			if err := r.jr.Advance(rec, journal.PhaseTmpWritten); err != nil {
 				return err
 			}
-			return hit(c.points.tmpWritten)
+			return r.hit(c.points.tmpWritten)
 		case capsule.PhaseVerified:
 			if c.beforeRename != nil {
 				return c.beforeRename()
+			}
+		case capsule.PhaseCommitted:
+			if r.p.point != nil {
+				r.p.point("capsule.committed") // an observation, not a failpoint
 			}
 		}
 		return nil
@@ -133,7 +137,7 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 		}
 		return nil, &commitError{err: err}
 	}
-	if err := hit(c.points.logged); err != nil {
+	if err := r.hit(c.points.logged); err != nil {
 		// Logged but the milestone is not journaled (SEAL-7).
 		return sealed, &commitError{err: err, keepRecord: true, committed: true}
 	}
@@ -142,7 +146,7 @@ func (r *run) commit(ctx context.Context, c *commitSpec) (*capsule.Sealed, error
 		// capsule logged and continues as committed (SEAL-7).
 		return sealed, &commitError{err: err, keepRecord: true, committed: true}
 	}
-	if err := hit(c.points.committed); err != nil {
+	if err := r.hit(c.points.committed); err != nil {
 		return sealed, &commitError{err: err, keepRecord: true, committed: true}
 	}
 	return sealed, nil

@@ -61,6 +61,7 @@ type plannedFile struct {
 	Group      string            `json:"group,omitempty"`
 	Style      conflictStyle     `json:"conflict_style,omitempty"`
 	ConflictOK bool              `json:"conflict_ok,omitempty"` // a conflict copy may be written next to Rel
+	Last       bool              `json:"last,omitempty"`        // placed after every other entry (TargetRules.Last, REST-3)
 	// The receipt of a version merged from two generations covers only the
 	// older (C) prefix, so a re-seal stores the merge as a new generation
 	// instead of dropping it as unchanged.
@@ -184,8 +185,9 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 	if target == "" {
 		return failed(res, fmt.Errorf("%w: no target base", harness.ErrUnregistered))
 	}
-	need := int64(math.Ceil(1.1 * float64(p.bytes)))
-	if err := r.p.fs.CheckSpace(target, need, r.e.Floor); err != nil {
+	total, perBase := plannedBytes(p.mans)
+	total = max(total, p.bytes)
+	if err := r.checkRestoreSpace(a.rules.Bases, target, total, perBase); err != nil {
 		res = failed(res, noSpace(err))
 		res.Outcome = OutSkipped
 		return res
@@ -222,7 +224,7 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 	if err := r.writePlan(st, plan); err != nil {
 		return rollback(err, "", "")
 	}
-	check := entryCheck(a.rules)
+	check := checkEntries(a.rules, true)
 	var gens []stagedGen
 	for _, en := range p.entries {
 		if aborted() {
@@ -240,8 +242,10 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 			}
 			return rollback(noSpace(err), "", "")
 		}
+		kg.forget(en.Path) // decrypted: its key goes now (CC-17)
 		gens = append(gens, stagedGen{entry: en, man: man, staged: staged, dir: sub.Dir(), prefix: prefix})
 	}
+	gens, skipped := skipUnsafe(gens, a.rules)
 	files, merged, conflicts, err := r.foldGenerations(ctx, gens, a.rules, st.Dir(), plan.ConflictAt, lo.style)
 	if err != nil {
 		return rollback(err, "", "")
@@ -272,7 +276,65 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 	out.Lineage = res.Lineage
 	out.mergedFold += merged
 	out.conflictFold += conflicts
-	return out.result(res)
+	final := out.result(res)
+	if out.err == nil {
+		r.reportSkipped(final, skipped)
+	}
+	return final
+}
+
+// skipUnsafe drops the entries of bases the adapter reports unsafe now
+// (TargetRules.Skip) from the staged generations: they are never placed
+// and the capsule keeps them (SPEC §11.5, CC-22). It returns, per reason,
+// how many distinct files were left out.
+func skipUnsafe(gens []stagedGen, rules harness.TargetRules) ([]stagedGen, map[string]int) {
+	if len(rules.Skip) == 0 {
+		return gens, nil
+	}
+	skipped := map[string]int{}
+	seen := map[fileKey]bool{}
+	out := make([]stagedGen, 0, len(gens))
+	for _, g := range gens {
+		ng := g
+		ng.man.Files = nil
+		for _, en := range g.man.Files {
+			if _, skip := rules.Skip[en.Base]; skip {
+				if k := (fileKey{en.Base, en.Rel}); !en.Dir && !seen[k] {
+					seen[k] = true
+					skipped[rules.Skip[en.Base]]++
+				}
+				continue
+			}
+			ng.man.Files = append(ng.man.Files, en)
+		}
+		ng.staged = nil
+		for _, s := range g.staged {
+			if _, skip := rules.Skip[s.Entry.Base]; !skip {
+				ng.staged = append(ng.staged, s)
+			}
+		}
+		out = append(out, ng)
+	}
+	return out, skipped
+}
+
+// reportSkipped adds one skipped result per reason for the entries a
+// restore left out (CC-22: OutSkipped, Detail the adapter's reason, e.g.
+// "unsafe tmp"); the unit's own result says what was placed.
+func (r *run) reportSkipped(res UnitResult, skipped map[string]int) {
+	reasons := make([]string, 0, len(skipped))
+	for why := range skipped {
+		reasons = append(reasons, why)
+	}
+	sort.Strings(reasons)
+	for _, why := range reasons {
+		s := UnitResult{Harness: res.Harness, Kind: res.Kind, Unit: res.Unit, Gen: res.Gen, Outcome: OutSkipped,
+			Files: skipped[why], Detail: why}
+		if s.Detail == "" {
+			s.Detail = "unsafe base"
+		}
+		r.add(s)
+	}
 }
 
 // placeOutcome counts what placement did.
@@ -333,7 +395,7 @@ func (r *run) stageAndPlace(ctx context.Context, st stagingHandle, plan *restore
 	if err := r.jr.Advance(rec, journal.PhaseStaged); err != nil {
 		return placeOutcome{err: err}
 	}
-	if err := hit("restore.staged"); err != nil {
+	if err := r.hit("restore.staged"); err != nil {
 		return placeOutcome{err: err}
 	}
 	return r.placeAndFinish(ctx, st, plan, rec, stagings, ad)
@@ -389,7 +451,7 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 			outcome.err = err
 			break
 		}
-		if err := hit("restore.placing"); err != nil {
+		if err := r.hit("restore.placing"); err != nil {
 			outcome.err = err
 			break
 		}
@@ -399,7 +461,7 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 		outcome.err = err
 	}
 	if outcome.err == nil {
-		if err := hit("restore.receipt"); err != nil {
+		if err := r.hit("restore.receipt"); err != nil {
 			outcome.err = err
 		}
 	}
@@ -456,25 +518,32 @@ func (r *run) writeRestoreReceipt(plan *restorePlan, files []ReceiptFile, bases 
 	return r.writeReceipt(rd)
 }
 
-// sortPlacements orders placements: directories, then ordinary files,
-// then append-only JSONL files deepest first, so a session's main
-// transcript (the shallowest) is placed last (SPEC §11.5 step 4, R6).
+// sortPlacements orders placements: entries the adapter marks Last
+// (TargetRules.Last: Claude's <sid>.jsonl, REST-3) after every other one;
+// before them, and as the tie-break among them, directories, then
+// ordinary files, then append-only JSONL files deepest first, so a
+// session's main transcript (the shallowest) is placed last even without
+// the adapter's rule (SPEC §11.5 step 4, R6).
 func sortPlacements(files []plannedFile) {
 	rank := func(f plannedFile) int {
+		n := 1
 		switch {
 		case f.Dir:
-			return 0
+			n = 0
 		case f.Policy == harness.PlaceJSONLAppend:
-			return 2
+			n = 2
 		}
-		return 1
+		if f.Last {
+			n += 3
+		}
+		return n
 	}
 	sort.SliceStable(files, func(a, b int) bool {
 		ra, rb := rank(files[a]), rank(files[b])
 		if ra != rb {
 			return ra < rb
 		}
-		if ra == 2 {
+		if ra%3 == 2 {
 			if da, db := depth(files[a].Rel), depth(files[b].Rel); da != db {
 				return da > db
 			}
@@ -623,7 +692,8 @@ func (r *run) foldGenerations(ctx context.Context, gens []stagedGen, rules harne
 			v := &cur{
 				pf: plannedFile{Base: en.Base, Rel: en.Rel, Staged: path.Join(g.prefix, s.StagedRel), Policy: pol,
 					Mode: en.Mode, MtimeNS: en.MtimeNS, Size: en.Size, SHA: en.SHA256, FromGen: g.entry.Gen, Group: en.Group,
-					Style: style, ConflictOK: rules.Allow != nil && rules.Allow(en.Base, conflictName(en.Rel, style, at, 0))},
+					Style: style, ConflictOK: rules.Allow != nil && rules.Allow(en.Base, conflictName(en.Rel, style, at, 0)),
+					Last: rules.Last != nil && rules.Last(en)},
 				dir: g.dir, rel: s.StagedRel, snap: s.Stat,
 			}
 			c, ok := resolved[k]
@@ -1022,7 +1092,8 @@ func (pc *placeCtx) conflict(sd, pd dirHandle, pf *plannedFile, parentRel string
 }
 
 // appendMissingLines adds the staged version's lines that the existing
-// file lacks, with O_APPEND, never rewriting it (line-union).
+// file lacks, with O_APPEND relative to its parent's directory handle
+// (fsx.Dir.AppendLine, CC-05), never rewriting it (line-union).
 func (pc *placeCtx) appendMissingLines(sd dirHandle, pf *plannedFile, pd dirHandle, name string, fst fsx.Stat) error {
 	const max = 256 << 20
 	cb, _, err := readAllBounded(sd, pf.Staged, max)
@@ -1036,14 +1107,16 @@ func (pc *placeCtx) appendMissingLines(sd dirHandle, pf *plannedFile, pd dirHand
 	if !st.Unchanged(fst) {
 		return fsx.ErrChanged
 	}
-	abs := filepath.Join(pd.Path(), name)
 	if len(fb) > 0 && fb[len(fb)-1] != '\n' {
-		if err := fsx.AppendLine(abs, nil); err != nil {
+		if err := pd.AppendLine(name, nil); err != nil {
 			return err
 		}
 	}
 	for _, l := range unionLines(cb, fb) {
-		if err := fsx.AppendLine(abs, l); err != nil {
+		if len(l) > fsx.MaxLine {
+			continue // never appendable in one write; the capsule keeps it
+		}
+		if err := pd.AppendLine(name, l); err != nil {
 			return err
 		}
 	}

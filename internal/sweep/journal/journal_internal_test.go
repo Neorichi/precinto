@@ -4,7 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
 )
@@ -38,5 +40,30 @@ func TestValidID(t *testing.T) {
 		if validID(bad) {
 			t.Errorf("validID(%q) = true", bad)
 		}
+	}
+}
+
+// FX-G4-20: a FIFO named like a record is reported by Pending without
+// blocking, and the readable records are still returned.
+func TestPendingNeverBlocksOnAFIFORecord(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "journal")
+	j := Open(dir)
+	ok, err := j.Begin(KindSeal, "claude-code", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, NewID()+recordExt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var recs []*Record
+	go func() { defer close(done); recs, err = j.Pending() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Pending blocked on a FIFO")
+	}
+	if !errors.Is(err, fsx.ErrUnsafe) || len(recs) != 1 || recs[0].ID != ok.ID {
+		t.Fatalf("Pending = %d records, %v", len(recs), err)
 	}
 }

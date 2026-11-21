@@ -57,6 +57,14 @@ type Log struct {
 // lockWait bounds how long an append waits for a Compact in progress.
 const lockWait = 2 * time.Minute
 
+// maxLogBytes bounds a log read (millions of entries); a larger file is
+// refused rather than read into memory (FX-G4-20). A variable only so
+// tests can lower it.
+var maxLogBytes int64 = 1 << 30
+
+// errTooLarge: the log is larger than maxLogBytes.
+var errTooLarge = errors.New("capslog: capsule log too large")
+
 // Open returns the log at path.
 func Open(path string) *Log { return &Log{Path: path} }
 
@@ -226,8 +234,9 @@ func (l *Log) terminateTornTail() error {
 	return fsx.AppendLine(l.Path, nil)
 }
 
-// readLog reads the whole log without following symlinks; a missing log is
-// empty.
+// readLog reads the whole log without following symlinks or blocking on a
+// FIFO (O_RDONLY|O_NOFOLLOW|O_NONBLOCK), requires a regular file and at
+// most maxLogBytes; a missing log is empty.
 func readLog(path string) ([]byte, fsx.Stat, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -244,9 +253,15 @@ func readLog(path string) ([]byte, fsx.Stat, error) {
 	if !st.IsRegular() {
 		return nil, fsx.Stat{}, fmt.Errorf("%w: capsule log is not a regular file", fsx.ErrUnsafe)
 	}
-	data, err := io.ReadAll(f)
+	if st.Size > maxLogBytes {
+		return nil, fsx.Stat{}, errTooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxLogBytes+1))
 	if err != nil {
 		return nil, fsx.Stat{}, err
+	}
+	if int64(len(data)) > maxLogBytes {
+		return nil, fsx.Stat{}, errTooLarge
 	}
 	return data, st, nil
 }

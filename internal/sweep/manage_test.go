@@ -1,6 +1,7 @@
 package sweep
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,7 +45,7 @@ func TestQuarantineMovesUnloggedCapsules(t *testing.T) {
 	stray := filepath.Join(te.h.Layout.CapsulesDir, "claude-code", u.Key, "evil.pcap")
 	writeAt(t, stray, []byte("not even a capsule"))
 	r := te.run()
-	mustNoErr(t, r.quarantine(context.Background()))
+	mustNoErr(t, r.quarantine(tctx(t)))
 	rep := r.finish()
 	if rep.Count(OutQuarantined) != 2 {
 		t.Fatalf("quarantined %+v", rep.Units)
@@ -66,7 +67,7 @@ func TestQuarantineMovesUnloggedCapsules(t *testing.T) {
 	// An unreadable journal record makes quarantine refuse entirely.
 	writeAt(t, filepath.Join(te.h.Layout.JournalDir, "0000000000000001-00000000.json"), []byte("{"))
 	writeAt(t, filepath.Join(te.h.Layout.CapsulesDir, "claude-code", u.Key, "g000009.pcap"), []byte("x"))
-	if err := te.run().quarantine(context.Background()); err == nil {
+	if err := te.run().quarantine(tctx(t)); err == nil {
 		t.Fatal("quarantine ran with an unreadable journal")
 	}
 }
@@ -121,7 +122,7 @@ func TestPruneAndForget(t *testing.T) {
 	}
 	te := newTestEnv(t)
 	u, _ := te.sealedSession(sid1, nil)
-	ctx := context.Background()
+	ctx := tctx(t)
 	for i := 0; i < 4; i++ {
 		te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 		appendLines(t, transcriptOf(u), `{"uuid":"00000000-0000-4000-8000-0000000001`+itoa(i)+`0"}`)
@@ -205,7 +206,7 @@ func TestPruneKeepsReceiptGenerations(t *testing.T) {
 	}
 	te := newTestEnv(t)
 	u, _ := te.sealedSession(sid1, nil)
-	ctx := context.Background()
+	ctx := tctx(t)
 	for i := 0; i < 3; i++ {
 		te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 		appendLines(t, transcriptOf(u), `{"uuid":"00000000-0000-4000-8000-0000000002`+itoa(i)+`0"}`)
@@ -231,14 +232,14 @@ func TestSweepSealsLockedFoldersOnly(t *testing.T) {
 	te.writeSession(sid1, "", nil)
 	u := te.scanSession(sid1)
 	te.e.Grants = func(context.Context) (map[string]bool, error) { return map[string]bool{rootID: true}, nil }
-	rep, err := te.run().sweep(context.Background(), Options{})
+	rep, err := te.run().sweep(tctx(t), Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSkipped || !strings.HasPrefix(res.Detail, "restored") {
 		t.Fatalf("unlocked folder %+v", res)
 	}
 	// Grants failing means every folder is locked (R4).
 	te.e.Grants = func(context.Context) (map[string]bool, error) { return nil, errors.New("daemon unreachable") }
-	rep, err = te.run().sweep(context.Background(), Options{})
+	rep, err = te.run().sweep(tctx(t), Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
 		t.Fatalf("locked folder %+v", res)
@@ -253,7 +254,7 @@ func TestSweepBusyTouchesRequested(t *testing.T) {
 	te := newTestEnv(t)
 	lk, err := te.run().lockName("sweep")
 	mustNoErr(t, err)
-	rep, err := te.run().sweep(context.Background(), Options{})
+	rep, err := te.run().sweep(tctx(t), Options{})
 	if !errors.Is(err, ErrBusy) || rep == nil {
 		t.Fatalf("sweep while locked: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestSweepBusyTouchesRequested(t *testing.T) {
 	lk.Unlock()
 	// The holder rescans once and consumes the request.
 	te.writeSession(sid1, "", nil)
-	rep, err = te.run().sweep(context.Background(), Options{})
+	rep, err = te.run().sweep(tctx(t), Options{})
 	mustNoErr(t, err)
 	if exists(te.h.Layout.SweepRequested) {
 		t.Fatal("request not consumed")
@@ -281,7 +282,7 @@ func TestSweepHonoursLeases(t *testing.T) {
 	u, _ := te.sealedSession(sid1, nil)
 	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	te.live.set(u.Key, live.Verdict{Live: true, Evidence: []live.Evidence{{Reason: live.ReasonLease}}})
-	rep, err := te.run().sweep(context.Background(), Options{})
+	rep, err := te.run().sweep(tctx(t), Options{})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, u.Key); res.Outcome != OutLeased {
 		t.Fatalf("result %+v", res)
@@ -306,14 +307,14 @@ func TestDrainQueue(t *testing.T) {
 	id, err := queue.Enqueue(te.h.Layout.QueueDir, queue.Request{Harness: "claude-code", SID: sid1, Reason: "prompt_input_exit", WaitFor: writer.ID})
 	mustNoErr(t, err)
 	r := te.run()
-	r.drainQueue(context.Background(), Options{})
+	r.drainQueue(tctx(t), Options{})
 	if len(r.finish().Units) != 0 || !exists(transcriptOf(u)) {
 		t.Fatal("sealed while the writer runs (R8)")
 	}
 	te.h.Procs.Exit(5150, false)
 	te.live.set(u.Key, live.Verdict{Live: true, Evidence: []live.Evidence{{Reason: live.ReasonUnstable, Weak: true}}})
 	r = te.run()
-	r.drainQueue(context.Background(), Options{})
+	r.drainQueue(tctx(t), Options{})
 	reqs, _ := queue.List(te.h.Layout.QueueDir)
 	if len(reqs) != 1 || reqs[0].Attempts != 1 || !reqs[0].NotBefore.After(te.h.Clock.Now()) {
 		t.Fatalf("live unit not backed off: %+v", reqs)
@@ -322,7 +323,7 @@ func TestDrainQueue(t *testing.T) {
 	delete(te.live.verdicts, u.Key)
 	te.h.Clock.Advance(time.Hour)
 	r = te.run()
-	r.drainQueue(context.Background(), Options{})
+	r.drainQueue(tctx(t), Options{})
 	if res := outcome(t, r.finish(), u.Key); res.Outcome != OutSealed {
 		t.Fatalf("drain %+v", res)
 	}
@@ -342,7 +343,7 @@ func TestDrainQueueGivesUpAtTheDeadline(t *testing.T) {
 		Deadline: te.h.Clock.Now().Add(-time.Minute)})
 	mustNoErr(t, err)
 	r := te.run()
-	r.drainQueue(context.Background(), Options{})
+	r.drainQueue(tctx(t), Options{})
 	if reqs, _ := queue.List(te.h.Layout.QueueDir); len(reqs) != 0 {
 		t.Fatal("expired request kept")
 	}
@@ -356,7 +357,7 @@ func TestListAndPlaintextSummary(t *testing.T) {
 	te := newTestEnv(t)
 	u, _ := te.sealedSession(sid1, nil)
 	te.writeSession(sid2, "", nil)
-	infos, err := te.run().list(context.Background(), ListOptions{RootIDs: []string{rootID}})
+	infos, err := te.run().list(tctx(t), ListOptions{RootIDs: []string{rootID}})
 	mustNoErr(t, err)
 	got := map[string]UnitInfo{}
 	for _, i := range infos {
@@ -368,7 +369,7 @@ func TestListAndPlaintextSummary(t *testing.T) {
 	if i := got[te.sessionKey(sid2)]; !i.Plaintext || i.Reason != "deferred" {
 		t.Fatalf("plaintext unit %+v", i)
 	}
-	infos, _ = te.run().list(context.Background(), ListOptions{Keys: te.keys})
+	infos, _ = te.run().list(tctx(t), ListOptions{Keys: te.keys})
 	for _, i := range infos {
 		if i.Unit == u.Key && i.Title != "title of "+sid1 {
 			t.Fatalf("title %q", i.Title)
@@ -377,7 +378,7 @@ func TestListAndPlaintextSummary(t *testing.T) {
 	if te.keys.purposes[len(te.keys.purposes)-1] != "list" {
 		t.Fatalf("purposes %v", te.keys.purposes)
 	}
-	sum, err := te.run().plaintextSummary(context.Background())
+	sum, err := te.run().plaintextSummary(tctx(t))
 	mustNoErr(t, err)
 	if len(sum) != 1 || sum[0].RootID != rootID || sum[0].Files == 0 || sum[0].ByReason["deferred"] == 0 {
 		t.Fatalf("summary %+v", sum)
@@ -429,4 +430,214 @@ func TestProcIDHelpers(t *testing.T) {
 		t.Fatal("zero")
 	}
 	_ = testkit.Epoch
+}
+
+// CC-21: a sweep scoped to processes (Scope.Procs) seals the sessions
+// those processes own and nothing else: another session of the folder,
+// its notes and the global history stay as they are.
+func TestSweepScopedToProcsSealsOnlyTheirSessions(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	child := procInfo(6001, 11).ID
+	te.writeSession(sid1, "", nil)
+	te.writeSession(sid2, "", nil)
+	te.claude.owners = map[string][]platform.ProcID{sid1: {child}, sid2: {procInfo(6002, 12).ID}}
+	p := te.note("docs/notes.md", "body\n")
+	appendLines(t, te.historyPath(), historyLineFor(te.h.Root, "root", 1, ""))
+	u1, u2 := te.scanSession(sid1), te.scanSession(sid2)
+	rep, err := te.run().sweep(tctx(t), Options{Scope: harness.Scope{Procs: []platform.ProcID{child}}})
+	mustNoErr(t, err)
+	if res := outcome(t, rep, u1.Key); res.Outcome != OutSealed {
+		t.Fatalf("own session %+v", res)
+	}
+	for _, u := range rep.Units {
+		if u.Unit != u1.Key {
+			t.Fatalf("a sweep scoped to the child touched %+v", u)
+		}
+	}
+	if !exists(transcriptOf(u2)) || !exists(p) || len(te.historyLines()) != 1 {
+		t.Fatal("another session, a note or the history was sealed")
+	}
+}
+
+// CC-21: seal --adopt (Options.Adopt) and md = "all" ask the adapters for
+// sessions found only by transcript cwd (Scope.Adopt), and seal them.
+func TestSweepAsksForAdoptedSessions(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	var asked []bool
+	te.writeSession(sid1, "", nil)
+	u := te.scanSession(sid1)
+	u.Adopted = true
+	te.claude.sids = nil
+	te.claude.extra = []harness.Unit{u}
+	te.claude.onScan = func(s harness.Scope) { asked = append(asked, s.Adopt) }
+	rep, _ := te.run().sweep(tctx(t), Options{})
+	if res := outcome(t, rep, u.Key); res.Outcome != OutSkipped || res.Detail != "adopted: seal --adopt" {
+		t.Fatalf("plain sweep %+v", res)
+	}
+	rep, _ = te.run().sweep(tctx(t), Options{Adopt: true})
+	if res := outcome(t, rep, u.Key); res.Outcome != OutSealed {
+		t.Fatalf("--adopt sweep %+v", res)
+	}
+	if len(asked) < 2 || asked[0] || !asked[len(asked)-1] {
+		t.Fatalf("Scope.Adopt per scan %v, want false then true", asked)
+	}
+}
+
+// FX-G4-10, FX-G4-16, D63: PlaintextSummary and List classify plaintext
+// from one look, without new state: strong evidence is running; weak
+// evidence the quiet wait never resolves holds a locked folder's unit
+// hold-capped; a first observation only is deferred (the next sweep waits
+// for it); a restored unit of an unlocked folder is restored; a locked
+// folder's plaintext still matching its committed receipt is
+// remove-failed; an unreadable scan entry is inaccessible.
+func TestPlaintextReasons(t *testing.T) {
+	t.Parallel()
+	reasonOf := func(t *testing.T, te *testEnv, key string) string {
+		t.Helper()
+		sum, err := te.run().plaintextSummary(tctx(t))
+		mustNoErr(t, err)
+		infos, err := te.run().list(tctx(t), ListOptions{})
+		mustNoErr(t, err)
+		listed := ""
+		for _, i := range infos {
+			if i.Unit == key {
+				listed = i.Reason
+			}
+		}
+		var reasons []string
+		for _, p := range sum {
+			for why, n := range p.ByReason {
+				if n > 0 && why != "history_pending" && why != "notes" {
+					reasons = append(reasons, why)
+				}
+			}
+		}
+		if len(reasons) != 1 || reasons[0] != listed {
+			t.Fatalf("summary reasons %v, list reason %q", reasons, listed)
+		}
+		return listed
+	}
+	unlock := func(te *testEnv) {
+		te.e.Grants = func(context.Context) (map[string]bool, error) { return map[string]bool{rootID: true}, nil }
+	}
+	for _, tc := range []struct {
+		name string
+		want string
+		prep func(t *testing.T, te *testEnv) string
+	}{
+		{"running", "running", func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			k := te.sessionKey(sid1)
+			te.claude.probe[k] = []live.Evidence{{Reason: live.ReasonLedgerProc}}
+			return k
+		}},
+		{"hold-capped", reasonHoldCapped, func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			k := te.sessionKey(sid1)
+			te.claude.probe[k] = []live.Evidence{{Reason: live.ReasonRegistry, Weak: true}, {Reason: live.ReasonUnobserved, Weak: true}}
+			return k
+		}},
+		{"weak in an unlocked folder", "running", func(t *testing.T, te *testEnv) string {
+			unlock(te)
+			te.writeSession(sid1, "", nil)
+			k := te.sessionKey(sid1)
+			te.claude.probe[k] = []live.Evidence{{Reason: live.ReasonRegistry, Weak: true}}
+			return k
+		}},
+		{"deferred", "deferred", func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			k := te.sessionKey(sid1)
+			te.live.set(k, live.Verdict{Live: true, Evidence: []live.Evidence{{Reason: live.ReasonUnobserved, Weak: true}}})
+			return k
+		}},
+		{"restored", "restored", func(t *testing.T, te *testEnv) string {
+			u, _ := te.sealedSession(sid1, nil)
+			te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
+			unlock(te)
+			return u.Key
+		}},
+		{"remove-failed", "remove-failed", func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			u := te.scanSession(sid1)
+			for _, p := range te.sessionFiles(u) {
+				te.fs.inject("unlink", p, syscall.EACCES)
+			}
+			rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{u}, Options{})
+			if res := outcome(t, rep, u.Key); res.Outcome != OutRemoveFailed {
+				t.Fatalf("seal %+v", res)
+			}
+			return u.Key
+		}},
+		{"inaccessible", "inaccessible", func(t *testing.T, te *testEnv) string {
+			te.writeSession(sid1, "", nil)
+			u := te.scanSession(sid1)
+			u.Hazards = append(u.Hazards, harness.Hazard{Base: capsule.BaseClaudeConfig, Rel: "projects/x", Hazard: fsx.HazardAccess})
+			te.claude.sids = nil
+			te.claude.extra = []harness.Unit{u}
+			return u.Key
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			key := tc.prep(t, te)
+			if got := reasonOf(t, te, key); got != tc.want {
+				t.Fatalf("reason %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// FX-G4-20: every reader of precinto's own state (receipts, generation
+// counters, snapshot refs, the pending-notes index) opens O_NONBLOCK and
+// O_NOFOLLOW, requires a regular file and is bounded: a FIFO never blocks
+// a run, and the writers replace it.
+func TestStateReadersNeverBlockOnAFIFO(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	key := te.sessionKey(sid1)
+	r := te.run()
+	for _, dir := range []string{te.h.Layout.ReceiptsDir, te.h.Layout.GensDir, filepath.Dir(te.h.Layout.NotesIndex)} {
+		mustNoErr(t, ensurePrivateDir(dir))
+	}
+	fifos := []string{r.receiptPath(key), filepath.Join(te.h.Layout.GensDir, key), r.refsPath(key), te.h.Layout.NotesIndex}
+	for _, p := range fifos {
+		mustNoErr(t, mkfifo(p))
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, _, err := r.loadReceipt(key); !errors.Is(err, fsx.ErrUnsafe) {
+			t.Errorf("receipt FIFO: %v, want ErrUnsafe", err)
+		}
+		if n, err := r.nextGen(tctx(t), key, nil); err != nil || n != 1 {
+			t.Errorf("counter FIFO: nextGen %d %v, want 1 (read as 0, then replaced)", n, err)
+		}
+		if refs := r.readRefs(key); len(refs.Gens) != 0 {
+			t.Errorf("refs FIFO read as %+v", refs)
+		}
+		if idx := r.readNotesIndex(); len(idx.Roots) != 0 {
+			t.Errorf("notes index FIFO read as %+v", idx)
+		}
+		r.updateNotesIndex(tctx(t), func(idx *notesIndex) { idx.Roots[rootID] = []string{"/x.md"} })
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a state reader blocked on a FIFO")
+	}
+	for _, p := range []string{filepath.Join(te.h.Layout.GensDir, key), te.h.Layout.NotesIndex} {
+		if st, err := fsx.Lstat(p); err != nil || !st.IsRegular() {
+			t.Fatalf("%s not replaced by a regular file", filepath.Base(p))
+		}
+	}
+	if got := r.pendingNotes(rootID); len(got) != 1 {
+		t.Fatalf("notes index after the rewrite: %v", got)
+	}
+	// Bounded: an oversized index reads as empty.
+	writeAt(t, te.h.Layout.NotesIndex, bytes.Repeat([]byte(" "), maxNotesIndexBytes+1))
+	if idx := r.readNotesIndex(); len(idx.Roots) != 0 {
+		t.Fatal("an oversized notes index was read")
+	}
 }

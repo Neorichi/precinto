@@ -2,7 +2,6 @@ package sweep
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -45,7 +44,7 @@ func (te *testEnv) sealNotes() *Report {
 	te.t.Helper()
 	r := te.run()
 	root := te.root()
-	r.sealMarkdown(context.Background(), root, Options{}, r.noteCandidates(context.Background(), root))
+	r.sealMarkdown(tctx(te.t), root, Options{}, r.noteCandidates(tctx(te.t), root))
 	return r.finish()
 }
 
@@ -57,7 +56,7 @@ func (te *testEnv) noteKey(rel string) string {
 
 func (te *testEnv) restoreNotes() *Report {
 	te.t.Helper()
-	rep, err := te.run().restoreMarkdown(context.Background(), te.keys, te.root())
+	rep, err := te.run().restoreMarkdown(tctx(te.t), te.keys, te.root())
 	mustNoErr(te.t, err)
 	return rep
 }
@@ -211,7 +210,7 @@ func TestNoteConflictKeepsBoth(t *testing.T) {
 		t.Fatal("capsule not kept")
 	}
 	// resolve --keep plaintext: the copy goes; the capsule keeps it.
-	rep, err := te.run().resolve(context.Background(), te.keys, c, "plaintext")
+	rep, err := te.run().resolve(tctx(t), te.keys, c, "plaintext")
 	mustNoErr(t, err)
 	if rep.Count(OutRestored) != 1 || exists(c) || string(readFile(t, p)) != "branch version\n" {
 		t.Fatalf("resolve %+v", rep.Units)
@@ -226,7 +225,7 @@ func TestResolveKeepCapsuleRetainsThePlaintext(t *testing.T) {
 	writeAt(t, p, []byte("branch version\n"))
 	te.restoreNotes()
 	key := te.noteKey("docs/notes.md")
-	rep, err := te.run().resolve(context.Background(), te.keys, p, "capsule")
+	rep, err := te.run().resolve(tctx(t), te.keys, p, "capsule")
 	mustNoErr(t, err)
 	if rep.Count(OutRestored) != 1 {
 		t.Fatalf("resolve %+v", rep.Units)
@@ -238,7 +237,7 @@ func TestResolveKeepCapsuleRetainsThePlaintext(t *testing.T) {
 	if len(en) != 2 || capsule.Lineage(en[1].Lineage) != capsule.LineageDiverged {
 		t.Fatalf("the other side was not retained as a generation: %+v", en)
 	}
-	if _, err := te.run().resolve(context.Background(), te.keys, p, "both"); err == nil {
+	if _, err := te.run().resolve(tctx(t), te.keys, p, "both"); err == nil {
 		t.Fatal("unknown --keep accepted")
 	}
 }
@@ -372,14 +371,14 @@ func TestMarkersCannotRedirectNotes(t *testing.T) {
 	mustNoErr(t, os.Remove(p))
 	writeAt(t, p+".precinto", MarkerText(key))
 	te2 := te.run()
-	rep, err := te2.openNotes(context.Background(), te.keys, []string{evil})
+	rep, err := te2.openNotes(tctx(t), te.keys, []string{evil})
 	mustNoErr(t, err)
 	if res := outcome(t, rep, key); res.Outcome != OutFailed {
 		t.Fatalf("open of a redirecting marker %+v", res)
 	}
 	// Markers naming unlogged units are ignored.
 	writeAt(t, filepath.Join(te.h.Root, "x.md.precinto"), MarkerText(strings.Repeat("cd", 16)))
-	rep, _ = te.run().openNotes(context.Background(), te.keys, []string{filepath.Join(te.h.Root, "x.md.precinto")})
+	rep, _ = te.run().openNotes(tctx(t), te.keys, []string{filepath.Join(te.h.Root, "x.md.precinto")})
 	if rep.Count(OutFailed) != 1 || exists(filepath.Join(te.h.Root, "x.md")) {
 		t.Fatalf("unlogged marker %+v", rep.Units)
 	}
@@ -391,7 +390,7 @@ func TestCatAndOpenNotes(t *testing.T) {
 	p := te.note("docs/notes.md", "the body\n")
 	te.sealNotes()
 	var out bytes.Buffer
-	mustNoErr(t, te.run().catNote(context.Background(), te.keys, p+".precinto", &out))
+	mustNoErr(t, te.run().catNote(tctx(t), te.keys, p+".precinto", &out))
 	if out.String() != "the body\n" {
 		t.Fatalf("cat %q", out.String())
 	}
@@ -404,7 +403,7 @@ func TestCatAndOpenNotes(t *testing.T) {
 	if ents, _ := os.ReadDir(te.h.Layout.StagingDir); len(ents) != 0 {
 		t.Fatal("cat left staging")
 	}
-	rep, err := te.run().openNotes(context.Background(), te.keys, []string{p + ".precinto"})
+	rep, err := te.run().openNotes(tctx(t), te.keys, []string{p + ".precinto"})
 	mustNoErr(t, err)
 	if rep.Count(OutRestored) != 1 || string(readFile(t, p)) != "the body\n" {
 		t.Fatalf("open %+v", rep.Units)
@@ -412,7 +411,7 @@ func TestCatAndOpenNotes(t *testing.T) {
 	if te.keys.purposes[len(te.keys.purposes)-1] != "open" {
 		t.Fatalf("purpose %v", te.keys.purposes)
 	}
-	if err := te.run().catNote(context.Background(), te.keys, p, &out); !errors.Is(err, ErrNotMarker) {
+	if err := te.run().catNote(tctx(t), te.keys, p, &out); !errors.Is(err, ErrNotMarker) {
 		t.Fatalf("cat of a non-marker: %v", err)
 	}
 }

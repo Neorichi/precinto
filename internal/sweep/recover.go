@@ -157,11 +157,12 @@ func (r *run) basesOfRecord(rec *journal.Record) (map[capsule.BaseID]dirHandle, 
 }
 
 // recoverSeal finishes or rolls back a seal (SPEC §10.5, D58b): the
-// operation directory always goes; a capsule at the journaled name that
-// is present and logged makes the seal continue as committed (resume
-// identity-checked unlinks, finish the receipt and the ledger); one that is
-// present without any log entry is deleted (the ephemeral key that could
-// verify it is gone); plaintext is never touched otherwise.
+// journaled temporary (capsule.TmpName of the final name) always goes; a
+// capsule at the journaled name that is present and logged makes the seal
+// continue as committed (resume identity-checked unlinks, finish the
+// receipt and the ledger); one that is present without any log entry is
+// deleted (the ephemeral key that could verify it is gone); plaintext is
+// never touched otherwise.
 func (r *run) recoverSeal(ctx context.Context, rec *journal.Record) *UnitResult {
 	kind := capsule.Kind("")
 	if rec.Kind == journal.KindMarkdown {
@@ -264,7 +265,9 @@ func (r *run) recoverSeal(ctx context.Context, rec *journal.Record) *UnitResult 
 	if err := r.rewriteReceipt(rec.Unit, kind, rec.Harness, bases, rec, shas, gen, oldp, baseDirs); err != nil {
 		return recoveredResult(rec, kind, OutFailed, failDetail(err))
 	}
-	if rec.LedgerSID != "" && rec.LedgerN > 0 {
+	if rec.LedgerSID != "" && rec.LedgerN > 0 && ur.removedAll {
+		// As after a seal that did not crash (S13): the ledger goes only
+		// with the last plaintext; files that stayed keep it managed.
 		_ = r.p.ledger.Archive(rec.Harness, rec.LedgerSID, rec.LedgerN)
 	}
 	o := OutSealed
