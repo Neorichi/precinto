@@ -38,14 +38,22 @@ You need Go 1.21 or newer and `make`. `go.mod` pins `toolchain go1.26.11`; with 
 | `make build-testing` | `bin/precinto-testing`, built with `-tags testing`, which honours `PRECINTO_HOME` and `PRECINTO_RUNTIME_DIR` for integration tests; never point it at real data |
 | `make build-linux` | cross-compiles for linux/amd64 and linux/arm64 |
 | `make test` | unit and integration tests, `-tags testing`; no network, no real harness data |
+| `make test-race` | the same tests under the race detector |
 | `make test-crash` | the crash-injection matrix of [TESTPLAN §4](docs/TESTPLAN.md#4-crash-injection-matrix), `-tags testing,failpoints` |
+| `make crossgroup` | the tests that need every area's real code (`-tags testing,crossgroup`), bounded at 8 minutes and printing every goroutine's stack on a hang |
+| `make crossgroup-crash` | the crash rows that need every area's real code (`-tags testing,crossgroup,failpoints`), over `internal/fsx`, `internal/capsule`, `internal/sweep`, `internal/live` and `test/integration` |
+| `make test-integration` | the cross-package flows of `test/integration` against the testing binary |
 | `make test-e2e` | opt-in end-to-end tests against real harnesses in throwaway homes (`PRECINTO_E2E=1`) |
 | `make vet` | `go vet` for the default and `testing,failpoints` tag sets, on darwin and on linux |
+| `make vet-crossgroup` | checks that the crossgroup tests compile on darwin and on linux |
 | `make fmt`, `make fmt-check` | run `gofmt -w`, or only check formatting |
 | `make arch` | the architecture contract (`internal/archtest`): import allowlist, layers, test-only helpers, environment access |
 | `make api-check`, `make api-doc` | check, or regenerate, the generated part of `docs/API.md` |
-| `make lint` | `fmt-check`, `vet`, `arch` and `api-check`, plus `staticcheck`, `govulncheck` and `shellcheck` when they are installed |
-| `make ci` | everything CI runs: `lint`, `build`, `build-linux` and `test` |
+| `make hygiene` | the fixture hygiene check over every `testdata/` directory |
+| `make codex-plugin-check` | checks that `plugins/codex/` still matches its recorded SHA-256 list (skipped until the list is recorded) |
+| `make lint` | `fmt-check`, `vet`, `vet-crossgroup`, `arch` and `api-check`, plus `staticcheck`, `govulncheck` and `shellcheck` when they are installed |
+| `make ci` | what CI runs on every change: `lint`, `build`, `build-linux`, `build-testing`, `test`, `hygiene` and `codex-plugin-check` (never the end-to-end tests) |
+| `make clean` | removes `bin/` |
 
 Before you send a change, run:
 
@@ -54,9 +62,10 @@ make fmt-check vet arch api-check
 go build ./... && CGO_ENABLED=0 go build ./... && GOOS=linux go build ./...
 make test
 make test-crash        # if you touched internal/fsx, internal/capsule, internal/sweep or internal/live
+make crossgroup        # if your change affects code another area calls
 ```
 
-CI also runs `make test-crash` nightly, validates the Claude Code plugin with `claude plugin validate --strict ./plugin` when `claude` is available, checks that `plugins/codex/` still matches its recorded hashes, and runs the fixture hygiene check over every `testdata/` directory.
+CI also runs `make test-crash` (nightly, and on changes under `internal/fsx`, `internal/capsule`, `internal/sweep` or `internal/live`), `make crossgroup` and `make crossgroup-crash` on darwin and on linux, validates the Claude Code plugin with `claude plugin validate --strict ./plugin` when `claude` is available, checks that `plugins/codex/` still matches its recorded hashes, and runs the fixture hygiene check over every `testdata/` directory.
 
 `make test-e2e` runs real harnesses (for example `claude -p` with a throwaway config directory and a small model) and uses your harness login, so it may consume API usage. Codex is never run against a real home in these tests. Run it only when your change needs it.
 
@@ -79,18 +88,18 @@ Every file belongs to exactly one area, and areas never share directories; the f
 The rules that follow from it:
 
 1. **Keep a change inside one area** when you can. Unexported code, new files and new tests in that area are fine.
-2. **Exported identifiers are a frozen contract.** Do not change an exported signature, struct field, constant, variable or type, not even in the package you are working on, without a contract change. The same goes for shared vocabularies: capsule kinds and base ids, the unit-key parts, attention codes, message ids and failpoint names.
+2. **Exported identifiers are a frozen contract.** Do not change an exported signature, struct field, constant, variable or type, not even in the package you are working on, without a contract change. The same goes for shared vocabularies: capsule kinds and base ids, the unit-key parts, attention codes, doctor check codes, message ids and failpoint names.
 3. **Need something from another area?** Write an unexported adapter in your own package, keep your tests green against the current contract, and describe the request in your pull request: package, identifier, current and proposed signature, why, and the adapter you used meanwhile. The maintainers then update the scaffold, `internal/archtest/allowlist.go` and `docs/API.md` (`make api-doc`) in one change.
 4. **Imports follow `internal/archtest/allowlist.go`.** Lower layers never import higher ones, production code never imports test helpers, and only `internal/paths` reads the process environment; every file that builds an `exec.Cmd` sets its `Env`. `go test ./internal/archtest` enforces this at every commit.
 5. **No new dependencies.** `go.mod` and `go.sum` are pinned; every allowed third-party import is already pinned by a blank import in the package that may use it.
 6. **Behaviour comes with tests**, in the same change, in the test layer that [docs/TESTPLAN.md](docs/TESTPLAN.md) assigns.
-7. **Helper programs for tests** (a scripted terminal program, a fake harness, a fake daemon) are `main` packages under the owning area's `testdata/`; any other new package needs a contract change.
+7. **Helper programs for tests** (a scripted terminal program, a fake harness, a fake daemon) are `main` packages under the owning area's `testdata/`, and they take a lifeline (see [Tests and fixtures](#tests-and-fixtures-never-real-user-data)); any other new package needs a contract change.
 
 ## Style
 
 - `gofmt`, `go vet` clean for every tag set on darwin and linux, `staticcheck` and `govulncheck` clean.
 - Errors are sentinel values checked with `errors.Is`, or `*ipc.Error` with a code; `cmd/precinto` maps them to exit codes. Error strings never contain file content, prompts or environment values.
-- User-visible text comes only from the message catalog in `internal/ui`. Messages name the folder and the next command, never include prompt text, titles or file content, and do not use the words "root", "grant", "soft" or "hard": on screen precinto says "folder", "locked", "paused" and "ended and sealed".
+- User-visible text comes from the message catalog in `internal/ui`: every text that hooks, the wrapper, the shell integration and the daemon show, every prompt another component or a test waits for, and every refusal. The only exceptions are the CLI's usage errors and command summaries, in `cmd/precinto/text.go`, and doctor's findings, in `internal/doctor/text.go`, which follow the same rules, each checked by its owner's tests. Messages name the folder and the next command, never include prompt text, titles or file content, and do not use the words "root", "grant", "soft" or "hard" (except in the flag `--root`): on screen precinto says "folder", "locked", "paused" and "ended and sealed".
 - Secrets (identities, passphrases, PINs, file keys, recovery keys) live in memguard locked buffers or enclaves, never in a `string` and never in JSON. Do not use `memguard.CatchInterrupt` or `memguard.CatchSignal`.
 - No content in metadata: ledgers, journals, receipts, queue entries, the capsule log, logs and errors hold paths, ids and statistics only.
 - Every blocking operation takes a `context.Context` and returns promptly when it is cancelled.
@@ -103,9 +112,11 @@ The rules that follow from it:
 - **Synthetic content only.** Payloads, transcripts, rollouts and notes are generated by `claudetest` and `codextest` with marker strings from `testkit.Marker`. Golden files never contain real prompts, paths, emails, tokens or non-fixture UUIDs; `testkit.Hygiene` checks every `testdata/` directory in CI. Fixture UUIDs use the zero-prefixed form `00000000-0000-<v>000-8000-<12 hex>` that the hygiene check recognises.
 - **Leak checks by marker.** Security and end-to-end tests search the whole fake home (except `capsules/`) for markers after each scenario; any hit fails.
 - **Deterministic time and processes.** State-machine and liveness tests use `fakeplatform.Clock` and `fakeplatform.Procs`. Real child processes are used only where kernel behaviour is the subject, and a test never signals a process it did not start.
+- **Helpers never outlive their test.** A helper process carries a lifeline (an inherited pipe or stdin) and exits when it closes. Every test kills and reaps every process it starts, including their sessions and descendants, and a package fails when a helper outlives it.
+- **Running the suite inside an agent session.** `testkit.NewHome` sets `PRECINTO_TEST_ANCESTRY_STOP` to the test process, so in `-tags testing` builds precinto's agent detection ignores the test process and its ancestors (your Claude Code or Codex session) and still checks every process the test starts; environment markers and the no-terminal rule still apply, and production builds never read the variable.
 - **No real side effects.** Outside the opt-in end-to-end suite, tests never show an unlock dialog, lock the screen, ask for a password or Touch ID, touch the keychain or install a service.
 - **External test packages** (`package foo_test`) by default; internal tests only for unexported helpers. Unit tests must not need build tags.
-- **Hooks never take a binary from the environment.** To make a real harness run the testing build, give the harness a throwaway `HOME` whose precinto link points at `testkit.BuildBinary(t, "testing")`; `PRECINTO_BIN` and `PRECINTO_DEV` must have no effect.
+- **Hooks never take a binary from the environment.** To make a real harness run the testing build, give the harness a throwaway `HOME` whose precinto link points at `testkit.BuildBinary(t, "testing")`; `PRECINTO_BIN` and `PRECINTO_DEV` must have no effect. Hook mode ignores every `PRECINTO_*` variable, even in testing builds, so a test that runs `precinto hook` gives it a `testkit.ShortTempDir` as `HOME`.
 - Only `internal/testkit` defines the `-update` flag for golden files.
 
 ## Developer Certificate of Origin

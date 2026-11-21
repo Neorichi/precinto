@@ -47,7 +47,7 @@ CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0      # in the environment of the launch
 ```
 
 - If you pass your own `--settings`, precinto adds nothing and prints a notice. Add the three keys to your own settings to keep those summaries off.
-- `precinto protect DIR --claude-settings` writes these settings into the project instead, so that they also apply to sessions started without precinto. This is the only case in which precinto writes Claude Code settings into your repository.
+- `precinto protect DIR --claude-settings` also merges the three settings into the folder's `.claude/settings.local.json` (Claude Code's local settings file, not meant to be committed), so that they also apply to sessions started without precinto. Every other key in that file is kept, and `precinto unprotect` removes the keys whose values precinto wrote. This is the only case in which precinto writes Claude Code settings into your project.
 - Manual and automatic compaction stay on: sessions need them to keep working, and they are gated while the folder is locked (next sections).
 - The trade-off: with idle compaction off, nothing is summarized while you are away, so the first request after a long break still carries the whole context.
 

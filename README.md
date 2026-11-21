@@ -138,21 +138,23 @@ precinto unlock --root ~/work/acme  #    or name it
 ```
 
 1. **`precinto init`** creates your vaults and factors. On macOS the default factor is a Secure Enclave key made with `age-plugin-se`: it unlocks with Touch ID, or with your Mac password when no Touch ID is paired. On Linux it asks for a passphrase (at least 12 characters; it can suggest a 7-word one). Inside tmux, screen or SSH, where the macOS dialog cannot appear, it offers a passphrase as a second factor. Then it shows your recovery key once, on a cleared screen, and asks you to type back its last 4 characters (`--recovery-out FILE` writes it to a file instead). On macOS it also offers the background re-seal service. Test the recovery key with `precinto recover --verify`.
-2. **`precinto protect DIR`** creates the folder's vault and registers it. Options: `--md ledger|all|off` (which Markdown files to seal: by default only those an agent wrote), `--on-enter prompt|notify|off`, `--harness LIST` and `--claude-settings`. It offers to add `*.md.precinto` to the repository's local `.git/info/exclude`, which is never committed. Claude Code sessions you ran in that folder before protecting it show up in `precinto status`; seal them with `precinto seal --adopt`. Codex conversations from before stay in your own Codex home, which precinto does not seal.
-3. **`precinto shell-init zsh|bash|fish`** prints shell functions for your harnesses and a hook that offers to unlock when you enter a locked folder. `--install` adds one line to your shell's rc file after asking; you can also add it yourself, for example `eval "$(precinto shell-init zsh)"`, or `precinto shell-init fish | source` for fish.
-4. **`precinto integrate HARNESS`** installs precinto's plugin through the harness's own plugin commands (`--print` shows the steps instead). It refuses Claude Code older than 2.1.295. Codex runs plugin hooks only after you trust them: start Codex in the protected folder through precinto, run `/hooks` and trust precinto. precinto never trusts them for you. Codex hooks are optional; without them Codex history is still sealed when Codex exits, but prompts are not paused while the folder is locked.
+2. **`precinto protect DIR`** creates the folder's vault and registers it. Options: `--md ledger|all|off` (which Markdown files to seal: by default only those an agent wrote), `--on-enter prompt|notify|off`, `--harness LIST` (the harnesses precinto manages in the folder, by default `claude-code,codex`) and `--claude-settings` (see [What does precinto change in my projects?](#what-does-precinto-change-in-my-projects)). When Codex is installed, it also asks whether precinto should keep a separate, sealed Codex history for the folder. If you say no, the folder does not manage Codex: `precinto run codex` there asks the same question again and starts Codex only after a yes. `protect` offers to add `*.md.precinto` to the repository's local `.git/info/exclude`, which is never committed. Claude Code sessions you ran in that folder before protecting it show up in `precinto status`; seal them with `precinto seal --adopt`. Codex conversations from before stay in your own Codex home, which precinto does not seal.
+3. **`precinto shell-init zsh|bash|fish`** prints shell functions for your harnesses and a hook that offers to unlock when you `cd` into a locked folder (Enter unlocks, any other key skips). The hook asks at most once per lock in each shell, and never in a subshell or inside a session that precinto started. `--install` asks first, then adds exactly one line to your shell's rc file, once: `eval "$(precinto shell-init zsh)"` to `~/.zshrc`, `eval "$(precinto shell-init bash)"` to `~/.bashrc`, or `precinto shell-init fish | source` to `~/.config/fish/config.fish`. You can add the same line yourself instead. On macOS, Terminal starts bash as a login shell, which reads `~/.bashrc` only if your `~/.bash_profile` sources it.
+4. **`precinto integrate HARNESS`** installs precinto's plugin through the harness's own plugin commands (`--print` shows the steps instead). It refuses Claude Code older than 2.1.295. Codex runs plugin hooks only after you trust them: start Codex in the protected folder through precinto, run `/hooks` and trust precinto. precinto never trusts them for you. Codex keeps that trust in the Codex home it uses, which for a protected folder is the folder's own home, so you may have to trust precinto once in each protected folder: whether trust you gave in your own Codex home carries over has not been verified yet. Codex hooks are optional; without them Codex history is still sealed when Codex exits, but prompts are not paused while the folder is locked.
 5. **`precinto run HARNESS [ARGS]`** (or the shell function) checks that the folder is unlocked, asking for you if needed, restores what the session needs, starts the harness, and seals the session when it exits. Sessions that never touch a protected folder are left alone.
-6. **`status`, `lock`, `unlock`**: see [Everyday commands](#everyday-commands). After an unlock, precinto restores the folder's five most recent sessions, its notes and its prompt history in the background.
+6. **`status`, `lock`, `unlock`**: see [Everyday commands](#everyday-commands). `precinto unlock` with no flag unlocks the folder you are in. Outside every protected folder, in a terminal, it unlocks the only locked folder, or lists the locked folders and asks you to pick one by number (or all of them, after you type `unlock`). Without a terminal it can unlock only the folder of the current directory. After an unlock, precinto restores the folder's five most recent sessions, its notes and its prompt history in the background.
 
 ## Everyday commands
 
 | Command | What it does |
 |---|---|
 | `precinto status [--json] [--check]` | folders and their state, sessions, files still unencrypted and why, hook health, and what needs attention (each item names the command that fixes it). `--check` exits 3 if a locked folder still has unencrypted files. |
-| `precinto unlock [--root DIR \| --all \| --global] [--for DUR] [--extend]` | unlock with your presence. `--all` asks once per folder after a typed confirmation. Unlocking a folder unlocks it in every terminal. |
-| `precinto lock [--root DIR \| --all] [--end] [--let-finish] [--force]` | lock now (every folder by default). `--end` also ends sessions; `--force` does not wait for a compaction in progress. |
+| `precinto unlock [--root DIR \| --all \| --global] [--for DUR] [--factor NAME] [--extend]` | unlock with your presence: the folder you are in or the one you name; outside every folder, the only locked one or one you pick. `--all` asks once per folder after a typed confirmation; `--global` unlocks the `global` vault. Unlocking a folder unlocks it in every terminal. |
+| `precinto lock [--root DIR \| --all] [--end] [--force] [--let-finish]` | lock now (every folder by default). `--end` also ends sessions; `--force` does not wait for a compaction in progress. |
 | `precinto run [--harness H] [--no-pty] -- CMD [ARGS]` | run a harness through precinto |
 | `precinto resume [ID \| --last \| --pick]` | restore a Claude Code session and resume it |
+| `precinto restore [--root DIR] [--session ID] [--recent N] [--all] [--md] [--history]` | restore by hand; with no selection flag it restores what an unlock restores |
+| `precinto restore --global [--harness H]` | after `precinto unlock --global`: restore what belongs to no folder (Claude Code's global stores, the units of experimental harnesses) |
 | `precinto seal [--adopt] [--dry-run]` | seal now; never needs a key |
 | `precinto ls [--root DIR] [--conflicts]` | list sealed units and notes |
 | `precinto open FILE.md.precinto`, `precinto cat FILE.md.precinto` | restore a sealed note in place, or print it |
@@ -160,7 +162,7 @@ precinto unlock --root ~/work/acme  #    or name it
 | `precinto prune`, `precinto forget FILE\|UNIT` | delete old generations, or the sealed copies of a unit, after a typed confirmation |
 | `precinto doctor [--leaks] [HARNESS]` | read-only health checks; `--leaks` looks for copies outside precinto's reach |
 | `precinto service install\|uninstall\|status` | macOS: background re-seal every 10 minutes (it never holds keys) |
-| `precinto factor list\|add\|remove\|test`, `precinto recover --verify` | manage factors; test the recovery key |
+| `precinto factor list\|add\|remove\|test\|repin`, `precinto recover --verify` | manage factors (`repin` accepts an upgraded age plugin, see [the FAQ](#what-if-unlock-fails-after-i-upgrade-an-age-plugin)); test the recovery key |
 
 ## Configuration
 
@@ -184,9 +186,9 @@ Edits that **weaken** protection (removing a folder or a harness, raising a time
 | Harness | Support | How precinto connects |
 |---|---|---|
 | Claude Code | **Supported.** Verified on 2.1.329; 2.1.295 or later required | plugin hooks (`precinto integrate claude-code`) plus the wrapper |
-| Codex CLI | **Supported**, 0.154.x (verified from source; other versions get a warning until re-verified) | the wrapper gives each protected folder its own sealed Codex home; hooks are optional and need your trust in Codex |
+| Codex CLI | **Supported**, 0.154.x (verified from source; other versions get a warning until re-verified) | the wrapper gives each protected folder that manages Codex (precinto asks once per folder) its own sealed Codex home; hooks are optional and need your trust in Codex, possibly once per folder |
 | Factory Droid, Cursor, GitHub Copilot CLI | **Experimental**, unverified | hooks from the same plugin, enabled only with `precinto integrate <host> --experimental` |
-| Gemini CLI, Kimi Code, Qwen Code, OpenCode | **Experimental** | wrapper only, with a data-driven inventory; sealing is manual (`precinto seal --dormant <id> --experimental`) and nothing is restored automatically |
+| Gemini CLI, Kimi Code, Qwen Code, OpenCode | **Experimental** | wrapper only, with a data-driven inventory; sealing is manual (`precinto seal --dormant <id> --experimental`) into the `global` vault, and nothing is restored automatically: run `precinto restore --global --harness <id>` after `precinto unlock --global` |
 
 What is sealed for each harness, how the hooks and the wrapper fit in, and the known caveats: [docs/HARNESSES.md](docs/HARNESSES.md).
 
@@ -201,9 +203,9 @@ precinto shortens the time your sessions sit on disk as plaintext. It does not m
 - **Prompts typed while locked.** They are not sent to the model, but the harness may still write them into the transcript and its prompt history. The transcript copy is sealed with the session; the history line waits for the next history rotation, which needs every Claude Code process to be closed. Do not type secrets into a locked session.
 - **Sessions started without the wrapper.** In IDE terminals, desktop apps or `command claude`, a lock only stops the model: the conversation stays visible and local commands such as `/export` or `/copy` still work. If such a session has no working hooks either (plugin disabled, `--bare`, `disableAllHooks`), an interactive Claude Code session is ended at lock and any other one is only reported.
 - **Hooks that fail open.** Codex 0.154 lets an action proceed when a hook times out, and runs no hook you have not trusted. Claude Code 2.1.329 has a flag-gated path that can run a compaction despite precinto's block. Copilot CLI cannot block prompts. If the precinto binary crashes, its shim blocks only in sessions whose working directory or project directory is inside a protected folder.
-- **Codex started without precinto** in a protected folder writes to your own Codex home, which precinto never seals; `status` and `doctor` count those conversations.
+- **Codex started without precinto** in a protected folder writes to your own Codex home, which precinto never seals; `status` and `doctor` count those conversations. If you trusted precinto's hooks in your own Codex home, they block such a session in a folder that manages Codex.
 - **Metadata.** Folder paths, how many sessions there are, capsule sizes and times can be read without a key. Titles and content cannot.
-- **A determined program running as you.** Agent detection and typed confirmations stop accidents and prompt-injected agents, not a program that fakes a terminal. precinto also trusts your `$HOME`, your shell's `PATH` and its own binary.
+- **A determined program running as you.** Agent detection and typed confirmations stop accidents and prompt-injected agents, not a program that fakes a terminal. precinto also trusts your `$HOME`, your shell's `PATH` and its own binary. On Linux, precinto can check its daemon only by user, lock-file holder and process name, so such a program could stand in for the daemon.
 
 Also in v0.2: a large session is re-encrypted in full every time it changes; prompt-history lines are sealed only when no Claude Code process runs anywhere, and project memory only when none works in that folder's repository. The full list, with the reasons, is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
@@ -239,8 +241,12 @@ Yes. All sessions in a folder share its lock: one unlock opens the folder in eve
 
 - precinto shows it only to a person at a real terminal, never inside an agent session (it would end up in a transcript and be sent to the model provider): once, on a cleared screen, asking you to type back its last 4 characters. `--recovery-out FILE` writes it to a file instead, but not inside a protected folder, a harness's data directory or a synced folder.
 - Check it with `precinto recover --verify`; until you do, `precinto status` says "recovery key: never tested".
-- `precinto recover` uses it, and so does `precinto vault repair --recovery` after a vault file was tampered with.
+- `precinto recover` unlocks every folder with it, so that you can enroll a replacement factor with `precinto factor add`; `precinto vault repair --recovery` uses it after a vault file was tampered with.
 - If you lose the recovery key while your normal factor still works, nothing is lost, but v0.2 cannot issue a new one (`rekey` is planned for a later version).
+
+### What if unlock fails after I upgrade an age plugin?
+
+precinto pins every age plugin it runs (`age-plugin-se`, `age-plugin-yubikey` and others) by path and SHA-256, so that a binary someone replaced never handles your vault keys. After an upgrade the hash no longer matches: unlocking with that factor fails (exit 5), and `precinto doctor` reports `plugin-pin`. If you expected the upgrade, re-pin the plugin yourself, in your own terminal: `precinto factor repin se`, or the factor's name from `precinto factor list`. It shows the pinned path, the old and the new SHA-256, and the file's owner and modification time, asks you to type `repin`, and then updates the pin in every vault. It accepts only a regular file owned by you or by root that nobody else can write, and it is refused inside an agent session. If you did not expect the change, do not re-pin: `precinto recover` can still unlock your folders with the recovery key.
 
 ### Can an agent unlock the folder or read sealed files?
 
@@ -252,11 +258,11 @@ Every seal and restore is journaled and crash-safe: a crash or a power cut at an
 
 ### What does precinto change in my projects?
 
-Very little. Capsules live in precinto's own directory. A sealed note leaves a `NAME.md.precinto` marker (plain text, no ciphertext); losing a marker loses nothing, and the note still comes back at unlock. precinto adds `*.md.precinto` to a repository's local `.git/info/exclude` only if you accept when you protect the folder, and writes Claude Code settings into a project only if you ask with `protect --claude-settings`. Git-tracked files and instruction files (`README.md`, `CLAUDE.md`, `AGENTS.md` and others) are never sealed.
+Very little. Capsules live in precinto's own directory. A sealed note leaves a `NAME.md.precinto` marker (plain text, no ciphertext); losing a marker loses nothing, and the note still comes back at unlock. precinto adds `*.md.precinto` to a repository's local `.git/info/exclude` only if you accept when you protect the folder. It writes Claude Code settings into a project only if you ask with `protect --claude-settings`: it then merges its three settings (no idle compaction, no away summary, no precomputed compaction) into the folder's `.claude/settings.local.json`, Claude Code's local settings file that is not meant to be committed, and keeps every other key there; `unprotect` removes those keys again, unless you changed their values. Git-tracked files and instruction files (`README.md`, `CLAUDE.md`, `AGENTS.md` and others) are never sealed.
 
 ### How do I stop protecting a folder?
 
-`precinto unprotect DIR`. It restores everything of the folder first, so the folder must be unlocked, and it asks you to type a confirmation. precinto never deletes capsules on its own: only `prune`, `forget` and `unprotect` do, after listing what they will delete and asking for a typed confirmation.
+`precinto unprotect DIR`, in your own terminal. It restores everything of the folder first, so the folder must be unlocked, and it asks you to type a confirmation. Then it removes the folder from precinto's configuration, together with the Claude Code settings that `--claude-settings` wrote, but it deletes nothing: the folder's vault and every capsule stay in precinto's directory. If you protect the same folder again later, precinto reuses that vault, so the old capsules can be restored again. precinto never deletes capsules on its own: only `prune` and `forget` do, after listing what they will delete and asking for a typed confirmation.
 
 ### Why does `precinto doctor` warn about folders under Documents, Downloads or Desktop?
 
