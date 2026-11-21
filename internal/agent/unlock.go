@@ -289,6 +289,11 @@ func (d *daemon) unlock(ctx context.Context, cs *connState, req ipc.Request) ipc
 	d.mu.Lock()
 	resp.Pending = pendingText(d.pol.pending)
 	d.mu.Unlock()
+	if len(resp.Pending) == 0 && cs.ttyUnlocked {
+		// D91: the pin waits for an authenticated re-pin; the user
+		// confirms the settings that weaken the defaults instead.
+		resp.Pending = pendingText(d.unverifiedPending())
+	}
 	return ipc.Response{Unlock: &resp}
 }
 

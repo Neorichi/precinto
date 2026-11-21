@@ -660,11 +660,11 @@ func (d *Dir) createTemp(dirRel, pattern string) (*os.File, string, error) {
 	return nil, "", fmt.Errorf("fsx: could not create a temporary in %s", d.join(dirRel))
 }
 
-func (d *Dir) appendLine(rel string, line []byte) error {
+func (d *Dir) appendLine(rel string, line []byte, max int) error {
 	if l := len(line); l > 0 && line[l-1] == '\n' {
 		line = line[:l-1]
 	}
-	if len(line) > MaxLine || bytes.IndexByte(line, '\n') >= 0 {
+	if len(line) > max || bytes.IndexByte(line, '\n') >= 0 {
 		return fmt.Errorf("%w: bad line for AppendLine", ErrUnsafe)
 	}
 	pfd, name, release, err := d.parent(rel, false)

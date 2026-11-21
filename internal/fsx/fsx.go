@@ -216,7 +216,12 @@ func (d *Dir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 // most MaxLine bytes; an empty line appends only the newline (used to end
 // a torn last line). Parent directories are never created (failpoints
 // "fsx.write", "fsx.fsync").
-func (d *Dir) AppendLine(rel string, line []byte) error { return d.appendLine(rel, line) }
+func (d *Dir) AppendLine(rel string, line []byte) error { return d.appendLine(rel, line, MaxLine) }
+
+// AppendRecord is AppendLine for one record of up to MaxRecord bytes (a
+// long history line, D90): the same single O_APPEND write, opened and
+// synced the same way.
+func (d *Dir) AppendRecord(rel string, line []byte) error { return d.appendLine(rel, line, MaxRecord) }
 
 // Rename renames oldRel to newRel (both relative to d) and fsyncs the
 // affected directories.
@@ -298,6 +303,9 @@ func SyncDir(path string) error {
 // MaxLine bounds AppendLine (one write(2) of at most this many bytes plus
 // the newline).
 const MaxLine = 64 << 10
+
+// MaxRecord bounds Dir.AppendRecord.
+const MaxRecord = 64 << 20
 
 // WriteFileAtomic writes data to a temporary file next to path (perm masked
 // to owner bits, O_CREAT|O_EXCL|O_NOFOLLOW), FullSyncs it, renames it over

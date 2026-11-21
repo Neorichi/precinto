@@ -11,11 +11,14 @@ Status per host: **Claude Code** verified (2.1.329, min 2.1.295); **Codex** veri
 4. **Block texts** come from the `internal/ui` catalog (C3.*) and never contain OS error strings (HA5). `<folder>` is the `~`-shortened root path.
 5. **Exit-code contract (D43, D56).** The binary exits `0` (allow, or a JSON block that needs exit 0), `10` (intended "exit 2" block, Codex), or `1` (internal failure). The shim passes stdout through and exits 0 on `0`, exits 2 on `10`, and handles anything else (1, a Go runtime exit 2, a signal) like a missing binary: stdout discarded, then the `roots.list` rule of §5 step 3. The binary never exits 1 on purpose for a managed gate event: it prints `hook.FailClosed` output instead.
 6. **Deadlines.** The hook prints its decision before its own deadline, strictly below the harness timeout (§1), so the harness timeout never fires.
-7. **Host detection (HA21, D56; `hook.DetectHost`).** First match wins:
-   1. other hosts' markers: `CURSOR_VERSION`/`CURSOR_PLUGIN_ROOT` ⇒ cursor; `COPILOT_*` or camelCase event names ⇒ copilot; `DROID_PLUGIN_ROOT`/`FACTORY_PROJECT_DIR` ⇒ droid;
-   2. Codex markers: `turn_id` in the payload, or `PLUGIN_ROOT` set and either the label is `codex` or neither `CLAUDE_PID` nor `CLAUDECODE` is set ⇒ codex (Claude sets only `CLAUDE_PLUGIN_ROOT`);
-   3. Claude markers: `CLAUDE_PID`, `CLAUDECODE=1` or `CLAUDE_PROJECT_DIR` ⇒ claude-code;
-   4. otherwise the argv label, which names the hooks file that invoked the hook (`claude-code` from `plugin/hooks/hooks.json`, `codex` from `plugins/codex/hooks/codex.json`, `cursor`, `copilot`).
+7. **Host detection (HA21, D56, D92; `hook.DetectHost`).** First match wins. Claude Code and Codex pass the user's whole environment to hooks, so other hosts' variables are often only inherited: they never override Claude's or Codex's markers.
+   1. Codex: the argv label `codex` (`plugins/codex/hooks/codex.json`, loaded only by Codex) or `turn_id` in the payload ⇒ codex;
+   2. the labels `cursor` and `copilot` ⇒ those hosts;
+   3. a camelCase event name (only Copilot and Cursor generate them) ⇒ cursor when `CURSOR_VERSION`/`CURSOR_PLUGIN_ROOT` is set, else copilot;
+   4. Claude markers: `CLAUDE_PID`, `CLAUDECODE=1` or `CLAUDE_PROJECT_DIR` (with a PascalCase payload) ⇒ claude-code, whatever `COPILOT_*`, `CURSOR_*`, `DROID_*` or `FACTORY_*` variables are set;
+   5. `PLUGIN_ROOT` set and neither `CLAUDE_PID` nor `CLAUDECODE` ⇒ codex (Claude sets only `CLAUDE_PLUGIN_ROOT`);
+   6. other hosts' variables, by exact name only (no `COPILOT_` prefix): `CURSOR_VERSION`/`CURSOR_PLUGIN_ROOT` ⇒ cursor; `DROID_PLUGIN_ROOT`/`FACTORY_PROJECT_DIR` ⇒ droid;
+   7. otherwise the argv label, which names the hooks file that invoked the hook (`claude-code` from `plugin/hooks/hooks.json`, `codex`, `cursor`, `copilot`).
 
    A missing marker therefore never makes a gate fail open: `CLAUDE_PID` was observed only on SessionStart, UserPromptSubmit, PostToolUse, Stop and SessionEnd (never on PreToolUse, PreCompact or PermissionRequest), and Codex SessionStart/SessionEnd payloads have no `turn_id`. Only an unrecognised label with no marker is "unknown": its gate events whose cwd or `CLAUDE_PROJECT_DIR` lies inside a root exit 1 (the shim then applies §5 step 3), everything else exits 0. A Claude-format hook firing inside another host answers in that host's format or exits 0. HA21 de-duplication (`state/hookdedupe/`) applies only to non-gate events of Cursor and Copilot, keyed by (host, session, event, prompt id, tool name, paths, source, reason); gate events are never suppressed.
 

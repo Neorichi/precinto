@@ -309,14 +309,11 @@ func (d *daemon) loadFactors(id string) {
 // creation, factor enrollment, repair).
 func (d *daemon) refreshFactors(id string) { d.loadFactors(id) }
 
-// pinentryAvailable reports whether a pinentry program is on the PATH.
+// pinentryAvailable reports whether a pinentry program the daemon would
+// run is on the PATH (D97: a trusted one only).
 func (d *daemon) pinentryAvailable() bool {
-	for _, n := range pinentryNames {
-		if _, err := paths.LookPath(d.o.Env, n); err == nil {
-			return true
-		}
-	}
-	return false
+	_, err := findPinentry(d.o.Env)
+	return err == nil
 }
 
 // bootstrap feeds the sessions the ledger shows as running (SPEC §13.1).

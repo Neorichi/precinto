@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/precinto/precinto/internal/fsx"
 )
@@ -159,6 +161,20 @@ func enrolledPath(f Factor) string {
 	return f.PluginPath
 }
 
+// unsafeShownPath reports a path that is not valid UTF-8 or holds C0, DEL,
+// C1 or Unicode format (Cf: bidi overrides, zero-width) characters (D96).
+func unsafeShownPath(p string) bool {
+	if !utf8.ValidString(p) {
+		return true
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // pluginTarget implements PluginTarget: the enrolled path resolved through
 // symlinks, which must keep the pinned binary's name and pass
 // checkRepinBinary (D75, D80).
@@ -167,13 +183,21 @@ func pluginTarget(f Factor) (string, error) {
 	if !filepath.IsAbs(link) || filepath.Clean(link) != link || f.PluginPath == "" {
 		return "", fmt.Errorf("%w: factor %q has no absolute enrolled plugin path", fsx.ErrUnsafe, f.Name)
 	}
+	if unsafeShownPath(link) || unsafeShownPath(f.PluginPath) {
+		return "", fmt.Errorf("%w: the plugin paths of factor %q hold control or invisible characters", fsx.ErrUnsafe, f.Name)
+	}
 	real, err := filepath.EvalSymlinks(link)
 	if err != nil {
 		return "", err
 	}
 	real = filepath.Clean(real)
+	if unsafeShownPath(real) {
+		// D96: a genuine Homebrew path never holds them; shown to the
+		// user who decides the repin, they could repaint the screen.
+		return "", fmt.Errorf("%w: the binary the plugin link of factor %q leads to has control or invisible characters in its path", fsx.ErrUnsafe, f.Name)
+	}
 	if want := filepath.Base(f.PluginPath); filepath.Base(real) != want {
-		return "", fmt.Errorf("%w: %s resolves to %s, not to a binary named %s", fsx.ErrUnsafe, link, real, want)
+		return "", fmt.Errorf("%w: %q resolves to %q, not to a binary named %q", fsx.ErrUnsafe, link, real, want)
 	}
 	if err := checkRepinBinary(real); err != nil {
 		return "", err

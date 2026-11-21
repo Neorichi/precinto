@@ -1,5 +1,5 @@
 {
-  "comment": "host mismatch (HA21): Cursor has no gate for this event; the Claude-format hook only observes",
+  "comment": "inherited host variables (D92): Claude's markers win over CURSOR_VERSION in the environment; the hook blocks in Claude's format",
   "args": [
     "claude-code",
     "PreCompact"
@@ -66,16 +66,23 @@
   },
   "want": {
     "exit": 0,
-    "stdout": "",
+    "stdout": "{\"decision\":\"block\",\"reason\":\"precinto: compaction is paused while ~/work/acme is locked.\"}",
     "stderr": "",
     "calls": [
       {
-        "op": "activity",
+        "op": "gate",
         "req": {
           "harness": "claude-code",
+          "host": "claude-code",
+          "event": "PreCompact",
           "sid": "00000000-0000-4000-8000-000000000001",
-          "kind": "compact_begin",
-          "at": "2026-11-21T09:00:00Z"
+          "cwd": "/u/work/acme",
+          "project_dir": "/u/work/acme",
+          "roots": [
+            "root-acme"
+          ],
+          "trigger": "auto",
+          "pid": 4242
         }
       }
     ],
@@ -85,7 +92,6 @@
         "t": "2026-11-21T09:00:00Z",
         "type": "start",
         "harness": "claude-code",
-        "host": "cursor",
         "sid": "00000000-0000-4000-8000-000000000001",
         "proc": {
           "pid": 4242,
@@ -103,7 +109,6 @@
         "t": "2026-11-21T09:00:00Z",
         "type": "taint",
         "harness": "claude-code",
-        "host": "cursor",
         "sid": "00000000-0000-4000-8000-000000000001",
         "proc": {
           "pid": 4242,

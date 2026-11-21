@@ -1,5 +1,5 @@
 {
-  "comment": "host mismatch (HA21): a Claude-format hook running inside Cursor answers in Cursor's format",
+  "comment": "inherited host variables (D92): Claude's markers win over CURSOR_VERSION in the environment; the hook blocks in Claude's format",
   "args": [
     "claude-code",
     "UserPromptSubmit"
@@ -38,14 +38,14 @@
   },
   "want": {
     "exit": 0,
-    "stdout": "{\"continue\":false,\"user_message\":\"precinto: ~/work/acme is locked (idle 15 min). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.\"}",
+    "stdout": "{\"decision\":\"block\",\"reason\":\"precinto: ~/work/acme is locked (idle 15 min). Your message was not sent; press ↑ to get it back after unlocking. To unlock, run precinto unlock in any terminal.\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"suppressOriginalPrompt\":true}}",
     "stderr": "",
     "calls": [
       {
         "op": "gate",
         "req": {
           "harness": "claude-code",
-          "host": "cursor",
+          "host": "claude-code",
           "event": "UserPromptSubmit",
           "sid": "00000000-0000-4000-8000-000000000001",
           "prompt_id": "00000000-0000-4000-8000-0000000000a1",
@@ -64,7 +64,6 @@
         "t": "2026-11-21T09:00:00Z",
         "type": "start",
         "harness": "claude-code",
-        "host": "cursor",
         "sid": "00000000-0000-4000-8000-000000000001",
         "proc": {
           "pid": 0,
@@ -82,7 +81,6 @@
         "t": "2026-11-21T09:00:00Z",
         "type": "taint",
         "harness": "claude-code",
-        "host": "cursor",
         "sid": "00000000-0000-4000-8000-000000000001",
         "proc": {
           "pid": 0,

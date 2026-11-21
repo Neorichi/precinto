@@ -78,7 +78,8 @@ func TestIntegratePrint(t *testing.T) {
 	if code := e.run("integrate", "codex", "--print"); code != exitOK {
 		t.Fatalf("exit %d (%s)", code, e.stderr())
 	}
-	if !strings.Contains(e.stdout(), "plugin install precinto@precinto") || len(e.execs) != 1 {
+	// D94: Codex 0.154's plugin CLI installs with `add` (no `install`).
+	if !strings.Contains(e.stdout(), "plugin add precinto@precinto") || strings.Contains(e.stdout(), "plugin install") || len(e.execs) != 1 {
 		t.Fatalf("stdout %q execs %d", e.stdout(), len(e.execs))
 	}
 	if _, err := os.Lstat(e.h.Layout.BinLink); !os.IsNotExist(err) {

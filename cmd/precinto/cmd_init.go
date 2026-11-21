@@ -12,9 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"filippo.io/age"
 	"github.com/awnumar/memguard"
@@ -705,14 +708,16 @@ func (a *app) factorRepin(vs vaultStore, name string) int {
 		return exitOK
 	}
 	a.say(textRepinWhat, name)
+	// D96: every value is shown escaped when it holds anything but
+	// printable characters, so no path can repaint these lines.
 	if f.PluginLink != "" {
-		a.say(textRepinLine, "enrolled path", a.display(f.PluginLink))
+		a.say(textRepinLine, "enrolled path", shownValue(a.display(f.PluginLink)))
 	}
-	a.say(textRepinLine, "pinned binary", a.display(f.PluginPath))
-	a.say(textRepinLine, "pinned SHA-256", orUnknown(f.PluginSHA256))
-	a.say(textRepinLine, "current binary", a.display(target))
-	a.say(textRepinLine, "current SHA-256", cur.sha)
-	a.say(textRepinLine, "owner", cur.owner)
+	a.say(textRepinLine, "pinned binary", shownValue(a.display(f.PluginPath)))
+	a.say(textRepinLine, "pinned SHA-256", shownValue(orUnknown(f.PluginSHA256)))
+	a.say(textRepinLine, "current binary", shownValue(a.display(target)))
+	a.say(textRepinLine, "current SHA-256", shownValue(cur.sha))
+	a.say(textRepinLine, "owner", shownValue(cur.owner))
 	a.say(textRepinLine, "modified", cur.mtime.In(a.sys.loc).Format("2006-01-02 15:04"))
 	if err := a.typedConfirm(t, fmt.Sprintf("re-pinning %s to this binary", name), wordRepin); err != nil {
 		return exitLocked
@@ -1142,4 +1147,19 @@ func (a *app) recoverUse(ctx context.Context, key *memguard.LockedBuffer, t term
 	}
 	a.say(textRecovered, len(resp.Unlocked))
 	return exitOK
+}
+
+// shownValue returns s, or s quoted with Go escapes when it holds a rune
+// that is not printable or is a Unicode format character (bidi overrides,
+// zero-width): factor repin's lines decide a pin (D96).
+func shownValue(s string) string {
+	for _, r := range s {
+		if !unicode.IsPrint(r) || unicode.Is(unicode.Cf, r) {
+			return strconv.QuoteToASCII(s)
+		}
+	}
+	if !utf8.ValidString(s) {
+		return strconv.QuoteToASCII(s)
+	}
+	return s
 }

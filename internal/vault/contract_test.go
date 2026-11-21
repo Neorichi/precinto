@@ -547,3 +547,35 @@ func TestRepinCompletesAfterAPartialFailure(t *testing.T) {
 		t.Fatalf("after the second repin: global pins %s, root-acme %s; want %s in both", g, r, v2)
 	}
 }
+
+// D96 (SEC-F3): an enrolled link or a resolved binary whose path holds C0,
+// C1, DEL or Unicode format characters is refused: repin shows these paths
+// to the human who decides the pin.
+func TestPluginTargetRefusesControlCharacters(t *testing.T) {
+	for _, bad := range []string{"\x1b[2K", "a\rb", "a\nb", "a\u202eb", "a\u200bb", "a\x7fb", "a\u0085b"} {
+		base, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(base, bad, "bin")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		bin := filepath.Join(dir, "age-plugin-test")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(base, "age-plugin-test")
+		if err := os.Symlink(bin, link); err != nil {
+			t.Fatal(err)
+		}
+		f := vault.Factor{Name: "test", Kind: vault.FactorPlugin, PluginLink: link, PluginPath: filepath.Join(base, "old", "age-plugin-test")}
+		if _, err := vault.PluginTarget(f); !errors.Is(err, fsx.ErrUnsafe) {
+			t.Errorf("%q: PluginTarget = %v, want ErrUnsafe", bad, err)
+		}
+		f.PluginLink = filepath.Join(dir, "age-plugin-test")
+		if _, err := vault.PluginTarget(f); !errors.Is(err, fsx.ErrUnsafe) {
+			t.Errorf("%q in the enrolled path: PluginTarget = %v, want ErrUnsafe", bad, err)
+		}
+	}
+}

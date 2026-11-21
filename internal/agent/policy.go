@@ -41,11 +41,21 @@ func (d *daemon) loadPolicy() {
 	}
 	pinned, ok, perr := config.LoadPinned(d.l.PolicyPinned)
 	rootVault := d.rootVaultExists()
+	// D91: a pin that decodes but has a shape precinto never writes (no
+	// MAC, a malformed one, one for a vault outside its settings or for a
+	// vault that does not exist) is forged as well.
+	var serr error
+	if ok && perr == nil && rootVault {
+		serr = pinned.CheckShape(d.vaultExists)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pol = policyState{cfg: cfg, cfgStamp: fileStamp(d.l.ConfigFile), pinned: pinned, hasPinned: ok && perr == nil}
-	d.pol.forged = perr != nil
+	d.pol.forged = perr != nil || serr != nil
 	d.pol.tampered = d.pol.forged || (!ok && perr == nil && rootVault)
+	if serr != nil {
+		d.logf("policy.pinned is forged (%v): strictest settings until the next confirmation", serr)
+	}
 	d.recomputeLocked()
 }
 
@@ -161,6 +171,9 @@ func (d *daemon) verifyPinnedMAC(ctx context.Context, id string) {
 	}
 	got, err := d.deps.keyring.MAC(id, vault.InfoPolicy, data)
 	if err == nil && want != "" && got == want {
+		d.mu.Lock()
+		d.pol.verified = true // D91: authenticated by a vault key
+		d.mu.Unlock()
 		return
 	}
 	d.mu.Lock()
@@ -182,15 +195,38 @@ func (d *daemon) verifyPinnedMAC(ctx context.Context, id string) {
 // re-pins only when nothing weakening is pending and the pin was not
 // found forged (the user must see C13.tampered and confirm), so a forged
 // pin never heals itself.
+//
+// D91: a pin no vault key has authenticated in this daemon's lifetime
+// (the daemon restarted and no folder the pin lists was unlocked yet) is
+// never re-pinned without a confirmation either: re-pinning it would give
+// a forged pin genuine MACs.
 func (d *daemon) pinPolicy(ctx context.Context, confirmed bool) error {
 	d.mu.Lock()
 	cfg := d.pol.cfg
-	blocked := len(d.pol.pending) > 0 || d.pol.forged
+	blocked := len(d.pol.pending) > 0 || d.pol.forged || (d.pol.hasPinned && !d.pol.verified)
 	d.mu.Unlock()
 	if blocked && !confirmed {
 		return errPending
 	}
 	return d.writePin(ctx, cfg)
+}
+
+// unverifiedPending lists, for a TTY unlock whose re-pin waits because no
+// vault key authenticated the pin yet (D91), what config.toml weakens
+// relative to the compiled-in defaults: the settings the user confirms.
+func (d *daemon) unverifiedPending() []config.Change {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.pol.hasPinned || d.pol.verified || len(d.pol.pending) > 0 {
+		return nil
+	}
+	var out []config.Change
+	for _, c := range config.Diff(config.Default(), d.pol.cfg) {
+		if c.Weakening {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // pinFirst writes the first pin when the first root vault is created
@@ -218,7 +254,7 @@ func (d *daemon) pinFirst(ctx context.Context) error {
 func (d *daemon) pinEnforced(ctx context.Context) error {
 	d.mu.Lock()
 	eff := d.pol.eff
-	blocked := d.pol.tampered || d.pol.forged || !d.pol.hasPinned
+	blocked := d.pol.tampered || d.pol.forged || !d.pol.hasPinned || !d.pol.verified
 	d.mu.Unlock()
 	if blocked {
 		return errPending
@@ -226,16 +262,44 @@ func (d *daemon) pinEnforced(ctx context.Context) error {
 	return d.writePin(ctx, eff)
 }
 
-// writePin saves cfg as the pinned policy with one MAC per unlocked vault.
+// errNoPinVault: no unlocked vault may sign the pin (D91).
+var errNoPinVault = errors.New("agent: no unlocked vault of these settings to sign the pinned policy")
+
+// writePin saves cfg as the pinned policy (D91): one MAC per unlocked
+// vault that is "global" or a root of cfg; when the settings are the ones
+// pinned before, the earlier MACs of vaults locked now are kept, so a pin
+// collects one MAC per folder (and a planted entry stays a tripwire,
+// checked at that vault's next unlock). It refuses when no vault
+// qualifies: a pin without a MAC is forged.
 func (d *daemon) writePin(ctx context.Context, cfg config.Config) error {
 	macs := map[string]string{}
 	data := config.Canonical(cfg)
+	qualifies := func(id string) bool {
+		_, isRoot := cfg.RootByID(id)
+		return isRoot || id == vault.GlobalID
+	}
 	for _, id := range d.deps.keyring.IDs() {
+		if !qualifies(id) {
+			continue
+		}
 		mac, err := d.deps.keyring.MAC(id, vault.InfoPolicy, data)
 		if err != nil {
 			return fmt.Errorf("agent: policy MAC: %w", err)
 		}
 		macs[id] = mac
+	}
+	if len(macs) == 0 {
+		return errNoPinVault
+	}
+	d.mu.Lock()
+	prev, hadPin := d.pol.pinned, d.pol.hasPinned
+	d.mu.Unlock()
+	if hadPin && string(config.Canonical(prev.Config)) == string(data) {
+		for id, mac := range prev.MACs {
+			if _, have := macs[id]; !have && qualifies(id) && !d.deps.keyring.Has(id) {
+				macs[id] = mac
+			}
+		}
 	}
 	p := config.Pinned{Version: config.PinnedVersion, ConfirmedAt: d.clock.Now().UTC(), Config: cfg, MACs: macs}
 	if err := config.SavePinned(d.l.PolicyPinned, p); err != nil {
@@ -243,7 +307,7 @@ func (d *daemon) writePin(ctx context.Context, cfg config.Config) error {
 	}
 	d.mu.Lock()
 	before := d.pol.eff
-	d.pol.pinned, d.pol.hasPinned, d.pol.tampered, d.pol.forged = p, true, false, false
+	d.pol.pinned, d.pol.hasPinned, d.pol.tampered, d.pol.forged, d.pol.verified = p, true, false, false, true
 	d.recomputeLocked()
 	eff := d.pol.eff
 	d.mu.Unlock()

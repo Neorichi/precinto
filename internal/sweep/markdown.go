@@ -304,6 +304,10 @@ type noteCand struct {
 	writers []harness.Unit     // session units still present as plaintext
 	procs   []ledgerProcsEntry // ledger sessions that list it
 	pending bool               // from the pending-notes index (its session is sealed)
+	// restoredFrom is the unit key of the note's receipt: precinto restored
+	// it here (D83), at its own relpath or at a moved marker's location.
+	restoredFrom string
+	restoredAt   time.Time
 }
 
 type ledgerProcsEntry struct {
@@ -340,6 +344,26 @@ func (r *run) noteCandidates(ctx context.Context, root config.Root) map[string]*
 		if c := add(p); c != nil {
 			c.pending = true
 		}
+	}
+	// D83: every note a restore placed is a candidate at the path its
+	// receipt records, whether or not the session that wrote it came back:
+	// the unlock worker restores every note of the folder but only the
+	// recent sessions, and a sealed note has left the pending index.
+	for _, rn := range r.restoredNotes(root) {
+		c := add(rn.abs)
+		if c == nil {
+			continue
+		}
+		// Two receipts naming one path: the path's own unit wins, else
+		// the most recent restore.
+		ownKey := r.noteKeyOf(root, c.rel)
+		switch {
+		case c.restoredFrom == "", rn.key == ownKey:
+		case c.restoredFrom != ownKey && rn.at.After(c.restoredAt):
+		default:
+			continue
+		}
+		c.restoredFrom, c.restoredAt = rn.key, rn.at
 	}
 	for _, ad := range r.e.Adapters {
 		if ad == nil {
@@ -380,6 +404,69 @@ func (r *run) noteCandidates(ctx context.Context, root config.Root) map[string]*
 		})
 	}
 	return out
+}
+
+// restoredNote is one note a restore placed: the unit key of its receipt,
+// the absolute path the receipt records and when it was restored.
+type restoredNote struct {
+	key string
+	abs string
+	at  time.Time
+}
+
+// restoredNotes lists, for every logged note unit of the root, the note
+// file its receipt records (D83). Conflict copies are left to resolve
+// (they are plaintext by design until the user decides, SPEC §11.3).
+func (r *run) restoredNotes(root config.Root) []restoredNote {
+	all, err := r.log.All()
+	if err != nil {
+		return nil
+	}
+	var out []restoredNote
+	for unit, entries := range unitGroups(all) {
+		n, ok := newestEntry(entries)
+		if !ok || n.Kind != string(capsule.KindMarkdown) || !contains(n.RootIDs, root.ID) || !validKey(unit) {
+			continue
+		}
+		rd, ok, err := r.loadReceipt(unit)
+		if err != nil || !ok || rd.Unit != unit {
+			continue
+		}
+		for _, f := range rd.Files {
+			if f.Absent || f.Base != capsule.BaseRoot || isConflictCopy(f.Rel) || !noteTargetOK(f.Rel) {
+				continue
+			}
+			out = append(out, restoredNote{key: unit, abs: filepath.Join(root.Path, filepath.FromSlash(f.Rel)), at: rd.RestoredAt})
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].key < out[b].key })
+	return out
+}
+
+// noteKeyOf is the unit key a note at rel seals under ("" if none).
+func (r *run) noteKeyOf(root config.Root, rel string) string {
+	k, err := harness.UnitKeyFor(r.e.Harness.Salt, capsule.KindMarkdown, mdHarness, "", root.ID, rel)
+	if err != nil {
+		return ""
+	}
+	return k
+}
+
+// sealNote seals one note (SPEC §8.4). A note restored at a moved
+// marker's location (its receipt's unit is not the unit of its path) is
+// dropped as unchanged under the unit it was restored from, so the next
+// unlock brings it back there; once it changed it is a new note of its
+// own path, since a unit's capsules always hold its authenticated relpath
+// (D83).
+func (r *run) sealNote(ctx context.Context, u harness.Unit, o Options, c *noteCand) UnitResult {
+	if c.restoredFrom != "" && c.restoredFrom != u.Key {
+		from := u
+		from.Key = c.restoredFrom
+		if res, acted := r.sealLayeredIf(ctx, from, o, false, true); acted {
+			return res
+		}
+	}
+	return r.sealLayered(ctx, u, o, false)
 }
 
 // walkNotes visits every Markdown file under the root, skipping excluded
@@ -477,7 +564,7 @@ func (r *run) sealMarkdown(ctx context.Context, root config.Root, o Options, can
 				}
 				break
 			}
-			res = r.sealLayered(ctx, u, o, false)
+			res = r.sealNote(ctx, u, o, c)
 			if res.Outcome == OutSealed || res.Outcome == OutUnchanged {
 				r.forgetPendingNote(ctx, root.ID, abs)
 			}

@@ -246,6 +246,16 @@ func TestClaudeSettingsEnv(t *testing.T) {
 		}
 	}
 
+	// D92: other hosts' markers in settings env change how hooks detect
+	// their host.
+	hosts := writeJSON(t, filepath.Join(f.h.Root, ".claude", "settings.json"), map[string]any{
+		"env": map[string]string{"COPILOT_X": "1", "CURSOR_VERSION": "2", "DROID_PLUGIN_ROOT": "/d", "FACTORY_PROJECT_DIR": "/f", "PLUGIN_ROOT": "/p"},
+	})
+	want(t, f.run(), doctor.CheckClaudeSettingsEnv, doctor.Fail, f.tilde(hosts)+" sets COPILOT_X, CURSOR_VERSION, DROID_PLUGIN_ROOT, FACTORY_PROJECT_DIR, PLUGIN_ROOT in env")
+	if err := os.Remove(hosts); err != nil {
+		t.Fatal(err)
+	}
+
 	// A file that is not JSON cannot be checked: say so.
 	bad := writeFile(t, filepath.Join(f.h.Root, ".claude", "settings.other.json"), "{not json", 0o600)
 	want(t, f.run(), doctor.CheckClaudeSettingsEnv, doctor.Warn, "could not read "+f.tilde(bad), "invalid JSON")

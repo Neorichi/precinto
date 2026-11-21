@@ -43,6 +43,15 @@ type restorePlan struct {
 	ConflictAt time.Time                 `json:"conflict_at"`
 	ClampTo    time.Time                 `json:"clamp_to,omitempty"` // D14: mtimes not older than this
 	Marker     string                    `json:"marker,omitempty"`   // notes: marker rel removed after placement
+	// UnitID and HomeID are the authenticated unit id and the registered
+	// home of the unit: placement asks the adapter about this unit's
+	// liveness by them, also when recovery rolls the restore forward (D84).
+	UnitID string `json:"unit_id,omitempty"`
+	HomeID string `json:"home_id,omitempty"`
+	// Absent lists the entries of the restored generations this restore
+	// leaves out (an unsafe base, TargetRules.Skip): the receipt records
+	// them as absent, so a re-seal without them is partial (D85).
+	Absent []ReceiptFile `json:"absent,omitempty"`
 }
 
 // plannedFile is one placement.
@@ -205,6 +214,7 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 	plan := &restorePlan{
 		Kind: p.ref.Kind, Harness: string(p.ref.Harness), Unit: p.ref.Key, Gen: p.newest.Gen,
 		VaultID: p.ref.VaultID, RootIDs: p.ref.RootIDs, Bases: a.rules.Bases, ConflictAt: r.now(),
+		UnitID: a.unitID, HomeID: a.ref.HomeID,
 	}
 	if p.mtimeNow {
 		plan.ClampTo = r.now().Add(-24 * time.Hour)
@@ -245,7 +255,8 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 		kg.forget(en.Path) // decrypted: its key goes now (CC-17)
 		gens = append(gens, stagedGen{entry: en, man: man, staged: staged, dir: sub.Dir(), prefix: prefix})
 	}
-	gens, skipped := skipUnsafe(gens, a.rules)
+	gens, skipped, absent := skipUnsafe(gens, a.rules)
+	plan.Absent = absent
 	files, merged, conflicts, err := r.foldGenerations(ctx, gens, a.rules, st.Dir(), plan.ConflictAt, lo.style)
 	if err != nil {
 		return rollback(err, "", "")
@@ -286,13 +297,15 @@ func (r *run) restoreLayeredWith(ctx, actx context.Context, p *restoreUnitPlan, 
 // skipUnsafe drops the entries of bases the adapter reports unsafe now
 // (TargetRules.Skip) from the staged generations: they are never placed
 // and the capsule keeps them (SPEC §11.5, CC-22). It returns, per reason,
-// how many distinct files were left out.
-func skipUnsafe(gens []stagedGen, rules harness.TargetRules) ([]stagedGen, map[string]int) {
+// how many distinct files were left out, and those files (newest version
+// first) as absent receipt entries (D85).
+func skipUnsafe(gens []stagedGen, rules harness.TargetRules) ([]stagedGen, map[string]int, []ReceiptFile) {
 	if len(rules.Skip) == 0 {
-		return gens, nil
+		return gens, nil, nil
 	}
 	skipped := map[string]int{}
 	seen := map[fileKey]bool{}
+	var absent []ReceiptFile
 	out := make([]stagedGen, 0, len(gens))
 	for _, g := range gens {
 		ng := g
@@ -302,6 +315,7 @@ func skipUnsafe(gens []stagedGen, rules harness.TargetRules) ([]stagedGen, map[s
 				if k := (fileKey{en.Base, en.Rel}); !en.Dir && !seen[k] {
 					seen[k] = true
 					skipped[rules.Skip[en.Base]]++
+					absent = append(absent, ReceiptFile{Base: en.Base, Rel: en.Rel, SHA256: en.SHA256, Size: en.Size, FromGen: g.entry.Gen, Absent: true})
 				}
 				continue
 			}
@@ -315,7 +329,7 @@ func skipUnsafe(gens []stagedGen, rules harness.TargetRules) ([]stagedGen, map[s
 		}
 		out = append(out, ng)
 	}
-	return out, skipped
+	return out, skipped, absent
 }
 
 // reportSkipped adds one skipped result per reason for the entries a
@@ -417,9 +431,21 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 		bases[id] = d
 	}
 	pc := &placeCtx{r: r, plan: plan, rec: rec, stagings: stagings, bases: bases}
-	ref := harness.UnitRef{Harness: harness.ID(plan.Harness), Kind: plan.Kind, Key: plan.Unit, VaultID: plan.VaultID, RootIDs: plan.RootIDs}
+	ref := harness.UnitRef{Harness: harness.ID(plan.Harness), Kind: plan.Kind, Key: plan.Unit, HomeID: plan.HomeID, VaultID: plan.VaultID, RootIDs: plan.RootIDs}
 	rules := harness.TargetRules{Bases: plan.Bases}
-	pc.live = func() bool { isLive, _ := r.restoreLive(ctx, ad, ref, "", rules); return isLive }
+	pc.live = func() bool { isLive, _ := r.restoreLive(ctx, ad, ref, plan.UnitID, rules); return isLive }
+	// D84: whenever a target already exists (a placement may replace,
+	// merge or union into it), liveness is decided before the first file
+	// is placed; a live unit is rolled back with nothing placed.
+	if !anyDone(rec) && pc.targetExists() && pc.live() {
+		if err := r.removeStagings(st, plan); err != nil {
+			return placeOutcome{err: errors.Join(errAbortLive, err)}
+		}
+		if err := r.jr.Done(rec); err != nil {
+			return placeOutcome{err: errors.Join(errAbortLive, err)}
+		}
+		return placeOutcome{err: errAbortLive}
+	}
 	if plan.Quarantine != "" {
 		if err := ensurePrivateDir(plan.Quarantine); err == nil {
 			if q, err := r.p.fs.OpenBase(plan.Quarantine); err == nil {
@@ -457,7 +483,14 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 		}
 	}
 	outcome.placed, outcome.noop, outcome.kept, outcome.merged, outcome.conflicts = pc.placed, pc.noop, pc.kept, pc.merged, pc.conflicts
-	if err := r.writeRestoreReceipt(plan, pc.receipt, bases); err != nil && outcome.err == nil {
+	if errors.Is(outcome.err, ErrLive) && anyDone(rec) && plan.UnitID != "" {
+		// D84: the unit became live after some of its files were placed.
+		// The record and the stagings stay, so recovery rolls the restore
+		// forward once the unit is quiet; no receipt is written for a
+		// unit without its last files (the transcript is placed last).
+		return outcome
+	}
+	if err := r.writeRestoreReceipt(plan, append(pc.receipt, pc.absent...), bases); err != nil && outcome.err == nil {
 		outcome.err = err
 	}
 	if outcome.err == nil {
@@ -479,23 +512,65 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 	return outcome
 }
 
+// anyDone reports whether a restore record marks a placed file.
+func anyDone(rec *journal.Record) bool {
+	for _, f := range rec.Files {
+		if f.Done {
+			return true
+		}
+	}
+	return false
+}
+
+// targetExists reports whether a planned file's target is already there.
+func (pc *placeCtx) targetExists() bool {
+	for _, pf := range pc.plan.Files {
+		if pf.Dir {
+			continue
+		}
+		b := pc.bases[pf.Base]
+		if b == nil {
+			continue
+		}
+		if _, err := b.Lstat(pf.Rel); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // writeRestoreReceipt writes the receipt of a restore (SPEC §11.5 step 5):
 // the files placed now, plus files of an older receipt that this restore
 // did not touch and that still have their recorded identity.
 func (r *run) writeRestoreReceipt(plan *restorePlan, files []ReceiptFile, bases map[capsule.BaseID]dirHandle) error {
-	if len(files) == 0 {
+	present := 0
+	have := map[fileKey]bool{}
+	for _, f := range files {
+		have[fileKey{f.Base, f.Rel}] = true
+		if !f.Absent {
+			present++
+		}
+	}
+	if present == 0 {
 		return nil
+	}
+	// D85: entries this restore left out are absent, unless placed.
+	for _, f := range plan.Absent {
+		if k := (fileKey{f.Base, f.Rel}); !have[k] {
+			have[k] = true
+			files = append(files, f)
+		}
 	}
 	rd := receiptDisk{Receipt: Receipt{Unit: plan.Unit, Gen: plan.Gen, RestoredAt: r.now(), Files: files},
 		Kind: plan.Kind, Harness: plan.Harness, Bases: plan.Bases, Blobs: plan.Blobs}
 	old, ok, err := r.loadReceipt(plan.Unit)
 	if err == nil && ok {
-		have := map[fileKey]bool{}
-		for _, f := range files {
-			have[fileKey{f.Base, f.Rel}] = true
-		}
 		for _, f := range old.Files {
 			if have[fileKey{f.Base, f.Rel}] {
+				continue
+			}
+			if f.Absent {
+				rd.Files = append(rd.Files, f)
 				continue
 			}
 			d := bases[f.Base]
@@ -671,6 +746,10 @@ func (r *run) foldGenerations(ctx context.Context, gens []stagedGen, rules harne
 	var dirOrder []fileKey
 	merged, conflicts := 0, 0
 	usedConflict := map[fileKey]bool{}
+	lineageOf := map[uint64]capsule.Lineage{}
+	for _, g := range gens {
+		lineageOf[g.entry.Gen] = capsule.Lineage(g.entry.Lineage)
+	}
 	for _, g := range gens {
 		for _, en := range g.man.Files {
 			if !en.Dir {
@@ -708,9 +787,18 @@ func (r *run) foldGenerations(ctx context.Context, gens []stagedGen, rules harne
 			if err != nil {
 				return nil, 0, 0, err
 			}
-			switch decidePlacement(facts) {
+			act := decidePlacement(facts)
+			if act == actConflict && supersedable(pol) {
+				// D87: a generation that is not diverged holds, at an
+				// exact-placement path, a newer version of what was
+				// placed there: it supersedes the older one.
+				if l := lineageOf[c.pf.FromGen]; l != "" && l != capsule.LineageDiverged {
+					act = actKeep
+				}
+			}
+			switch act {
 			case actNoop, actKeep:
-				// The newer version contains the older one.
+				// The newer version contains (or supersedes) the older one.
 			case actReplace:
 				resolved[k] = v
 			case actMerge:
@@ -827,6 +915,7 @@ type placeCtx struct {
 	quarantine dirHandle
 	live       func() bool
 	receipt    []ReceiptFile
+	absent     []ReceiptFile // versions not placed (a conflict without a copy name), D85
 
 	placed, noop, kept, merged, conflicts int
 }
@@ -1058,6 +1147,11 @@ func (pc *placeCtx) placeOne(ctx context.Context, i int) error {
 func (pc *placeCtx) conflict(sd, pd dirHandle, pf *plannedFile, parentRel string) error {
 	pc.conflicts++
 	if !pf.ConflictOK {
+		// D85: the version stays only in its generation; the receipt
+		// records it as absent, so the plaintext there re-seals as changed.
+		if !pc.plan.Snapshot {
+			pc.absent = append(pc.absent, ReceiptFile{Base: pf.Base, Rel: pf.Rel, SHA256: pf.SHA, Size: pf.Size, FromGen: pf.FromGen, Absent: true})
+		}
 		return nil
 	}
 	for k := 0; k < 100; k++ {

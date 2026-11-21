@@ -363,10 +363,19 @@ func (d *osDir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 // "\n" to a regular file (created 0600 when absent; symlinks and FIFOs
 // refused without blocking), then a sync.
 func (d *osDir) AppendLine(rel string, line []byte) error {
+	return d.appendBounded(rel, line, fsx.MaxLine)
+}
+
+// AppendRecord mirrors fsx.Dir.AppendRecord (D90).
+func (d *osDir) AppendRecord(rel string, line []byte) error {
+	return d.appendBounded(rel, line, fsx.MaxRecord)
+}
+
+func (d *osDir) appendBounded(rel string, line []byte, max int) error {
 	if l := len(line); l > 0 && line[l-1] == '\n' {
 		line = line[:l-1]
 	}
-	if len(line) > fsx.MaxLine || bytes.IndexByte(line, '\n') >= 0 {
+	if len(line) > max || bytes.IndexByte(line, '\n') >= 0 {
 		return fmt.Errorf("%w: bad line for AppendLine", fsx.ErrUnsafe)
 	}
 	p, err := d.resolve(rel, false)
@@ -1202,6 +1211,7 @@ type fakeAdapter struct {
 	skip     map[capsule.BaseID]string    // TargetRules.Skip: bases taken out of Bases with a reason
 	owners   map[string][]platform.ProcID // sid → ledger owners (Unit.Procs, Scope.Procs)
 	onScan   func(s harness.Scope)        // observes every Scan's scope
+	onProbe  func(u harness.Unit)         // observes every Probe's unit
 }
 
 func (a *fakeAdapter) ID() harness.ID { return a.id }
@@ -1392,6 +1402,9 @@ func (a *fakeAdapter) Scan(ctx context.Context, e harness.Env, s harness.Scope) 
 }
 
 func (a *fakeAdapter) Probe(ctx context.Context, e harness.Env, u harness.Unit) ([]live.Evidence, error) {
+	if a.onProbe != nil {
+		a.onProbe(u)
+	}
 	if a.probeErr != nil {
 		return nil, a.probeErr
 	}

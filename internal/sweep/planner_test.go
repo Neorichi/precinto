@@ -89,12 +89,21 @@ func TestLineageTable(t *testing.T) {
 	file := func(rel string, size int64, ino uint64) harness.File {
 		return harness.File{Base: capsule.BaseClaudeConfig, Rel: rel, Snap: fsx.Stat{Ino: ino, Size: size, MtimeNS: 1}}
 	}
+	// appendOnly is an append-only (JSONL) file: changed in place, it is a
+	// real divergence; an exact-placement file precinto placed and that was
+	// rewritten in place supersedes (D87).
+	appendOnly := func(f harness.File) harness.File {
+		f.Append, f.Placement = true, harness.PlaceJSONLAppend
+		return f
+	}
 	rf := func(rel, content string, ino uint64) ReceiptFile {
 		return ReceiptFile{Base: capsule.BaseClaudeConfig, Rel: rel, Snap: fsx.Stat{Ino: ino, Size: int64(len(content)), MtimeNS: 1},
 			SHA256: sum([]byte(content)), Size: int64(len(content)), FromGen: 3}
 	}
 	gens := []capslog.Entry{{Gen: 3, Lineage: "fresh"}}
 	rd := &receiptDisk{Receipt: Receipt{Gen: 3, Files: []ReceiptFile{rf("a", "aaaa", 1), rf("b", "bb", 2)}}}
+	absentRD := &receiptDisk{Receipt: Receipt{Gen: 3, Files: []ReceiptFile{rf("a", "aaaa", 1),
+		{Base: capsule.BaseClaudeConfig, Rel: "b", SHA256: sum([]byte("bb")), Size: 2, FromGen: 3, Absent: true}}}}
 	for _, tc := range []struct {
 		name      string
 		files     []harness.File
@@ -111,8 +120,14 @@ func TestLineageTable(t *testing.T) {
 		{"identical (hash, new inode)", []harness.File{file("a", 4, 7), file("b", 2, 8)}, mapHasher{"a": "aaaa", "b": "bb"}, rd, gens, capsule.LineageSuccessor, 3, true},
 		{"append-only growth", []harness.File{file("a", 6, 1), file("b", 2, 2)}, mapHasher{"a": "aaaaXY"}, rd, gens, capsule.LineageSuccessor, 3, false},
 		{"one file missing", []harness.File{file("a", 4, 1)}, nil, rd, gens, capsule.LineagePartial, 3, true},
-		{"changed in place", []harness.File{file("a", 4, 7), file("b", 2, 2)}, mapHasher{"a": "zzzz"}, rd, gens, capsule.LineageDiverged, 3, false},
-		{"shrunk", []harness.File{file("a", 2, 7), file("b", 2, 2)}, mapHasher{"a": "aa"}, rd, gens, capsule.LineageDiverged, 3, false},
+		{"changed in place", []harness.File{appendOnly(file("a", 4, 7)), file("b", 2, 2)}, mapHasher{"a": "zzzz"}, rd, gens, capsule.LineageDiverged, 3, false},
+		{"shrunk", []harness.File{appendOnly(file("a", 2, 7)), file("b", 2, 2)}, mapHasher{"a": "aa"}, rd, gens, capsule.LineageDiverged, 3, false},
+		{"exact file rewritten after its restore (D87)", []harness.File{file("a", 4, 7), file("b", 2, 2)}, mapHasher{"a": "zzzz"}, rd, gens, capsule.LineageSuccessor, 3, false},
+		{"exact file shrunk after its restore (D87)", []harness.File{file("a", 2, 7), file("b", 2, 2)}, mapHasher{"a": "aa"}, rd, gens, capsule.LineageSuccessor, 3, false},
+		{"exact rewrite with a file missing (D87)", []harness.File{file("a", 4, 7)}, mapHasher{"a": "zzzz"}, rd, gens, capsule.LineagePartial, 3, false},
+		{"absent file still absent (D85)", []harness.File{file("a", 4, 1)}, nil, absentRD, gens, capsule.LineagePartial, 3, true},
+		{"absent file back with other bytes (D85)", []harness.File{file("a", 4, 1), file("b", 2, 9)}, mapHasher{"b": "zz"}, absentRD, gens, capsule.LineageDiverged, 3, false},
+		{"absent file back with its bytes (D85)", []harness.File{file("a", 4, 1), file("b", 2, 9)}, mapHasher{"b": "bb"}, absentRD, gens, capsule.LineageSuccessor, 3, true},
 		{"new file added", []harness.File{file("a", 4, 1), file("b", 2, 2), file("c", 1, 3)}, mapHasher{"c": "c"}, rd, gens, capsule.LineageSuccessor, 3, false},
 		{"receipt generation pruned", []harness.File{file("a", 4, 1), file("b", 2, 2)}, nil, rd, []capslog.Entry{{Gen: 9}}, capsule.LineageSuccessor, 3, false},
 	} {

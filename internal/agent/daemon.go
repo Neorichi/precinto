@@ -105,10 +105,14 @@ type policyState struct {
 	cfgStamp  string        // size+mtime of config.toml at that load
 	pinned    config.Pinned
 	hasPinned bool
-	tampered  bool          // policy-tampered: defaults join the strictest merge
-	forged    bool          // the pin failed to decode or its MAC: never re-pinned without confirmation
-	eff       config.Config // what the daemon enforces
-	pending   []config.Change
+	tampered  bool // policy-tampered: defaults join the strictest merge
+	forged    bool // the pin failed to decode, its shape (D91) or its MAC: never re-pinned without confirmation
+	// verified: a MAC of the pin was checked with a vault key in this
+	// daemon's lifetime, or the daemon wrote the pin (D91). An unverified
+	// pin is never re-pinned without a confirmation.
+	verified bool
+	eff      config.Config // what the daemon enforces
+	pending  []config.Change
 }
 
 // daemon is one running `precinto agent`.

@@ -104,7 +104,7 @@ func (a *app) integrateBuiltin(id harness.ID, exeName string, printOnly bool) in
 	}
 	cmds := [][]string{
 		{bin, "plugin", "marketplace", "add", marketplaceSource},
-		{bin, "plugin", "install", pluginRef},
+		{bin, "plugin", pluginInstallVerb(id), pluginRef},
 	}
 	if printOnly {
 		for _, c := range cmds {
@@ -253,4 +253,14 @@ func versionParts(v string) ([3]int, bool) {
 		out[i] = n
 	}
 	return out, true
+}
+
+// pluginInstallVerb is the harness plugin CLI's install subcommand (D94):
+// Claude Code `claude plugin install <p>@<m>`, Codex (0.154: add, list,
+// marketplace, remove) `codex plugin add <p>@<m>`.
+func pluginInstallVerb(id harness.ID) string {
+	if id == harness.Codex {
+		return "add"
+	}
+	return "install"
 }

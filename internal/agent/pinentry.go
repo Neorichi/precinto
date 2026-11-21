@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/awnumar/memguard"
 
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/paths"
 )
 
@@ -28,10 +30,11 @@ var errNoPinentry = errors.New("agent: no pinentry program")
 const maxPin = 4096
 
 // pinentryEnv is the environment of pinentry: what a dialog needs to find
-// the user's display, nothing else.
-func pinentryEnv(e paths.Env) []string {
-	var env []string
-	for _, k := range []string{"PATH", "HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE", "DISPLAY", "WAYLAND_DISPLAY",
+// the user's display, nothing else; PATH is limited to the program's own
+// directory (D97, as for age plugins).
+func pinentryEnv(e paths.Env, prog string) []string {
+	env := []string{"PATH=" + filepath.Dir(prog)}
+	for _, k := range []string{"HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE", "DISPLAY", "WAYLAND_DISPLAY",
 		"DBUS_SESSION_BUS_ADDRESS", paths.EnvXDGRuntimeDir} {
 		if v, ok := e.Lookup(k); ok {
 			env = append(env, k+"="+v)
@@ -40,25 +43,86 @@ func pinentryEnv(e paths.Env) []string {
 	return env
 }
 
+// findPinentry returns the pinentry program to run (D97): the first of
+// pinentryNames, in PATH order, that is a trusted executable. The program
+// receives the install-wide passphrase, and the daemon's PATH comes from
+// whichever client autostarted it, so a pinentry in a directory the user
+// (or an agent running as the user) can write — Homebrew's prefix, a
+// directory put first on PATH — is never run.
+func findPinentry(e paths.Env) (string, error) {
+	dirs := filepath.SplitList(e.Get("PATH"))
+	for _, n := range pinentryNames {
+		for _, d := range dirs {
+			if d == "" || !filepath.IsAbs(d) {
+				continue
+			}
+			if real, ok := trustedExecutable(filepath.Join(d, n)); ok {
+				return real, nil
+			}
+		}
+	}
+	return "", errNoPinentry
+}
+
+// trustedExecutable resolves p and reports whether it is a regular,
+// executable file owned by root and not group- or other-writable, whose
+// directory chain (that of p and that of its target) only root can change.
+func trustedExecutable(p string) (string, bool) {
+	if !rootOnlyChain(filepath.Dir(p)) {
+		return "", false
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", false
+	}
+	st, err := fsx.Lstat(real)
+	if err != nil || !st.IsRegular() || st.UID != 0 || st.Mode&0o022 != 0 || st.Mode&0o111 == 0 {
+		return "", false
+	}
+	if !rootOnlyChain(filepath.Dir(real)) {
+		return "", false
+	}
+	return real, true
+}
+
+// rootOnlyChain reports whether dir and every ancestor are owned by root
+// and, when directories, not group- or other-writable (a symlinked
+// component is judged by its own ownership here and its target through
+// the resolved chain).
+func rootOnlyChain(dir string) bool {
+	if !filepath.IsAbs(dir) {
+		return false
+	}
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		st, err := fsx.Lstat(d)
+		if err != nil || st.UID != 0 || (st.IsDir() && st.Mode&0o022 != 0) {
+			return false
+		}
+		if !st.IsDir() {
+			real, err := filepath.EvalSymlinks(d)
+			if err != nil || (real != d && !rootOnlyChain(real)) {
+				return false
+			}
+		}
+		if d == "/" {
+			return true
+		}
+	}
+}
+
 // runPinentry asks for a secret through pinentry's Assuan protocol: OK
 // greeting, SETDESC, SETPROMPT, GETPIN, then a "D" line (percent-encoded)
 // and OK, or ERR on cancel. The answer is decoded straight into a locked
 // buffer; the transfer buffers are wiped.
 func runPinentry(ctx context.Context, e paths.Env, desc, prompt string) (*memguard.LockedBuffer, error) {
-	prog := ""
-	for _, n := range pinentryNames {
-		if p, err := paths.LookPath(e, n); err == nil {
-			prog = p
-			break
-		}
-	}
-	if prog == "" {
-		return nil, errNoPinentry
+	prog, err := findPinentry(e)
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, hookUnlockWait)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, prog)
-	cmd.Env = pinentryEnv(e)
+	cmd.Env = pinentryEnv(e, prog)
 	cmd.WaitDelay = time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -146,6 +146,29 @@ func authoritativeSnapshot(entries []capslog.Entry) (auth capslog.Entry, ok bool
 	return auth, ok, diverged
 }
 
+// snapshotLineage is the lineage of a Codex snapshot (D86, SPEC §7.2):
+// a home restored from the authoritative snapshot (its receipt names
+// that generation) that Codex then changed in place, as every session
+// does (SQLite write transactions, WAL checkpoints, appended rollouts),
+// is that snapshot's successor (partial when receipt files are missing):
+// snapshots restore exactly the newest one, so nothing needs folding.
+// Diverged stays for plaintext without a receipt while generations exist
+// (and for a receipt of an older, non-authoritative generation): content
+// precinto did not place, which the launch refuses (R12).
+func snapshotLineage(lp lineagePlan, rd *receiptDisk, logged []capslog.Entry) (capsule.Lineage, uint64) {
+	if lp.Lineage != capsule.LineageDiverged || rd == nil {
+		return lp.Lineage, lp.Parent
+	}
+	auth, ok, _ := authoritativeSnapshot(logged)
+	if !ok || auth.Gen != rd.Gen {
+		return lp.Lineage, lp.Parent
+	}
+	if len(lp.Missing) > 0 {
+		return capsule.LineagePartial, rd.Gen
+	}
+	return capsule.LineageSuccessor, rd.Gen
+}
+
 // sealCodexHome seals a per-root Codex home as one snapshot generation
 // (SPEC §7.2, D42): blobs for changed files and groups (unchanged ones
 // reuse the receipt's blob), then the manifest generation listing every
@@ -243,6 +266,8 @@ func (r *run) sealCodexLocked(ctx context.Context, ad harness.Adapter, u harness
 			lp.Parent = n.Gen
 		}
 		lp.Unchanged = false
+	} else {
+		lp.Lineage, lp.Parent = snapshotLineage(lp, rcp, logged)
 	}
 	// A snapshot is unchanged only if the file set equals the receipt's:
 	// a deleted rollout must not come back (CODX-4).
@@ -787,7 +812,7 @@ func (r *run) restoreSnapshot(ctx, actx context.Context, p *restoreUnitPlan, a a
 	rec.Staging = st.Path()
 	plan := &restorePlan{Kind: p.ref.Kind, Harness: string(p.ref.Harness), Unit: p.ref.Key, Gen: p.newest.Gen,
 		VaultID: p.ref.VaultID, RootIDs: p.ref.RootIDs, Bases: a.rules.Bases, Snapshot: true, Blobs: map[string]string{},
-		Quarantine: r.l.QuarantineDir, ConflictAt: r.now()}
+		Quarantine: r.l.QuarantineDir, ConflictAt: r.now(), UnitID: a.unitID, HomeID: a.ref.HomeID}
 	rollback := func(cause error, detail string) UnitResult {
 		_ = r.removeStagings(st, plan)
 		_ = r.jr.Done(rec)

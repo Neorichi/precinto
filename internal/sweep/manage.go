@@ -462,7 +462,12 @@ func (r *run) resolve(ctx context.Context, keys KeySource, p string, keep string
 	if keepCapsule {
 		// Retain the existing plaintext as a generation, then put the
 		// capsule's version in its place.
-		if err := r.retainFile(ctx, keys, rd, copyRF.Base, base, origRel); err != nil {
+		side, err := r.sideOf(ctx, keys, rd)
+		if err != nil {
+			r.add(failed(res, err))
+			return r.finish(), nil
+		}
+		if err := r.retainFile(ctx, side, rd, copyRF.Base, base, origRel); err != nil {
 			r.add(failed(res, err))
 			return r.finish(), nil
 		}
@@ -489,7 +494,19 @@ func (r *run) resolve(ctx context.Context, keys KeySource, p string, keep string
 			return r.finish(), nil
 		}
 		after, _ := d.Lstat(origRel)
-		r.replaceReceiptFile(rd, copyRF, ReceiptFile{Base: copyRF.Base, Rel: origRel, Snap: after, SHA256: copyRF.SHA256, Size: copyRF.Size, FromGen: copyRF.FromGen})
+		// D88: the chosen side is sealed as the newest generation, a
+		// partial one whose parent is the generation before the retained
+		// one, so the restore chain never reaches the rejected side (kept
+		// as a diverged generation until pruned) and the next lock and
+		// unlock keep the user's choice.
+		from := copyRF.FromGen
+		if g, err := r.sealSide(ctx, side, rd.Unit, copyRF.Base, base, origRel, capsule.LineagePartial); err == nil {
+			from = g
+			rd.Gen = g
+		} else {
+			res.Detail = "chosen side not sealed: " + safeMsg(err)
+		}
+		r.replaceReceiptFile(rd, copyRF, ReceiptFile{Base: copyRF.Base, Rel: origRel, Snap: after, SHA256: copyRF.SHA256, Size: copyRF.Size, FromGen: from})
 	} else {
 		// The capsule keeps the other version; the copy goes.
 		if err := d.UnlinkIfUnchanged(copyRF.Rel, copyRF.Snap); err != nil {
@@ -498,7 +515,10 @@ func (r *run) resolve(ctx context.Context, keys KeySource, p string, keep string
 		}
 		r.replaceReceiptFile(rd, copyRF, ReceiptFile{})
 	}
-	res.Outcome, res.Detail = OutRestored, "conflict resolved"
+	res.Outcome = OutRestored
+	if res.Detail == "" {
+		res.Detail = "conflict resolved"
+	}
 	r.add(res)
 	return r.finish(), nil
 }
@@ -522,7 +542,7 @@ func (r *run) findConflict(p string) (receiptDisk, ReceiptFile, string, string, 
 		}
 		for _, f := range rd.Files {
 			base := rd.Bases[f.Base]
-			if base == "" || !isConflictCopy(f.Rel) {
+			if base == "" || f.Absent || !isConflictCopy(f.Rel) {
 				continue
 			}
 			orig := originalOf(f.Rel)
@@ -551,78 +571,106 @@ func (r *run) replaceReceiptFile(rd receiptDisk, old ReceiptFile, nf ReceiptFile
 		files = append(files, nf)
 	}
 	rd.Files = files
-	if len(files) == 0 {
+	present := 0
+	for _, f := range files {
+		if !f.Absent {
+			present++
+		}
+	}
+	if present == 0 {
 		_ = r.deleteReceipt(rd.Unit)
 		return
 	}
 	_ = r.writeReceipt(rd)
 }
 
-// retainFile seals one plaintext file of a unit as a retained (diverged)
-// generation without deleting it. The unit id comes from the newest
-// manifest (it must authenticate at restore).
-func (r *run) retainFile(ctx context.Context, keys KeySource, rd receiptDisk, b capsule.BaseID, base, rel string) error {
+// resolveSide is what resolve seals a conflict side from: the unit's
+// newest logged generation and its manifest (the unit id must
+// authenticate at restore).
+type resolveSide struct {
+	newest capslog.Entry
+	man    capsule.Manifest
+}
+
+// sideOf reads the newest manifest of rd's unit (keys with purpose
+// "restore").
+func (r *run) sideOf(ctx context.Context, keys KeySource, rd receiptDisk) (resolveSide, error) {
 	entries, err := r.log.Unit(rd.Unit)
 	if err != nil {
-		return err
+		return resolveSide{}, err
 	}
 	newest, ok := newestEntry(entries)
 	if !ok {
-		return fmt.Errorf("%w: nothing sealed for this unit", ErrNotLogged)
+		return resolveSide{}, fmt.Errorf("%w: nothing sealed for this unit", ErrNotLogged)
 	}
 	if keys == nil {
-		return fmt.Errorf("%w: no key source", ErrKeyDenied)
+		return resolveSide{}, fmt.Errorf("%w: no key source", ErrKeyDenied)
 	}
 	kg := &keyGuard{}
 	defer kg.destroy()
 	fk, err := keys.FileKeys(ctx, []string{newest.Path}, "restore")
 	if err != nil {
-		return fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err))
+		return resolveSide{}, fmt.Errorf("%w: %s", ErrKeyDenied, safeMsg(err))
 	}
 	kg.add(fk)
 	m, err := r.readManifest(ctx, newest, kg)
 	if err != nil {
-		return err
+		return resolveSide{}, err
 	}
 	if err := checkManifest(m, newest); err != nil {
-		return err
+		return resolveSide{}, err
 	}
+	return resolveSide{newest: newest, man: m}, nil
+}
+
+// retainFile seals one plaintext file of a unit as a retained (diverged)
+// generation without deleting it.
+func (r *run) retainFile(ctx context.Context, side resolveSide, rd receiptDisk, b capsule.BaseID, base, rel string) error {
+	_, err := r.sealSide(ctx, side, rd.Unit, b, base, rel, capsule.LineageDiverged)
+	return err
+}
+
+// sealSide seals the plaintext file rel (base b) of a unit as one new
+// generation whose parent is side's newest generation, keeping the file
+// (keyless: only recipients are needed). It returns the generation.
+func (r *run) sealSide(ctx context.Context, side resolveSide, unit string, b capsule.BaseID, base, rel string, l capsule.Lineage) (uint64, error) {
+	newest, m := side.newest, side.man
 	d, err := r.p.fs.OpenBase(base)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer d.Close()
 	st, err := d.Lstat(rel)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	recips, err := r.p.vaults.recipients(newest.VaultID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	store := newest.Harness
-	capsRoot, caps, err := r.openCapsDir(store, rd.Unit, true)
+	capsRoot, caps, err := r.openCapsDir(store, unit, true)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer capsRoot.Close()
 	defer caps.Close()
-	g, err := r.nextGen(ctx, rd.Unit, caps)
+	g, err := r.nextGen(ctx, unit, caps)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	rec, err := r.jr.Begin(journal.KindSeal, store, rd.Unit)
+	rec, err := r.jr.Begin(journal.KindSeal, store, unit)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	name := capsule.GenName(g)
 	man := m
 	man.Files, man.Ledger = nil, nil
-	man.Gen, man.Parent, man.Lineage, man.CreatedAt, man.Sealer, man.RecipientsFpr = g, newest.Gen, capsule.LineageDiverged, r.now(), r.e.Sealer, recips.fpr
+	man.Gen, man.Parent, man.Lineage, man.CreatedAt, man.Sealer, man.RecipientsFpr = g, newest.Gen, l, r.now(), r.e.Sealer, recips.fpr
 	en := newest
-	en.Gen, en.Parent, en.Lineage, en.SealedAt, en.RecipientsFpr, en.Files, en.Bytes = g, newest.Gen, string(capsule.LineageDiverged), r.now(), recips.fpr, 1, st.Size
+	en.Gen, en.Parent, en.Lineage, en.SealedAt, en.RecipientsFpr, en.Files, en.Bytes = g, newest.Gen, string(l), r.now(), recips.fpr, 1, st.Size
 	spec := &commitSpec{rec: rec, unitDir: caps, outDir: caps, capsuleRel: name, name: name,
-		logPath: logPathOf(store, rd.Unit, name), gen: g,
+		logPath: logPathOf(store, unit, name), gen: g,
 		req: sealRequest{Manifest: man, Recipients: recips, Inputs: []sealInput{{Base: b, Dir: d, Rel: rel, Snap: st,
 			Path: filepath.Join(base, filepath.FromSlash(rel))}}},
 		entry: en}
@@ -630,9 +678,9 @@ func (r *run) retainFile(ctx context.Context, keys KeySource, rd receiptDisk, b 
 		if !keepRecord(err) {
 			_ = r.jr.Done(rec)
 		}
-		return err
+		return 0, err
 	}
-	return r.jr.Done(rec)
+	return g, r.jr.Done(rec)
 }
 
 // List returns units from the capsule log and the on-disk scan.
@@ -679,7 +727,7 @@ func (r *run) list(ctx context.Context, o ListOptions) ([]UnitInfo, error) {
 			info.Plaintext = true
 			info.Reason = "restored"
 			for _, f := range rd.Files {
-				if isConflictCopy(f.Rel) {
+				if !f.Absent && isConflictCopy(f.Rel) {
 					info.Conflicts++
 				}
 			}

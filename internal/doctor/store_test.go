@@ -313,10 +313,13 @@ func TestPendingAndTamperedPolicy(t *testing.T) {
 	}
 	want(t, f.run(), doctor.CheckPendingPolicy, doctor.OK)
 
-	// Tampering shapes (D55).
+	// Tampering shapes (D55, D91: the daemon's config.Pinned.CheckShape).
 	for name, mutate := range map[string]func(*config.Pinned){
 		"no MAC":        func(p *config.Pinned) { p.MACs = nil },
 		"malformed MAC": func(p *config.Pinned) { p.MACs = map[string]string{"root-acme": "zz"} },
+		"MAC of a vault outside the pinned settings": func(p *config.Pinned) {
+			p.MACs = map[string]string{"root-acme": mac, "9f0e1d2c3b4a59687766554433221100": mac}
+		},
 	} {
 		q := p
 		mutate(&q)
@@ -326,12 +329,27 @@ func TestPendingAndTamperedPolicy(t *testing.T) {
 		want(t, f.run(), doctor.CheckPolicyTampered, doctor.Fail, "changed outside precinto")
 		_ = name
 	}
+	// A vault of the pinned settings that config.toml no longer lists (a
+	// pending removal) is only reported.
+	const oldID = "9f0e1d2c3b4a59687766554433221100"
 	q := p
-	q.MACs = map[string]string{"root-acme": mac, "9f0e1d2c3b4a59687766554433221100": mac}
+	q.Config = f.h.Cfg
+	q.Config.Roots = append(append([]config.Root{}, f.h.Cfg.Roots...), config.Root{ID: oldID, Path: filepath.Join(f.h.HomeDir, "work", "old"), MD: config.MDLedger})
+	q.MACs = map[string]string{"root-acme": mac, oldID: mac}
 	if err := config.SavePinned(f.h.Layout.PolicyPinned, q); err != nil {
 		t.Fatal(err)
 	}
 	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Warn, "names 1 vault that no protected folder uses")
+	// A vault that does not exist (D91).
+	opened := f.d.OpenVault
+	f.d.OpenVault = func(id string) (*vault.Vault, error) {
+		if id == oldID {
+			return nil, os.ErrNotExist
+		}
+		return opened(id)
+	}
+	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Fail, "a vault that does not exist")
+	f.d.OpenVault = opened
 	writeFile(t, f.h.Layout.PolicyPinned, `{"v":1,"unknown_key":true}`, 0o600)
 	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Fail, "cannot be read")
 	none(t, f.run(), doctor.CheckPendingPolicy)

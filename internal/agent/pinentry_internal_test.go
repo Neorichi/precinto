@@ -3,11 +3,15 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/awnumar/memguard"
 
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 )
@@ -72,5 +76,60 @@ func TestPinentrySeamIsKept(t *testing.T) {
 	}
 	if o := withDefaults(Options{Procs: platform.System(), Harden: func() error { return nil }}); o.Pinentry == nil {
 		t.Fatal("no default pinentry with the real process table")
+	}
+}
+
+// D97 (SEC-F2): the default wiring never runs a pinentry from a directory
+// the user can write, wherever it sits on the inherited PATH: the planted
+// program is never executed and nothing else qualifies here.
+func TestPinentryIgnoresUntrustedPATH(t *testing.T) {
+	evilDir := t.TempDir()
+	log := filepath.Join(evilDir, "seen.log")
+	script := "#!/bin/sh\necho ran >> \"" + log + "\"\necho OK\nwhile IFS= read -r line; do case $line in GETPIN) echo \"D x\"; echo OK ;; BYE) echo OK; exit 0 ;; *) echo OK ;; esac; done\n"
+	for _, n := range pinentryNames {
+		if err := os.WriteFile(filepath.Join(evilDir, n), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := withDefaults(Options{Env: paths.FromMap(map[string]string{"PATH": evilDir, "HOME": evilDir}), Procs: platform.System(),
+		Harden: func() error { return nil }})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if sec, err := o.Pinentry(ctx, "precinto: test", "precinto passphrase:"); !errors.Is(err, errNoPinentry) {
+		if sec != nil {
+			sec.Destroy()
+		}
+		t.Fatalf("pinentry from a user-writable directory: %v", err)
+	}
+	if b, _ := os.ReadFile(log); len(b) != 0 {
+		t.Fatal("the planted pinentry ran")
+	}
+	if _, err := findPinentry(paths.FromMap(map[string]string{"PATH": evilDir})); !errors.Is(err, errNoPinentry) {
+		t.Fatalf("findPinentry = %v", err)
+	}
+}
+
+// D97: what counts as a trusted executable.
+func TestTrustedExecutable(t *testing.T) {
+	if _, ok := trustedExecutable("/bin/sh"); !ok {
+		t.Skip("/bin/sh is not root-owned here")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pinentry")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := trustedExecutable(p); ok {
+		t.Fatal("a user-owned file in a user-owned directory is trusted")
+	}
+	link := filepath.Join(dir, "sh")
+	if err := os.Symlink("/bin/sh", link); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := trustedExecutable(link); ok {
+		t.Fatal("a root binary behind a link the user can replace is trusted")
+	}
+	if pinentryEnv(paths.FromMap(map[string]string{"PATH": "/evil:/usr/bin", "HOME": "/u"}), "/usr/local/bin/pinentry")[0] != "PATH=/usr/local/bin" {
+		t.Fatal("pinentry's PATH is not limited to its own directory")
 	}
 }

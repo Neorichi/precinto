@@ -216,14 +216,18 @@ func settingsFilesIn(dir string) []string {
 
 // flaggedEnvKeys returns the keys of a settings "env" that reach every hook
 // process and change where the shim and the hook look for precinto (D56):
-// PRECINTO_*, HOME, XDG_*, PATH, DYLD_* and LD_*.
+// PRECINTO_*, HOME, XDG_*, PATH, DYLD_* and LD_*; and the markers of other
+// hosts and of Codex that hook host detection reads (D92): COPILOT_*,
+// CURSOR_*, DROID_*, FACTORY_* and PLUGIN_ROOT.
 func flaggedEnvKeys(keys []string) []string {
 	var out []string
 	for _, k := range keys {
 		switch {
-		case k == "HOME", k == "PATH",
+		case k == "HOME", k == "PATH", k == "PLUGIN_ROOT",
 			strings.HasPrefix(k, "PRECINTO_"), strings.HasPrefix(k, "XDG_"),
-			strings.HasPrefix(k, "DYLD_"), strings.HasPrefix(k, "LD_"):
+			strings.HasPrefix(k, "DYLD_"), strings.HasPrefix(k, "LD_"),
+			strings.HasPrefix(k, "COPILOT_"), strings.HasPrefix(k, "CURSOR_"),
+			strings.HasPrefix(k, "DROID_"), strings.HasPrefix(k, "FACTORY_"):
 			out = append(out, k)
 		}
 	}

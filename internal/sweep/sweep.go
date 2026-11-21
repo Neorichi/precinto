@@ -189,6 +189,12 @@ type ReceiptFile struct {
 	SHA256  string         `json:"sha256"`
 	Size    int64          `json:"size"`
 	FromGen uint64         `json:"from_gen"`
+	// Absent: a file of the generations behind this plaintext that is not
+	// present as plaintext (a seal deleted it while other files stayed, or
+	// a restore skipped it or could not place it). Generation FromGen holds
+	// it; Snap is zero. A re-seal that still lacks it is partial, so the
+	// generation stays in the restore chain (D85).
+	Absent bool `json:"absent,omitempty"`
 }
 
 // Receipt is state/receipts/<unit>.json: the plaintext of a unit that

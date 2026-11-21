@@ -769,8 +769,19 @@ func checkPolicyTampered(e *env) []Finding {
 	if err != nil {
 		return []Finding{fail(CheckPolicyTampered, text+" (state/policy.pinned cannot be read: "+errClass(err)+")", fix)}
 	}
-	if len(p.MACs) == 0 {
-		return []Finding{fail(CheckPolicyTampered, text+" (state/policy.pinned carries no vault MAC)", fix)}
+	// D91: the daemon's rule (config.Pinned.CheckShape) once a root vault
+	// exists: no MAC, a malformed one, one for a vault outside the pinned
+	// settings or for a vault that does not exist means forged.
+	vaultExists := func(id string) bool { return e.vault(id).openErr == nil }
+	rootVault := false
+	for _, r := range e.o.Cfg.Roots {
+		if vaultExists(r.ID) {
+			rootVault = true
+		}
+	}
+	if serr := p.CheckShape(vaultExists); serr != nil && (rootVault || len(p.MACs) == 0) {
+		reason := strings.TrimPrefix(serr.Error(), config.ErrForgedPin.Error()+": ")
+		return []Finding{fail(CheckPolicyTampered, text+" (state/policy.pinned "+reason+")", fix)}
 	}
 	known := map[string]bool{}
 	for _, id := range e.vaultIDs() {
@@ -778,10 +789,7 @@ func checkPolicyTampered(e *env) []Finding {
 	}
 	var out []Finding
 	var foreign []string
-	for id, mac := range p.MACs {
-		if !isHexMAC(mac) {
-			return []Finding{fail(CheckPolicyTampered, text+" (state/policy.pinned has a malformed MAC)", fix)}
-		}
+	for id := range p.MACs {
 		if !known[id] {
 			foreign = append(foreign, id)
 		}
@@ -796,19 +804,6 @@ func checkPolicyTampered(e *env) []Finding {
 		out = append(out, ok(CheckPolicyTampered, "the saved copy of the confirmed settings is well-formed (the agent checks its MACs at unlock)"))
 	}
 	return out
-}
-
-// isHexMAC reports whether s is a hex HMAC-SHA256.
-func isHexMAC(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
-			return false
-		}
-	}
-	return true
 }
 
 func checkConflict(e *env) []Finding {

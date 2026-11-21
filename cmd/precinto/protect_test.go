@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -473,5 +474,27 @@ func TestUnprotectRemovesOnlyPrecintoSettings(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(settings); string(b) != `{"idleCompaction":false}` {
 		t.Fatalf("settings changed without claude_settings: %q", b)
+	}
+}
+
+// SPEC §4.6 (D95, SEC-F5): protect hardens before it creates a vault,
+// whose passphrase prompt is relayed to its terminal.
+func TestProtectHardens(t *testing.T) {
+	e := newEnv(t)
+	mkdir(t, filepath.Join(e.h.HomeDir, "work", "beta"))
+	e.cwd = e.h.HomeDir
+	e.vaults.metas["x"] = e.vaults.metas["root-acme"]
+	if code := e.run("protect", "work/beta", "--harness", "claude-code"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if len(e.daemon.creates) != 1 || e.hardened != 1 {
+		t.Fatalf("vault_create calls %d, harden calls %d", len(e.daemon.creates), e.hardened)
+	}
+	e2 := newEnv(t)
+	mkdir(t, filepath.Join(e2.h.HomeDir, "work", "beta"))
+	e2.cwd = e2.h.HomeDir
+	e2.hardenErr = errors.New("ptrace attach allowed")
+	if code := e2.run("protect", "work/beta", "--harness", "claude-code"); code == exitOK || len(e2.daemon.creates) != 0 {
+		t.Fatalf("protect went on after a failed harden: exit %d, %d vault_create", code, len(e2.daemon.creates))
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -466,12 +467,16 @@ func (c Config) RootFor(p string) (Root, bool) {
 }
 
 // RootsFor returns the distinct roots containing any of ps, deepest first
-// (ties by id, so the order is deterministic).
+// (ties by id, so the order is deterministic). On darwin a root whose
+// path holds non-ASCII bytes is also matched by identity (D93): APFS
+// ignores Unicode normalization, getcwd returns a name as stored (often
+// NFD, as Finder creates it) while Claude Code reports its cwd in NFC, so
+// both spellings of one folder must match.
 func (c Config) RootsFor(ps ...string) []Root {
 	var out []Root
 	for _, r := range c.Roots {
 		for _, p := range ps {
-			if p != "" && paths.Within(r.Path, p) {
+			if p != "" && (paths.Within(r.Path, p) || sameFolderWithin(r.Path, p)) {
 				out = append(out, r)
 				break
 			}
@@ -479,6 +484,77 @@ func (c Config) RootsFor(ps ...string) []Root {
 	}
 	sortDeepestFirst(out)
 	return out
+}
+
+// sameFolderWithin is RootsFor's identity fallback (D93): on darwin, for a
+// root with non-ASCII bytes (only those can differ in normalization), p is
+// within the root when an existing ancestor of p is the root's directory
+// (fsx.Contains compares (dev, ino)).
+func sameFolderWithin(root, p string) bool {
+	if runtime.GOOS != "darwin" || isASCII(root) || !filepath.IsAbs(root) || !filepath.IsAbs(p) {
+		return false
+	}
+	ok, err := fsx.Contains(root, p)
+	return err == nil && ok
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// storedSpelling returns the spelling of the existing directory p as the
+// file system stores it (getcwd's answer on APFS), found by identity among
+// the entries of each parent whose component holds non-ASCII bytes; ""
+// when p does not resolve (D93).
+func storedSpelling(p string) string {
+	if isASCII(p) || !filepath.IsAbs(p) {
+		return p
+	}
+	cur := "/"
+	for _, c := range strings.Split(strings.TrimPrefix(filepath.Clean(p), "/"), "/") {
+		next := filepath.Join(cur, c)
+		if isASCII(c) {
+			cur = next
+			continue
+		}
+		want, err := fsx.Lstat(next)
+		if err != nil {
+			return ""
+		}
+		ents, err := os.ReadDir(cur)
+		if err != nil {
+			return ""
+		}
+		found := ""
+		for _, e := range ents {
+			if n := e.Name(); n == c {
+				found = n
+				break
+			}
+		}
+		if found == "" {
+			for _, e := range ents {
+				n := e.Name()
+				if isASCII(n) {
+					continue
+				}
+				if st, err := fsx.Lstat(filepath.Join(cur, n)); err == nil && st.SameFile(want) {
+					found = n
+					break
+				}
+			}
+		}
+		if found == "" {
+			return ""
+		}
+		cur = filepath.Join(cur, found)
+	}
+	return cur
 }
 
 func sortDeepestFirst(rs []Root) {
@@ -557,6 +633,14 @@ func WriteRootsList(path string, c Config) error {
 	for _, r := range c.Roots {
 		b.WriteString(r.Path)
 		b.WriteByte('\n')
+		// D93: also the spelling the file system stores (getcwd's, which
+		// Codex reports), so the byte-comparing shim matches both.
+		if runtime.GOOS == "darwin" {
+			if s := storedSpelling(r.Path); s != "" && s != r.Path && !strings.ContainsAny(s, "\n\r") {
+				b.WriteString(s)
+				b.WriteByte('\n')
+			}
+		}
 	}
 	return fsx.WriteFileAtomic(path, []byte(b.String()), 0o600)
 }
@@ -681,6 +765,55 @@ func LoadPinned(path string) (p Pinned, ok bool, err error) {
 		return Pinned{}, false, fmt.Errorf("%w: %s", ErrInvalid, filepath.Base(path))
 	}
 	return p, true, nil
+}
+
+// PinnedGlobalVault is the vault id of the global stores (vault.GlobalID),
+// the one MAC key of a pin that is not a root of its settings.
+const PinnedGlobalVault = "global"
+
+// ErrForgedPin is a decodable pin of a shape precinto never writes (D91).
+var ErrForgedPin = errors.New("config: policy.pinned has a forged shape")
+
+// CheckShape reports why a decodable pin is forged (D91): every pin
+// precinto writes once a root vault exists carries at least one MAC, each
+// 64 hex characters, keyed by "global" or a root of the pinned settings,
+// naming a vault that exists (vaultExists: vaults/<id>/vault.toml). The
+// daemon and doctor apply the same rule; MAC values are checked by the
+// daemon with the vault keys at unlock.
+func (p Pinned) CheckShape(vaultExists func(id string) bool) error {
+	if len(p.MACs) == 0 {
+		return fmt.Errorf("%w: carries no vault MAC", ErrForgedPin)
+	}
+	ids := make([]string, 0, len(p.MACs))
+	for id := range p.MACs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if !hexMAC(p.MACs[id]) {
+			return fmt.Errorf("%w: has a malformed MAC", ErrForgedPin)
+		}
+		if _, ok := p.Config.RootByID(id); !ok && id != PinnedGlobalVault {
+			return fmt.Errorf("%w: has a MAC for a vault outside its settings", ErrForgedPin)
+		}
+		if vaultExists != nil && !vaultExists(id) {
+			return fmt.Errorf("%w: has a MAC for a vault that does not exist", ErrForgedPin)
+		}
+	}
+	return nil
+}
+
+// hexMAC reports a hex HMAC-SHA256 (64 hex characters).
+func hexMAC(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // SavePinned writes p atomically with mode 0600. Implemented in the

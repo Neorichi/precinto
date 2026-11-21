@@ -3,18 +3,20 @@ package hook
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 
 	"github.com/precinto/precinto/internal/paths"
 )
 
-// Host markers in the hook environment (HOOKS-IO §0.7, D56). Codex sets
-// PLUGIN_ROOT (and the CLAUDE_PLUGIN_ROOT alias) for plugin hooks; Claude
-// sets only CLAUDE_PLUGIN_ROOT, plus CLAUDECODE=1 and usually CLAUDE_PID.
+// Host markers in the hook environment (HOOKS-IO §0.7, D56, D92). Codex
+// sets PLUGIN_ROOT (and the CLAUDE_PLUGIN_ROOT alias) for plugin hooks;
+// Claude sets only CLAUDE_PLUGIN_ROOT, plus CLAUDECODE=1 and usually
+// CLAUDE_PID. Both pass the user's whole environment to hooks, so another
+// host's variables (CURSOR_*, COPILOT_*, DROID_*, FACTORY_*) are often
+// merely inherited: they only break ties when neither Claude's nor
+// Codex's markers are there, by exact name.
 const (
 	envCursorVersion    = "CURSOR_VERSION"
 	envCursorPluginRoot = "CURSOR_PLUGIN_ROOT"
-	envCopilotPrefix    = "COPILOT_"
 	envDroidPluginRoot  = "DROID_PLUGIN_ROOT"
 	envFactoryProject   = "FACTORY_PROJECT_DIR"
 )
@@ -30,50 +32,54 @@ var labelHosts = map[string]Host{
 	string(HostDroid):   HostDroid,
 }
 
-// detectHost implements DetectHost. The first match wins; a missing marker
-// only moves the decision to a later rule, never to "allow".
+// detectHost implements DetectHost (D92). The first match wins; a missing
+// marker only moves the decision to a later rule, never to "allow":
+//
+//  1. the codex label (codex.json lives only in the Codex plugin, which
+//     only Codex loads), or turn_id in the payload: Codex;
+//  2. the cursor and copilot labels: their hosts;
+//  3. a camelCase event name, which only Copilot and Cursor generate:
+//     Cursor when Cursor's own variables are set, else Copilot;
+//  4. Claude's markers (CLAUDE_PID, CLAUDECODE=1, CLAUDE_PROJECT_DIR)
+//     with Claude's PascalCase payload: Claude, whatever other hosts'
+//     variables the environment inherited;
+//  5. PLUGIN_ROOT without Claude's markers: Codex;
+//  6. only then other hosts' variables, by exact name: Cursor, Droid;
+//  7. the label.
 func detectHost(label string, env paths.Env, raw []byte) Host {
 	set := func(k string) bool { _, ok := env.Lookup(k); return ok }
 	nonEmpty := func(k string) bool { return env.Get(k) != "" }
 
-	// 1. Other hosts' markers.
-	if set(envCursorVersion) || set(envCursorPluginRoot) {
-		return HostCursor
+	if label == string(HostCodex) || payloadHasKey(raw, "turn_id") {
+		return HostCodex
 	}
-	if hasPrefixVar(env, envCopilotPrefix) || camelCase(payloadEventName(raw)) {
+	if label == string(HostCursor) || label == string(HostCopilot) {
+		return labelHosts[label]
+	}
+	cursorEnv := set(envCursorVersion) || set(envCursorPluginRoot)
+	if camelCase(payloadEventName(raw)) {
+		if cursorEnv {
+			return HostCursor
+		}
 		return HostCopilot
+	}
+	claudeMarkers := nonEmpty(paths.EnvClaudePID) || env.Get(paths.EnvClaudeCode) == "1" || nonEmpty(paths.EnvClaudeProjectDir)
+	if claudeMarkers {
+		return HostClaude
+	}
+	if set(paths.EnvPluginRoot) && !set(paths.EnvClaudePID) && !set(paths.EnvClaudeCode) {
+		return HostCodex
+	}
+	if cursorEnv {
+		return HostCursor
 	}
 	if set(envDroidPluginRoot) || set(envFactoryProject) {
 		return HostDroid
 	}
-	// 2. Codex markers: turn_id in the payload, or PLUGIN_ROOT with the codex
-	// label or without Claude's markers.
-	if payloadHasKey(raw, "turn_id") {
-		return HostCodex
-	}
-	if set(paths.EnvPluginRoot) && (label == string(HostCodex) || (!set(paths.EnvClaudePID) && !set(paths.EnvClaudeCode))) {
-		return HostCodex
-	}
-	// 3. Claude markers.
-	if nonEmpty(paths.EnvClaudePID) || env.Get(paths.EnvClaudeCode) == "1" || nonEmpty(paths.EnvClaudeProjectDir) {
-		return HostClaude
-	}
-	// 4. The label names the hooks file that invoked the hook.
 	if h, ok := labelHosts[label]; ok {
 		return h
 	}
 	return HostUnknown
-}
-
-// hasPrefixVar reports whether any variable whose name starts with prefix
-// is set.
-func hasPrefixVar(env paths.Env, prefix string) bool {
-	for _, kv := range env.Environ() {
-		if strings.HasPrefix(kv, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // payloadHasKey reports whether raw is a JSON object with a non-null

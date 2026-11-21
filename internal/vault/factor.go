@@ -181,8 +181,11 @@ func planPlugin(spec FactorSpec, now time.Time) (*factorPlan, error) {
 		return nil, err
 	}
 	real = filepath.Clean(real)
+	if unsafeShownPath(spec.PluginPath) || unsafeShownPath(real) {
+		return nil, fmt.Errorf("vault: the plugin path holds control or invisible characters")
+	}
 	if filepath.Base(real) != want {
-		return nil, fmt.Errorf("vault: %s resolves to %s", spec.PluginPath, real)
+		return nil, fmt.Errorf("vault: %q resolves to %q", spec.PluginPath, real)
 	}
 	sum, err := pinHash(real)
 	if err != nil {

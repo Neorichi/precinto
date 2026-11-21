@@ -354,6 +354,28 @@ func (r *run) rootPathOf(u harness.Unit) string {
 // sealLayered seals a layered unit (Claude kinds, notes, generic, global
 // stores): SPEC §10.3.
 func (r *run) sealLayered(ctx context.Context, u harness.Unit, o Options, explicit bool) UnitResult {
+	res, _ := r.sealLayeredIf(ctx, u, o, explicit, false)
+	return res
+}
+
+// sealLayeredIf is sealLayered; with unchangedOnly it acts only when every
+// file equals its receipt (the plaintext is dropped without a new
+// generation) and otherwise returns acted=false having written nothing:
+// a note restored at a moved marker's location is dropped under the unit
+// it was restored from, never sealed into it (D83).
+func (r *run) sealLayeredIf(ctx context.Context, u harness.Unit, o Options, explicit, unchangedOnly bool) (res UnitResult, acted bool) {
+	res = r.sealLayeredUnit(ctx, u, o, explicit, unchangedOnly)
+	if res.Detail == detailNotUnchanged {
+		return res, false
+	}
+	return res, true
+}
+
+// detailNotUnchanged is the internal result of sealLayeredUnit with
+// unchangedOnly when the files differ from their receipt.
+const detailNotUnchanged = "not unchanged"
+
+func (r *run) sealLayeredUnit(ctx context.Context, u harness.Unit, o Options, explicit, unchangedOnly bool) UnitResult {
 	res := resultOf(u)
 	if !validKey(u.Key) {
 		return failed(res, fmt.Errorf("%w: invalid unit key", harness.ErrUnitKey))
@@ -423,6 +445,10 @@ func (r *run) sealLayered(ctx context.Context, u harness.Unit, o Options, explic
 			return liveResult(res, live.Verdict{Live: true}, explicit, "changed")
 		}
 		return failed(res, err)
+	}
+	if unchangedOnly && !lp.Unchanged {
+		res.Outcome, res.Detail = OutSkipped, detailNotUnchanged
+		return res
 	}
 	res.Lineage = lp.Lineage
 	if o.DryRun {
@@ -711,6 +737,18 @@ func (us *unitSeal) entry(gen, parent uint64, l capsule.Lineage, last time.Time)
 // finishUnlink runs SPEC §10.3 steps 6–8 after a commit.
 func (us *unitSeal) finishUnlink(ctx context.Context, rec *journal.Record, gen uint64, shas map[fileKey]string, ok Outcome, ledN int64) UnitResult {
 	r, u, res := us.r, us.u, us.res
+	// D82: the plaintext goes only while the generation that holds it is
+	// still in the store (defence in depth: quarantine moves a capsule
+	// only under the unit lock this seal holds).
+	if st, err := us.caps.Lstat(capsule.GenName(gen)); err != nil || !st.IsRegular() {
+		if err == nil {
+			err = fsx.ErrUnsafe
+		}
+		_ = r.jr.Done(rec)
+		res = failed(res, err)
+		res.Detail = "capsule missing after commit: plaintext kept (" + safeMsg(err) + ")"
+		return res
+	}
 	var ur unlinkResult
 	ignored := 0
 	if err := us.beforeUnlink(); err != nil {
@@ -1034,21 +1072,27 @@ func (r *run) rescue(ctx context.Context, u harness.Unit, rec *journal.Record, k
 // identity still equals the snapshot, and left out otherwise (it re-seals
 // as new; its older bytes stay in their generation).
 func (r *run) rewriteReceipt(unit string, kind capsule.Kind, h string, bases map[capsule.BaseID]dirHandle, rec *journal.Record, shas map[fileKey]string, gen uint64, old *receiptDisk, baseDirs map[capsule.BaseID]string) error {
-	var files []ReceiptFile
+	var files, absent []ReceiptFile
+	journaled := map[fileKey]bool{}
 	for _, jf := range rec.Files {
+		id := capsule.BaseID(jf.Base)
+		journaled[fileKey{id, jf.Rel}] = true
+		sum := shas[fileKey{id, jf.Rel}]
 		if jf.Done {
+			// D85: deleted by this seal; the receipt, if it stays, keeps
+			// it as absent so the next generation is partial.
+			absent = append(absent, ReceiptFile{Base: id, Rel: jf.Rel, SHA256: sum, Size: jf.Snap.Size, FromGen: gen, Absent: true})
 			continue
 		}
-		id := capsule.BaseID(jf.Base)
 		d := bases[id]
 		if d == nil {
 			continue
 		}
 		st, err := d.Lstat(jf.Rel)
 		if err != nil && isMissing(err) {
+			absent = append(absent, ReceiptFile{Base: id, Rel: jf.Rel, SHA256: sum, Size: jf.Snap.Size, FromGen: gen, Absent: true})
 			continue
 		}
-		sum := shas[fileKey{id, jf.Rel}]
 		if sum == "" {
 			if err != nil || !st.Unchanged(jf.Snap) {
 				continue
@@ -1063,6 +1107,18 @@ func (r *run) rewriteReceipt(unit string, kind capsule.Kind, h string, bases map
 	}
 	if len(files) == 0 {
 		return r.deleteReceipt(unit)
+	}
+	if old != nil {
+		for _, f := range old.Files {
+			if f.Absent && !journaled[fileKey{f.Base, f.Rel}] {
+				absent = append(absent, f)
+			}
+		}
+	}
+	for _, f := range absent {
+		if f.SHA256 != "" {
+			files = append(files, f)
+		}
 	}
 	rd := receiptDisk{Receipt: Receipt{Unit: unit, Gen: gen, RestoredAt: r.now(), Files: files}, Kind: kind, Harness: h, Bases: map[capsule.BaseID]string{}}
 	if old != nil && !old.RestoredAt.IsZero() {

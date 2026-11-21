@@ -389,10 +389,11 @@ func TestLayeredConflictKeepsBothVersions(t *testing.T) {
 	p := filepath.Join(te.h.ClaudeConfig, rel)
 	writeAt(t, p, []byte("one\n"))
 	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
-	// gen 1 has no x.txt; seal x.txt v1 as gen 2, then change it (not an
-	// append) and seal gen 3 (diverged).
+	// gen 1 has no x.txt; seal x.txt v1 as gen 2, then write another
+	// version precinto never placed (a real branch: no receipt; an in-place
+	// rewrite of a restored file supersedes instead, D87) and seal gen 3
+	// (diverged).
 	te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
-	te.restoreUnits(RestoreRequest{Units: []harness.UnitRef{refOf(u)}})
 	writeAt(t, p, []byte("two\n"))
 	rep, _ := te.run().sealCommand(tctx(t), []harness.Unit{te.scanSession(sid1)}, Options{})
 	if res := outcome(t, rep, u.Key); res.Lineage != capsule.LineageDiverged {

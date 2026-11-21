@@ -101,8 +101,8 @@ Los hooks son una barrera, no una frontera de seguridad: un harness se puede arr
 Necesitas una copia del repositorio y además:
 
 - Go 1.21 o posterior, `make` y `git`. `go.mod` fija `toolchain go1.26.11`, así que, con el valor por defecto `GOTOOLCHAIN=auto`, el comando go descarga y usa Go 1.26.11 la primera vez que compilas (para eso necesita acceso de red al proxy de módulos de Go).
-- En macOS, para el factor por defecto, `age-plugin-se` (`brew install age-plugin-se`; revisa qué versiones de macOS admite). Opcional: `pinentry-mac`, para desbloquear con una frase de paso o con un plugin desde dentro de un harness.
-- En Linux, opcionales: `pinentry-gnome3`, y `age-plugin-yubikey` si quieres usar una YubiKey.
+- En macOS, para el factor por defecto, `age-plugin-se` (`brew install age-plugin-se`; revisa qué versiones de macOS admite). Opcional: `pinentry-mac`, para desbloquear con una frase de paso o con un plugin desde dentro de un harness. precinto solo ejecuta un pinentry instalado en una ubicación que solo root puede cambiar (`/usr/bin`, `/opt/local/bin` de MacPorts, GPG Suite), nunca desde el prefijo de Homebrew, en el que puedes escribir tú y, por tanto, cualquier programa que se ejecute con tu usuario; si solo tienes el `pinentry-mac` de Homebrew, desbloquea con la frase de paso en una terminal.
+- En Linux, opcionales: `pinentry-gnome3` (de los paquetes de tu distribución), y `age-plugin-yubikey` si quieres usar una YubiKey.
 
 ```sh
 cd precinto                    # tu copia del repositorio
@@ -182,7 +182,7 @@ min_free = "2GiB"              # espacio libre que precinto deja siempre en el d
 
 `min_free` admite un tamaño como `"512MiB"` o `"4GiB"` (unidades binarias; como mínimo `512MiB`). Si sellar una sesión dejara menos espacio libre que eso, precinto deja la sesión como está y avisa de que el disco está lleno (*disk full*) en vez de llenarlo; el mismo límite vale para las restauraciones.
 
-Los cambios que **rebajan** la protección (quitar una carpeta o un harness, alargar un temporizador, desactivar un disparador, sellar menos notas, relajar las peticiones de desbloqueo, bajar `min_free`) quedan en espera hasta que, en tu próximo desbloqueo desde una terminal, precinto te los enseña y los confirmas. Los cambios más estrictos se aplican al momento. Así, ni otro programa que se ejecute con tu usuario ni un agente pueden rebajar la protección sin que te enteres. `unlock_on_prompt` viene desactivado; está previsto activarlo cuando su prueba de extremo a extremo pase en la versión de Claude Code de referencia.
+Los cambios que **rebajan** la protección (quitar una carpeta o un harness, alargar un temporizador, desactivar un disparador, sellar menos notas, relajar las peticiones de desbloqueo, bajar `min_free`) quedan en espera hasta que, en tu próximo desbloqueo desde una terminal, precinto te los enseña y los confirmas. Los cambios más estrictos se aplican al momento. Así, ni otro programa que se ejecute con tu usuario ni un agente pueden rebajar la protección sin que te enteres. Cuando el agente en segundo plano de precinto se reinicia, el primer desbloqueo de una carpeta para la que tu configuración guardada aún no está firmada puede enseñarte tus ajustes personalizados y pedirte que los confirmes una vez. `unlock_on_prompt` viene desactivado; está previsto activarlo cuando su prueba de extremo a extremo pase en la versión de Claude Code de referencia.
 
 ## Herramientas compatibles
 

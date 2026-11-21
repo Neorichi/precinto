@@ -14,6 +14,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/sweep/queue"
 	"github.com/precinto/precinto/internal/vault"
@@ -565,21 +566,36 @@ func (r *run) quarantine(ctx context.Context) error {
 				res.Unit = parts[1]
 			}
 		}
-		dir, name := path.Split(rel)
-		src, err := root.OpenDir(path.Clean(dir), false)
-		if err != nil {
-			r.add(failed(res, err))
-			continue
+		// D82: a capsule inside a unit directory is moved only under that
+		// unit's lock, after the journal and the log are read again. Every
+		// operation that writes a capsule holds the lock from its journal
+		// record to its log append, so a seal committed by another process
+		// since the walk began is logged now and stays; a unit whose lock
+		// is held is left for the next sweep.
+		var lk *fsx.Lock
+		if len(parts) >= 3 && res.Unit != "" {
+			l, err := r.lockUnit(res.Unit)
+			if errors.Is(err, fsx.ErrLocked) {
+				continue // an operation on the unit is in flight
+			}
+			if err != nil {
+				r.add(failed(res, err))
+				continue
+			}
+			lk = l
+			own, err := r.ownCapsule(root, rel)
+			if err != nil || own {
+				lk.Unlock()
+				if err != nil {
+					r.add(failed(res, err))
+				}
+				continue
+			}
 		}
-		dst, err := q.OpenDir(path.Join(op, path.Clean(dir)), true)
-		if err != nil {
-			src.Close()
-			r.add(failed(res, err))
-			continue
+		err := r.moveToQuarantine(root, q, op, rel)
+		if lk != nil {
+			lk.Unlock()
 		}
-		err = src.RenameTo(name, dst, name, fsx.NoReplace)
-		src.Close()
-		dst.Close()
 		if err != nil {
 			r.add(failed(res, err))
 			continue
@@ -588,4 +604,60 @@ func (r *run) quarantine(ctx context.Context) error {
 		r.add(res)
 	}
 	return nil
+}
+
+// ownCapsule re-checks one quarantine candidate under its unit lock
+// (D82): it is precinto's own when a pending journal record names it or
+// when the log now holds it with the header it has on disk.
+func (r *run) ownCapsule(root dirHandle, rel string) (bool, error) {
+	pending, err := r.jr.Pending()
+	if err != nil {
+		return false, err
+	}
+	for _, rec := range pending {
+		for _, p := range recordedCapsules(rec) {
+			if p == rel || strings.HasPrefix(rel, p+"/") {
+				return true, nil
+			}
+		}
+	}
+	dir, name := path.Split(rel)
+	d, err := root.OpenDir(path.Clean(dir), false)
+	if err != nil {
+		if isMissing(err) {
+			return true, nil // gone meanwhile: nothing to move
+		}
+		return false, err
+	}
+	_, sum, herr := r.p.codec.ReadHeader(d, name)
+	d.Close()
+	if herr != nil {
+		if isMissing(herr) {
+			return true, nil
+		}
+		return false, nil // unreadable header: not provably ours
+	}
+	if _, err := r.log.Lookup(rel, sum); err == nil {
+		return true, nil
+	} else if !errors.Is(err, capslog.ErrNotLogged) {
+		return false, err
+	}
+	return false, nil
+}
+
+// moveToQuarantine renames one capsule of the store (rel, relative to
+// CapsulesDir) into quarantine/<op>/, mirroring its store path.
+func (r *run) moveToQuarantine(root, q dirHandle, op, rel string) error {
+	dir, name := path.Split(rel)
+	src, err := root.OpenDir(path.Clean(dir), false)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := q.OpenDir(path.Join(op, path.Clean(dir)), true)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	return src.RenameTo(name, dst, name, fsx.NoReplace)
 }

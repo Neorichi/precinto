@@ -234,8 +234,13 @@ func TestResolveKeepCapsuleRetainsThePlaintext(t *testing.T) {
 		t.Fatal("capsule version not in place")
 	}
 	en := te.logged(key)
-	if len(en) != 2 || capsule.Lineage(en[1].Lineage) != capsule.LineageDiverged {
+	if len(en) != 3 || capsule.Lineage(en[1].Lineage) != capsule.LineageDiverged {
 		t.Fatalf("the other side was not retained as a generation: %+v", en)
+	}
+	// D88: the chosen side is the newest generation, outside the retained
+	// side's line (its parent is the generation before it).
+	if capsule.Lineage(en[2].Lineage) != capsule.LineagePartial || en[2].Parent != en[0].Gen {
+		t.Fatalf("the chosen side is not the newest generation: %+v", en[2])
 	}
 	if _, err := te.run().resolve(tctx(t), te.keys, p, "both"); err == nil {
 		t.Fatal("unknown --keep accepted")
@@ -469,5 +474,41 @@ func TestNoteTargetAliasCheck(t *testing.T) {
 		}
 	} else {
 		t.Log("case-sensitive volume: alias check only by name")
+	}
+}
+
+// D88 (DATA-8): after `resolve --keep capsule`, a lock and an unlock keep
+// the user's choice: the chosen note is back at its path, no conflict is
+// reported, and the rejected side still exists as a logged generation.
+func TestResolveKeepCapsuleSurvivesTheNextCycle(t *testing.T) {
+	t.Parallel()
+	te := newTestEnv(t)
+	p := te.note("docs/notes.md", "sealed version\n")
+	te.sealNotes()
+	writeAt(t, p, []byte("branch version\n"))
+	te.restoreNotes()
+	key := te.noteKey("docs/notes.md")
+	if _, err := te.run().resolve(tctx(t), te.keys, p, "capsule"); err != nil {
+		t.Fatal(err)
+	}
+	ageNote(t, p)
+	if res := outcome(t, te.sealNotes(), key); res.Outcome != OutUnchanged {
+		t.Fatalf("lock %+v", res)
+	}
+	res := outcome(t, te.restoreNotes(), key)
+	if res.Outcome != OutRestored {
+		t.Fatalf("restore after the cycle %+v", res)
+	}
+	if string(readFile(t, p)) != "sealed version\n" {
+		t.Fatalf("the rejected side came back: %q", readFile(t, p))
+	}
+	rejected := false
+	for _, en := range te.logged(key) {
+		if capsule.Lineage(en.Lineage) == capsule.LineageDiverged {
+			rejected = true
+		}
+	}
+	if !rejected {
+		t.Fatal("the rejected side is no longer a logged generation")
 	}
 }

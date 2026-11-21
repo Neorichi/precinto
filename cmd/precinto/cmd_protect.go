@@ -57,6 +57,12 @@ func cmdProtect(a *app, args []string) int {
 	if err := oneOfFlag("on-enter", *onEnter, config.OnEnterPrompt, config.OnEnterNotify, config.OnEnterOff); err != nil {
 		return a.usageFail(f, err.Error())
 	}
+	// SPEC §4.6 (D95): vault_create relays the install passphrase to this
+	// terminal, so protect hardens (no core dumps, no debugger, never as
+	// root) before it opens the terminal or dials the daemon.
+	if err := a.sys.harden(); err != nil {
+		return a.fail("protect", err)
+	}
 	dir, err := a.resolveDir(pos[0])
 	if err != nil {
 		return a.fail("protect", err)

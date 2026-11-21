@@ -252,6 +252,9 @@ const (
 // the newline).
 const MaxLine = 64 << 10
 
+// MaxRecord bounds Dir.AppendRecord.
+const MaxRecord = 64 << 20
+
 // Errors. Callers test them with errors.Is.
 var (
 	// ErrUnsafe: a symlink, foreign owner, group/other-writable directory
@@ -386,6 +389,11 @@ func OpenBase(path string) (*Dir, error)
 // a torn last line). Parent directories are never created (failpoints
 // "fsx.write", "fsx.fsync").
 func (d *Dir) AppendLine(rel string, line []byte) error
+
+// AppendRecord is AppendLine for one record of up to MaxRecord bytes (a
+// long history line, D90): the same single O_APPEND write, opened and
+// synced the same way.
+func (d *Dir) AppendRecord(rel string, line []byte) error
 
 // Chmod sets permission bits of rel (masked with 0o700) without following.
 func (d *Dir) Chmod(rel string, perm fs.FileMode) error
@@ -4453,6 +4461,12 @@ type ReceiptFile struct {
 	SHA256  string         `json:"sha256"`
 	Size    int64          `json:"size"`
 	FromGen uint64         `json:"from_gen"`
+	// Absent: a file of the generations behind this plaintext that is not
+	// present as plaintext (a seal deleted it while other files stayed, or
+	// a restore skipped it or could not place it). Generation FromGen holds
+	// it; Snap is zero. A re-seal that still lacks it is partial, so the
+	// generation stays in the restore chain (D85).
+	Absent bool `json:"absent,omitempty"`
 }
 
 // Report aggregates a run.
@@ -5483,6 +5497,10 @@ const MaxFileBytes = 1 << 20
 // MaxUnlockCap is the hard cap on policy.max_unlock and on any unlock TTL.
 const MaxUnlockCap = 24 * time.Hour
 
+// PinnedGlobalVault is the vault id of the global stores (vault.GlobalID),
+// the one MAC key of a pin that is not a root of its settings.
+const PinnedGlobalVault = "global"
+
 // PinnedVersion is the state/policy.pinned format version.
 const PinnedVersion = 1
 
@@ -5503,6 +5521,9 @@ var DefaultMDExclude = []string{
 	".git/**", ".claude/**", ".codex/**", ".cursor/**", ".agents/**", ".gemini/**", ".github/**",
 	"node_modules/**", "vendor/**", ".venv/**",
 }
+
+// ErrForgedPin is a decodable pin of a shape precinto never writes (D91).
+var ErrForgedPin = errors.New("config: policy.pinned has a forged shape")
 
 // Canonical returns the deterministic encoding of c that policy MACs cover:
 // JSON with roots sorted by id and homes by directory (map keys are sorted
@@ -5581,7 +5602,11 @@ func (c Config) RootByID(id string) (Root, bool)
 func (c Config) RootFor(p string) (Root, bool)
 
 // RootsFor returns the distinct roots containing any of ps, deepest first
-// (ties by id, so the order is deterministic).
+// (ties by id, so the order is deterministic). On darwin a root whose
+// path holds non-ASCII bytes is also matched by identity (D93): APFS
+// ignores Unicode normalization, getcwd returns a name as stored (often
+// NFD, as Finder creates it) while Claude Code reports its cwd in NFC, so
+// both spellings of one folder must match.
 func (c Config) RootsFor(ps ...string) []Root
 
 // Validate rejects relative or unclean root paths, duplicate ids or paths,
@@ -5645,6 +5670,14 @@ type Pinned struct {
 // opened like Load's file: a FIFO or symlink planted at the path is an
 // error wrapping fsx.ErrUnsafe (policy-tampered), never a hang.
 func LoadPinned(path string) (p Pinned, ok bool, err error)
+
+// CheckShape reports why a decodable pin is forged (D91): every pin
+// precinto writes once a root vault exists carries at least one MAC, each
+// 64 hex characters, keyed by "global" or a root of the pinned settings,
+// naming a vault that exists (vaultExists: vaults/<id>/vault.toml). The
+// daemon and doctor apply the same rule; MAC values are checked by the
+// daemon with the vault keys at unlock.
+func (p Pinned) CheckShape(vaultExists func(id string) bool) error
 
 // Policy is the [policy] table. TOML keys are the snake_case tags.
 type Policy struct {

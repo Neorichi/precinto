@@ -161,7 +161,8 @@ func TestInodeSwapBeforeUnlinkKeepsTheFile(t *testing.T) {
 	// It stays as plaintext tracked by the receipt (as sealed); its bytes
 	// equal the sealed ones, so the next seal drops it as unchanged.
 	rd, ok, _ := LoadReceipt(te.e, u.Key)
-	if !ok || len(rd.Files) != 1 || rd.Files[0].Rel != u.Files[0].Rel || rd.Gen != 1 {
+	present, absent := splitReceipt(rd)
+	if !ok || len(present) != 1 || present[0].Rel != u.Files[0].Rel || rd.Gen != 1 || len(absent) != len(u.Files)-1 {
 		t.Fatalf("receipt %+v", rd)
 	}
 	te.fs.onUnlink = nil

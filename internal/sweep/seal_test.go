@@ -295,8 +295,13 @@ func TestRemoveFailedRetriesAsUnchanged(t *testing.T) {
 		t.Fatal("victim gone")
 	}
 	rd, ok, err := LoadReceipt(te.e, u.Key)
-	if err != nil || !ok || rd.Gen != 1 || len(rd.Files) != 1 || rd.Files[0].FromGen != 1 {
+	present, absent := splitReceipt(rd)
+	if err != nil || !ok || rd.Gen != 1 || len(present) != 1 || present[0].FromGen != 1 {
 		t.Fatalf("receipt %+v %v %v", rd, ok, err)
+	}
+	// D85: the files the seal deleted stay in the receipt as absent.
+	if len(absent) != len(u.Files)-1 {
+		t.Fatalf("absent entries %d, want %d", len(absent), len(u.Files)-1)
 	}
 	// A restore now is a no-op for the file left behind (equal hash).
 	rep, err = te.run().restore(ctx, te.keys, RestoreRequest{Units: []harness.UnitRef{{Kind: capsule.KindClaudeSession, Key: u.Key}}})
@@ -635,4 +640,16 @@ func TestPruneOnlyListedBaseDirectories(t *testing.T) {
 	if !exists(filepath.Join(tmp, "keep", "foreign.txt")) {
 		t.Fatal("a listed directory holding a foreign file was removed")
 	}
+}
+
+// splitReceipt separates a receipt's present and absent (D85) entries.
+func splitReceipt(rd Receipt) (present, absent []ReceiptFile) {
+	for _, f := range rd.Files {
+		if f.Absent {
+			absent = append(absent, f)
+		} else {
+			present = append(present, f)
+		}
+	}
+	return present, absent
 }

@@ -101,8 +101,8 @@ Hooks are a gate, not a security boundary: a harness can be started with hooks t
 You need a checkout of the repository and:
 
 - Go 1.21 or newer, `make` and `git`. `go.mod` pins `toolchain go1.26.11`, so with the default `GOTOOLCHAIN=auto` the go command downloads and uses Go 1.26.11 the first time you build (this needs network access to the Go module proxy).
-- On macOS, for the default factor: `age-plugin-se` (`brew install age-plugin-se`; check its own macOS requirements). Optional: `pinentry-mac`, to unlock with a passphrase or a plugin factor from inside a harness.
-- On Linux, optional: `pinentry-gnome3`, and `age-plugin-yubikey` for a YubiKey factor.
+- On macOS, for the default factor: `age-plugin-se` (`brew install age-plugin-se`; check its own macOS requirements). Optional: `pinentry-mac`, to unlock with a passphrase or a plugin factor from inside a harness. precinto runs a pinentry only from a location that only root can change (`/usr/bin`, MacPorts' `/opt/local/bin`, GPG Suite), never from Homebrew's prefix, which is writable by you and so by any program running as you; with Homebrew's `pinentry-mac` alone, unlock with a passphrase in a terminal.
+- On Linux, optional: `pinentry-gnome3` (from your distribution's packages), and `age-plugin-yubikey` for a YubiKey factor.
 
 ```sh
 cd precinto                    # your checkout
@@ -182,7 +182,7 @@ min_free = "2GiB"              # free space precinto always leaves on the disk w
 
 `min_free` takes a size such as `"512MiB"` or `"4GiB"` (binary units; at least `512MiB`). When sealing a session would leave less free space than that, precinto keeps the session as it is and reports "disk full" instead of filling the disk; the same floor applies to restores.
 
-Edits that **weaken** protection (removing a folder or a harness, raising a timer, disabling a trigger, sealing fewer notes, relaxing the unlock prompts, lowering `min_free`) wait until your next unlock in a terminal shows you the change and you confirm it. Stricter edits apply at once. This keeps another program running as you, or an agent, from quietly turning protection down. `unlock_on_prompt` ships off and is planned to turn on once its end-to-end test passes on the pinned Claude Code version.
+Edits that **weaken** protection (removing a folder or a harness, raising a timer, disabling a trigger, sealing fewer notes, relaxing the unlock prompts, lowering `min_free`) wait until your next unlock in a terminal shows you the change and you confirm it. Stricter edits apply at once. This keeps another program running as you, or an agent, from quietly turning protection down. After precinto's background agent restarts, the first unlock of a folder that your saved settings were not yet signed for may list your customized settings and ask you to confirm them once. `unlock_on_prompt` ships off and is planned to turn on once its end-to-end test passes on the pinned Claude Code version.
 
 ## Supported harnesses
 

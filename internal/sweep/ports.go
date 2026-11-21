@@ -45,6 +45,9 @@ type dirHandle interface {
 	// (created 0600 when absent; never through a symlink, never blocking
 	// on a FIFO), then FullSyncs it (CC-05).
 	AppendLine(rel string, line []byte) error
+	// AppendRecord is AppendLine for one line of up to fsx.MaxRecord
+	// bytes (a long history line, D90).
+	AppendRecord(rel string, line []byte) error
 	Rename(oldRel, newRel string, mode fsx.RenameMode) error
 	RenameTo(oldRel string, dst dirHandle, newRel string, mode fsx.RenameMode) error
 	Link(oldRel, newRel string) error
@@ -284,6 +287,9 @@ func (x fsxDir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 	return x.d.CreateTemp(dirRel, pattern)
 }
 func (x fsxDir) AppendLine(rel string, line []byte) error { return x.d.AppendLine(rel, line) }
+func (x fsxDir) AppendRecord(rel string, line []byte) error {
+	return x.d.AppendRecord(rel, line)
+}
 func (x fsxDir) Rename(oldRel, newRel string, mode fsx.RenameMode) error {
 	return x.d.Rename(oldRel, newRel, mode)
 }

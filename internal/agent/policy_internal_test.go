@@ -403,12 +403,19 @@ func TestHookRaisedUnlock(t *testing.T) {
 	if err := config.Save(x.h.Layout.ConfigFile, cfg); err != nil {
 		t.Fatal(err)
 	}
-	// Pin it so the change is not a pending weakening edit.
-	if err := config.SavePinned(x.h.Layout.PolicyPinned, config.Pinned{Version: config.PinnedVersion, Config: cfg, MACs: map[string]string{}}); err != nil {
+	// Pin it so the change is not a pending weakening edit: a confirmed
+	// TTY unlock writes a genuine pin (D91: a pin without a vault MAC is
+	// forged), then the folder locks again with the daemon's restart.
+	x.restart()
+	ctx := context.Background()
+	c0 := x.dial()
+	if _, err := x.unlockTTY(c0, nil, "root-acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c0.Policy(ctx, ipc.PolicyReq{Confirm: true}); err != nil {
 		t.Fatal(err)
 	}
 	x.restart()
-	ctx := context.Background()
 	c := x.dial()
 	cl := x.addProc(4100, 1, 4100, "/opt/homebrew/bin/claude", "claude")
 	if err := c.Register(ctx, ipc.RegisterReq{Harness: "claude-code", SID: sidA, PID: cl.ID.PID, Cwd: x.h.Root, TTY: "/dev/ttys006"}); err != nil {

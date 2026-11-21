@@ -55,7 +55,7 @@ func classifyFile(f harness.File, rf *ReceiptFile, h hasher) (fileClass, error) 
 	}
 	switch {
 	case f.Snap.Size == rf.Size:
-		if f.Snap.Unchanged(rf.Snap) {
+		if !rf.Absent && f.Snap.Unchanged(rf.Snap) {
 			return classUnchanged, nil
 		}
 		sum, err := h.prefix(f, f.Snap.Size)
@@ -85,14 +85,17 @@ func classifyFile(f harness.File, rf *ReceiptFile, h hasher) (fileClass, error) 
 //
 //	fresh      no receipt and no logged generation
 //	successor  every receipt file present, each unchanged or appended
-//	partial    some receipt files missing, the rest unchanged or appended
-//	diverged   some file changed, or plaintext without a receipt while
-//	           generations exist (its parent is then the newest)
+//	partial    some receipt files missing (absent ones included, D85),
+//	           the rest unchanged or appended
+//	diverged   some file changed (other than an exact-placement file
+//	           rewritten after its restore, which supersedes, D87), or
+//	           plaintext without a receipt while generations exist (its
+//	           parent is then the newest)
 func planLineage(files []harness.File, rd *receiptDisk, logged []capslog.Entry, h hasher) (lineagePlan, error) {
 	var lp lineagePlan
 	idx := receiptIndex(rd)
 	present := map[fileKey]bool{}
-	changed, grown, fresh := false, false, false
+	changed, grown, fresh, superseded := false, false, false, false
 	for _, f := range files {
 		k := fileKey{f.Base, f.Rel}
 		present[k] = true
@@ -103,7 +106,11 @@ func planLineage(files []harness.File, rd *receiptDisk, logged []capslog.Entry, 
 		}
 		switch c {
 		case classChanged:
-			changed = true
+			if supersedes(f, rf) {
+				superseded = true // D87: a newer version of the file precinto placed
+			} else {
+				changed = true
+			}
 		case classAppended:
 			grown = true
 		case classNew:
@@ -131,10 +138,29 @@ func planLineage(files []harness.File, rd *receiptDisk, logged []capslog.Entry, 
 	default:
 		lp.Lineage, lp.Parent = capsule.LineageSuccessor, rd.Gen
 	}
-	if rd != nil && !changed && !grown && !fresh && len(files) > 0 {
+	if rd != nil && !changed && !grown && !fresh && !superseded && len(files) > 0 {
 		lp.Unchanged = receiptGensLogged(rd, logged, files)
 	}
 	return lp, nil
+}
+
+// supersedes reports whether a changed file is a newer version of the
+// version precinto placed there (D87): an exact-placement file (tasks,
+// todos, memory, notes, global stores; never an append-only transcript)
+// rewritten in place after its restore. Its new bytes replace the placed
+// ones like any edit; a file precinto did not place (no receipt entry, or
+// an absent one) is a real divergence.
+func supersedes(f harness.File, rf *ReceiptFile) bool {
+	if rf == nil || rf.Absent || f.Append {
+		return false
+	}
+	return supersedable(f.Placement)
+}
+
+// supersedable is the placement policies whose in-place rewrites supersede
+// (D87).
+func supersedable(p harness.Placement) bool {
+	return p == "" || p == harness.PlaceExact || p == harness.PlaceMarkdown
 }
 
 // receiptGensLogged reports whether the receipt generation and the

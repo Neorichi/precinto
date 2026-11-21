@@ -3,6 +3,10 @@ package sweep
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -228,8 +232,17 @@ func (r *run) rotateHome(ctx context.Context, ad harness.Adapter, h harness.Home
 		f := failed(res, err)
 		return &f
 	}
-	if len(r.splitHistory(data[:completePrefix(data)]).byRoot) == 0 {
+	split := r.splitHistory(data[:completePrefix(data)])
+	if len(split.byRoot) == 0 {
 		return nil // nothing protected: never rewrite the file
+	}
+	// D76/D90: the rotation writes a staging copy and a capsule of the
+	// extracted lines, and a temporary of the kept ones: below the floor
+	// it starts nothing (no hold link, no record).
+	if err := r.historySpace(base, cfgDir, split); err != nil {
+		f := failed(res, noSpace(err))
+		f.Detail = "history_pending: " + f.Detail
+		return &f
 	}
 	rec, err := r.jr.Begin(journal.KindHistoryRotate, string(harness.ClaudeCode), jkey)
 	if err != nil {
@@ -354,6 +367,28 @@ func (ro *rotation) run(ctx context.Context) *UnitResult {
 	return fail(fmt.Errorf("sweep: history rotation in unexpected phase %s", rec.Phase))
 }
 
+// historySpace checks the free-space floor for one rotation of split
+// (D90): twice the extracted bytes and their paste-cache entries on the
+// capsule volume (a staging copy and the capsule), the kept bytes on the
+// Claude home's volume (the rewrite's temporary).
+func (r *run) historySpace(base dirHandle, cfgDir string, split histSplit) error {
+	var ext int64
+	for _, lines := range split.byRoot {
+		for _, l := range lines {
+			ext += int64(len(l)) + 1
+		}
+	}
+	for name := range split.paste {
+		if st, err := base.Lstat(path.Join(pasteCacheDir, name)); err == nil {
+			ext += st.Size
+		}
+	}
+	if err := r.p.fs.CheckSpace(r.l.CapsulesDir, 2*ext, r.e.Floor); err != nil {
+		return err
+	}
+	return r.p.fs.CheckSpace(cfgDir, split.keptN, r.e.Floor)
+}
+
 // pasteFiles snapshots the paste-cache entries to move with the lines.
 func (ro *rotation) pasteFiles(names map[string]bool) ([]journal.File, error) {
 	var out []journal.File
@@ -430,6 +465,41 @@ func (ro *rotation) sealRoot(ctx context.Context, rootID string, lines [][]byte,
 		return 0, err
 	}
 	defer lk.Unlock()
+	entries, err := r.log.Unit(key)
+	if err != nil {
+		return 0, err
+	}
+	// D89: lines (and paste-cache entries) already sealed into a logged
+	// generation of this unit — merged back at an unlock — are not sealed
+	// again; they still leave history.jsonl, since their bytes live on.
+	seen := r.loadSeen(key, entries)
+	all := r.newSeenSet(seen)
+	var fresh [][]byte
+	for _, l := range lines {
+		h := r.seenHash("line", l)
+		if !seen.has(h) {
+			fresh = append(fresh, l)
+		}
+		all.add(h)
+	}
+	var freshPaste []journal.File
+	for _, pf := range paste {
+		snap := pf.Snap
+		sum, err := hashPrefix(ro.base, pf.Rel, snap.Size, &snap)
+		if err != nil {
+			freshPaste = append(freshPaste, pf) // unknown: sealed again
+			continue
+		}
+		h := r.seenHash("paste", []byte(pf.Rel), []byte(sum))
+		if !seen.has(h) {
+			freshPaste = append(freshPaste, pf)
+		}
+		all.add(h)
+	}
+	if len(fresh) == 0 && len(freshPaste) == 0 {
+		return 0, nil
+	}
+	lines, paste = fresh, freshPaste
 	recips, err := r.p.vaults.recipients(rootID)
 	if err != nil {
 		return 0, err
@@ -489,10 +559,6 @@ func (ro *rotation) sealRoot(ctx context.Context, rootID string, lines [][]byte,
 	}
 	defer capsRoot.Close()
 	defer caps.Close()
-	entries, err := r.log.Unit(key)
-	if err != nil {
-		return 0, err
-	}
 	parent, lineage := uint64(0), capsule.LineageFresh
 	if ne, ok := newestEntry(entries); ok {
 		parent, lineage = ne.Gen, capsule.LineageSuccessor
@@ -525,7 +591,109 @@ func (ro *rotation) sealRoot(ctx context.Context, rootID string, lines [][]byte,
 	if err := r.jr.Done(rec); err != nil {
 		return 0, err
 	}
+	all.Gens = append(all.Gens, g)
+	r.saveSeen(key, all) // best effort: a lost write only re-seals duplicates
 	return g, nil
+}
+
+// seenSet is state/gens/<history-unit>.lines.json (D89): keyed hashes
+// (HMAC-SHA256 with the name salt, 16 bytes) of the history lines and
+// paste-cache entries sealed into the unit's generations Gens. It is valid
+// only while every one of those generations is still logged (forget
+// deletes them: the set is then ignored and lines are sealed again).
+type seenSet struct {
+	V    int      `json:"v"`
+	Gens []uint64 `json:"gens"`
+	H    []string `json:"h"`
+	set  map[string]bool
+}
+
+// maxSeenBytes bounds a seen-set read.
+const maxSeenBytes = 256 << 20
+
+func (s *seenSet) has(h string) bool { return s != nil && s.set[h] }
+
+func (s *seenSet) add(h string) {
+	if s == nil || s.set[h] {
+		return
+	}
+	s.set[h] = true
+	s.H = append(s.H, h)
+}
+
+func (r *run) seenPath(key string) string { return filepath.Join(r.l.GensDir, key+".lines.json") }
+
+// seenHash is the keyed hash of one sealed history item ("" without a
+// name salt: nothing is then deduplicated).
+func (r *run) seenHash(kind string, parts ...[]byte) string {
+	if len(r.e.Harness.Salt) == 0 {
+		return ""
+	}
+	m := hmac.New(sha256.New, r.e.Harness.Salt)
+	m.Write([]byte(kind))
+	for _, p := range parts {
+		m.Write([]byte{0x1f})
+		m.Write(p)
+	}
+	return hex.EncodeToString(m.Sum(nil)[:16])
+}
+
+// loadSeen reads the unit's seen set; nil when missing, unreadable, or
+// relying on a generation that is no longer logged.
+func (r *run) loadSeen(key string, logged []capslog.Entry) *seenSet {
+	if len(r.e.Harness.Salt) == 0 {
+		return nil
+	}
+	b, err := readState(r.seenPath(key), maxSeenBytes)
+	if err != nil {
+		return nil
+	}
+	var s seenSet
+	if json.Unmarshal(b, &s) != nil || s.V != 1 {
+		return nil
+	}
+	have := map[uint64]bool{}
+	for _, en := range logged {
+		have[en.Gen] = true
+	}
+	for _, g := range s.Gens {
+		if !have[g] {
+			return nil
+		}
+	}
+	s.set = make(map[string]bool, len(s.H))
+	for _, h := range s.H {
+		s.set[h] = true
+	}
+	return &s
+}
+
+// newSeenSet starts the set saved after this rotation's commit: the
+// valid old one plus what is added.
+func (r *run) newSeenSet(old *seenSet) *seenSet {
+	s := &seenSet{V: 1, set: map[string]bool{}}
+	if old != nil {
+		s.Gens = append(s.Gens, old.Gens...)
+		for _, h := range old.H {
+			s.add(h)
+		}
+	}
+	return s
+}
+
+// saveSeen writes the set (0600, atomic) when hashes are available.
+func (r *run) saveSeen(key string, s *seenSet) {
+	if len(r.e.Harness.Salt) == 0 || s == nil {
+		return
+	}
+	if err := ensurePrivateDir(r.l.GensDir); err != nil {
+		return
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return
+	}
+	_ = fsx.WriteFileAtomic(r.seenPath(key), b, 0o600)
 }
 
 // rewrite writes the kept lines to a temporary (0600) next to
@@ -601,6 +769,12 @@ func (ro *rotation) tail(ctx context.Context) error {
 			continue
 		}
 		chunk := data[rec.Offset:]
+		if err := r.p.fs.CheckSpace(r.l.CapsulesDir, 2*int64(len(chunk)), r.e.Floor); err != nil {
+			return noSpace(err) // the record stays at rewritten: recovery resumes
+		}
+		if err := r.p.fs.CheckSpace(ro.cfgDir, int64(len(chunk)), r.e.Floor); err != nil {
+			return noSpace(err)
+		}
 		end := completePrefix(chunk)
 		if end == 0 {
 			// Only a torn line so far: wait for the rest; once quiet, keep
@@ -673,15 +847,27 @@ func (ro *rotation) appendKept(kept [][]byte) error {
 		}
 	}
 	for _, l := range kept {
-		if have[string(l)] || len(l) > fsx.MaxLine {
+		if have[string(l)] {
 			continue
 		}
-		if err := ro.base.AppendLine(historyRel, l); err != nil {
+		// D90: a line longer than fsx.MaxLine is appended in one write as
+		// well (no Claude runs during the tail loop); a line that cannot be
+		// appended fails the range, so the record and its hold stay.
+		if err := appendHistoryLine(ro.base, l); err != nil {
 			return err
 		}
 		have[string(l)] = true
 	}
 	return nil
+}
+
+// appendHistoryLine appends one history line with a single O_APPEND
+// write, through AppendRecord when it is longer than fsx.MaxLine (D90).
+func appendHistoryLine(base dirHandle, l []byte) error {
+	if len(l) > fsx.MaxLine {
+		return base.AppendRecord(historyRel, l)
+	}
+	return base.AppendLine(historyRel, l)
 }
 
 // recoverHistory resumes a rotation from its last milestone (SPEC §7.1.4
@@ -840,6 +1026,17 @@ func (r *run) mergeHome(ctx context.Context, keys KeySource, h harness.Home, key
 			return failed(res, fmt.Errorf("%w: history unit id does not match its key", harness.ErrUnitKey))
 		}
 	}
+	// D76/D90: staging holds every generation, and the lines go to
+	// history.jsonl: below the floor nothing is staged or appended.
+	var total int64
+	for _, en := range entries {
+		total += en.Bytes
+	}
+	if err := r.p.fs.CheckSpace(cfgDir, total+total/10, r.e.Floor); err != nil {
+		res = failed(res, noSpace(err))
+		res.Outcome = OutSkipped
+		return res
+	}
 	rec, err := r.jr.Begin(journal.KindHistoryMerge, string(harness.ClaudeCode), key)
 	if err != nil {
 		return failed(res, err)
@@ -915,10 +1112,7 @@ func (r *run) mergeHome(ctx context.Context, keys KeySource, h harness.Home, key
 		}
 	}
 	for _, l := range missing {
-		if len(l) > fsx.MaxLine {
-			continue
-		}
-		if err := base.AppendLine(historyRel, l); err != nil {
+		if err := appendHistoryLine(base, l); err != nil {
 			return failed(res, err)
 		}
 	}
