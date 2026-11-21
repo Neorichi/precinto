@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 // D50: `precinto lock` with no flag locks every folder; --root narrows it;
@@ -139,14 +141,76 @@ func TestUnlockHeadless(t *testing.T) {
 	}
 }
 
+// Outside every folder without a terminal, the cwd rule stands: nothing is
+// unlocked and the folder must be named (SPEC §12.8).
 func TestUnlockOutsideFolder(t *testing.T) {
 	e := newEnv(t)
 	e.cwd = e.h.HomeDir
+	e.tty, e.interactive = nil, false
 	if code := e.run("unlock"); code != exitUsage {
 		t.Fatalf("exit %d", code)
 	}
-	if !strings.Contains(e.stderr(), "precinto unlock --root DIR") {
-		t.Fatalf("stderr %q", e.stderr())
+	if !strings.Contains(e.stderr(), "precinto unlock --root DIR") || len(e.daemon.unlocks) != 0 {
+		t.Fatalf("stderr %q unlocks %+v", e.stderr(), e.daemon.unlocks)
+	}
+}
+
+// DC-35: outside every folder on a terminal, the one locked folder is
+// unlocked; several are listed and picked by number, or all of them after
+// the typed "unlock" (C2.confirmall).
+func TestUnlockOutsideFolderPicks(t *testing.T) {
+	two := func(t *testing.T) *env {
+		e := newEnv(t)
+		e.h.Protect(t, "work/beta")
+		e.cwd = e.h.HomeDir
+		return e
+	}
+	// One locked folder (the other is unlocked): unlocked without asking.
+	e := two(t)
+	e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+	if code := e.run("unlock"); code != exitOK {
+		t.Fatalf("one locked: exit %d (%s)", code, e.stderr())
+	}
+	if r := e.daemon.unlocks[0]; len(r.RootIDs) != 1 || r.RootIDs[0] != "root-beta" || r.All || !r.TTY {
+		t.Fatalf("one locked: request %+v", r)
+	}
+	// Several: the number picks one.
+	e = two(t)
+	e.tty.lines = []string{"2"}
+	if code := e.run("unlock"); code != exitOK {
+		t.Fatalf("pick: exit %d (%s)", code, e.stderr())
+	}
+	if r := e.daemon.unlocks[0]; len(r.RootIDs) != 1 || r.RootIDs[0] != "root-beta" || r.Confirmed {
+		t.Fatalf("pick: request %+v", r)
+	}
+	if !strings.Contains(e.stderr(), "1) ~/work/acme") || !strings.Contains(e.stderr(), "2) ~/work/beta") {
+		t.Fatalf("list %q", e.stderr())
+	}
+	// all, confirmed with the typed word.
+	e = two(t)
+	e.tty.lines = []string{"all", wordUnlock}
+	if code := e.run("unlock"); code != exitOK {
+		t.Fatalf("all: exit %d (%s)", code, e.stderr())
+	}
+	if r := e.daemon.unlocks[0]; len(r.RootIDs) != 2 || !r.Confirmed || !r.TTY {
+		t.Fatalf("all: request %+v", r)
+	}
+	if !strings.Contains(e.tty.allPrompts(), ui.Format(ui.MsgUnlockConfirmAll, ui.Vars{N: 2, Folder: "~/work/acme"})) {
+		t.Fatalf("prompts %q", e.tty.allPrompts())
+	}
+	// all without the word, or a bad answer: nothing unlocked.
+	for _, lines := range [][]string{{"all", "no"}, {"3"}, {"x"}} {
+		e = two(t)
+		e.tty.lines = lines
+		if code := e.run("unlock"); code != exitLocked || len(e.daemon.unlocks) != 0 {
+			t.Fatalf("%v: exit %d unlocks %+v", lines, code, e.daemon.unlocks)
+		}
+	}
+	// Every folder unlocked already: nothing to do.
+	e = two(t)
+	e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}, {VaultID: "root-beta", State: "unlocked"}}}
+	if code := e.run("unlock"); code != exitOK || len(e.daemon.unlocks) != 0 {
+		t.Fatalf("all open: exit %d unlocks %+v", code, e.daemon.unlocks)
 	}
 }
 
@@ -186,6 +250,35 @@ func TestUnlockCancelAndRefusal(t *testing.T) {
 	}
 	if !strings.Contains(e.stderr(), msg) {
 		t.Fatalf("stderr %q", e.stderr())
+	}
+}
+
+// CC-08: a wrong passphrase or recovery key prints C2.badsecret (the
+// catalog text, whatever the daemon sent) and exits 3, from the daemon's
+// bad_secret code or a local vault.ErrBadSecret.
+func TestUnlockBadSecret(t *testing.T) {
+	want := ui.Format(ui.MsgUnlockBadSecret, ui.Vars{Folder: "~/work/acme"})
+	for _, err := range []error{
+		&ipc.Error{Code: ipc.CodeBadSecret},
+		&ipc.Error{Code: ipc.CodeBadSecret, Msg: "precinto: some other wording"},
+		fmt.Errorf("unwrap: %w", vault.ErrBadSecret),
+	} {
+		e := newEnv(t)
+		e.daemon.unlockErr = err
+		if code := e.run("unlock"); code != exitLocked {
+			t.Fatalf("%v: exit %d", err, code)
+		}
+		if got := e.stderr(); !strings.Contains(got, want) || strings.Contains(got, "other wording") || strings.Contains(got, "unwrap") {
+			t.Fatalf("%v: stderr %q, want only %q", err, got, want)
+		}
+	}
+	// Elsewhere the same class still prints C2.badsecret, never the chain.
+	e := newEnv(t)
+	if code := e.app().fail("x", fmt.Errorf("wrapped: %w", vault.ErrBadSecret)); code != exitLocked {
+		t.Fatalf("fail: exit %d", code)
+	}
+	if !strings.Contains(e.stderr(), "that passphrase or recovery key is not right") || strings.Contains(e.stderr(), "wrapped") {
+		t.Fatalf("fail stderr %q", e.stderr())
 	}
 }
 

@@ -83,6 +83,10 @@ type system struct {
 	launchctl func(ctx context.Context, args []string) error // never runs in testing builds
 	spawn     func(argv []string, o platform.SpawnOptions) (platform.ProcID, error)
 	sleep     func(time.Duration)
+	// sweepSleep is sweep.Env.Sleep, the one D63 quiet-window wait of a
+	// sealing run: nil in production (a real timer, CC-29); tests over a
+	// fake clock pass one that advances it.
+	sweepSleep func(ctx context.Context, d time.Duration) error
 
 	dial       func(ctx context.Context, o ipc.DialOptions) (daemonClient, error)
 	vaults     func(paths.Layout) vaultStore
@@ -139,6 +143,8 @@ type vaultStore interface {
 	// MarkRecoveryVerified records a successful recover --verify in every
 	// vault (vault.Store.MarkRecoveryVerified, SPEC §4.7).
 	MarkRecoveryVerified(at time.Time) error
+	// RepinPlugin re-pins a plugin factor in every vault (D75).
+	RepinPlugin(name string) (oldSHA, newSHA string, err error)
 }
 
 // shellOps is internal/shellinit.
@@ -319,15 +325,11 @@ func (a *app) rootFor(cfg config.Config, p string) (config.Root, bool) {
 	return config.Root{}, false
 }
 
-// rootArg resolves a --root DIR argument: DIR must be inside a protected
-// folder.
+// rootArg resolves a --root DIR argument: DIR is a path (relative to the
+// working directory) inside a protected folder, never a folder id (the
+// daemon's workers get the folder's absolute path too, CC-43).
 func (a *app) rootArg(cfg config.Config, dir string) (config.Root, error) {
 	if r, ok := a.rootFor(cfg, dir); ok {
-		return r, nil
-	}
-	// A folder id (workers the daemon spawns may name folders by id): only
-	// when it does not name an existing path.
-	if r, ok := cfg.RootByID(dir); ok && !filepath.IsAbs(dir) && !fileExists(mustAbs(a, dir)) {
 		return r, nil
 	}
 	return config.Root{}, notProtectedError{dir: a.display(mustAbs(a, dir))}

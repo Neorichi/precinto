@@ -167,7 +167,7 @@ func Default() Config {
 			ScreenLockHardAfter: Duration(15 * time.Minute),
 			BusyGrace:           Duration(30 * time.Minute),
 			BusyTimeout:         Duration(10 * time.Minute),
-			QuietWindow:         Duration(120 * time.Second),
+			QuietWindow:         Duration(defaultQuietWindow),
 			HoldCap:             Duration(24 * time.Hour),
 			RestoreRecent:       5,
 			RestoreMaxBytes:     1 << 30,
@@ -200,6 +200,13 @@ var DefaultMDExclude = []string{
 
 // MaxUnlockCap is the hard cap on policy.max_unlock and on any unlock TTL.
 const MaxUnlockCap = 24 * time.Hour
+
+// quiet_window bounds (D63): 0 means the default; anything else below the
+// minimum is refused by Validate.
+const (
+	minQuietWindow     = 10 * time.Second
+	defaultQuietWindow = 120 * time.Second
+)
 
 // Load parses path and validates it. A missing file yields Default().
 // Keys absent from the file keep their defaults (a [harness.<id>] table
@@ -271,12 +278,17 @@ func (c Config) Validate() error {
 	p := c.Policy
 	positive := map[string]Duration{
 		"idle_soft": p.IdleSoft, "max_unlock": p.MaxUnlock, "busy_timeout": p.BusyTimeout,
-		"quiet_window": p.QuietWindow, "hold_cap": p.HoldCap,
+		"hold_cap": p.HoldCap,
 	}
 	for k, d := range positive {
 		if d <= 0 {
 			return bad("policy.%s must be positive", k)
 		}
+	}
+	// D63: every sealing process waits once for quiet_window, so it must
+	// be long enough to see a writer pause; 0 keeps the 120 s default.
+	if q := p.QuietWindow.D(); q != 0 && q < minQuietWindow {
+		return bad("policy.quiet_window must be at least %s (0 means the %s default)", minQuietWindow, defaultQuietWindow)
 	}
 	nonNegative := map[string]Duration{
 		"idle_hard": p.IdleHard, "screen_lock_hard_after": p.ScreenLockHardAfter, "busy_grace": p.BusyGrace,

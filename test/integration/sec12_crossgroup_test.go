@@ -38,6 +38,7 @@ func productionBinary(t *testing.T) string {
 			prodErr = err.Error()
 			return
 		}
+		ownBinary(dir, true)
 		out := filepath.Join(dir, "precinto")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()

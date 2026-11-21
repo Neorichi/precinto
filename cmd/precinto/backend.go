@@ -53,7 +53,27 @@ func (b *backend) Plan(ctx context.Context, h harness.ID, cwd string, argv []str
 	b.mu.Lock()
 	b.cwd = cwd
 	b.mu.Unlock()
-	return b.eng.PlanLaunch(ctx, h, cwd, argv, b.a.env)
+	plan, err := b.eng.PlanLaunch(ctx, h, cwd, argv, b.a.env)
+	if err != nil {
+		return plan, err
+	}
+	if plan.Confirm == string(ui.MsgCodexConsent) && len(plan.Roots) > 0 {
+		// D72: the wrapper runs Prepare only after a yes to the plan's
+		// C10.consent (a no aborts the launch), so that is where the
+		// consent is recorded in the folder's harness list.
+		rootID, prepare := plan.Roots[0].ID, plan.Prepare
+		plan.Prepare = func(ctx context.Context) error {
+			if err := b.a.addCodexConsent(rootID); err != nil {
+				// The launch goes on as planned; the next one asks again.
+				b.a.say("run: %s", oneLineText(err.Error()))
+			}
+			if prepare != nil {
+				return prepare(ctx)
+			}
+			return nil
+		}
+	}
+	return plan, nil
 }
 
 // EnsureUnlocked unlocks the plan's folders in this terminal if needed
@@ -153,7 +173,9 @@ func (b *backend) destroyOn(abort <-chan struct{}) (stop func()) {
 	return func() { close(done) }
 }
 
-// Daemon returns a connected client (autostarted, SPEC §13.1).
+// Daemon returns a new connection on every call (autostarted, SPEC §13.1;
+// CC-41): the wrapper keeps one for the subscription stream and one for
+// requests, and dials again after a loss, so nothing is cached here.
 func (b *backend) Daemon(ctx context.Context) (wrapper.Daemon, error) {
 	c, err := b.a.dial(ctx, true)
 	if err != nil {
@@ -204,14 +226,17 @@ func (b *backend) SealAfterExit(ctx context.Context, plan harness.LaunchPlan, ch
 	if sum.SID == "" && len(plan.SealScope.SIDs) == 1 {
 		sum.SID = plan.SealScope.SIDs[0]
 	}
-	scope := plan.SealScope
-	if len(scope.SIDs) == 0 && len(scope.RootIDs) == 0 && len(plan.Roots) == 0 {
-		return sum, nil // an unmanaged launch seals nothing
+	if len(plan.Roots) == 0 {
+		// An unmanaged launch (no folder: passthrough or outside every
+		// folder, DC-39) seals nothing; a session it touched later is
+		// sealed by its hooks and the sweeps (SEC-18).
+		return sum, nil
 	}
 	// Only what the child owned (CC-21): the plan's scope narrowed to the
 	// sessions whose ledger owner is the child, never widened to the plan's
 	// folders, so other restored sessions of the same unlocked folder stay
 	// in place (R4).
+	scope := plan.SealScope
 	scope.Procs = append(append([]platform.ProcID(nil), scope.Procs...), child)
 	waitFor := child
 	rep, err := b.eng.Seal(ctx, []harness.ID{plan.Harness}, scope, sweep.Options{

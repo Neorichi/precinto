@@ -173,7 +173,8 @@ func cmdRestore(a *app, args []string) int {
 	all := f.Bool("all", false, "restore every sealed unit of the folder (fresh presence from agents, D28)")
 	md := f.Bool("md", false, "restore sealed notes")
 	history := f.Bool("history", false, "merge sealed prompt history back")
-	global := f.Bool("global", false, "restore Claude's global stores (needs unlock --global)")
+	global := f.Bool("global", false, "restore the global units: Claude's global stores and experimental harnesses' units (needs unlock --global)")
+	globalHarness := f.String("harness", "", "with --global: only the global units of harness `H`")
 	background := f.Bool("background", false, "quiet run (the daemon's post-unlock worker)")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
@@ -181,6 +182,9 @@ func cmdRestore(a *app, args []string) int {
 	}
 	if len(pos) > 0 {
 		return a.usageFail(f, "unexpected argument "+pos[0])
+	}
+	if *globalHarness != "" && !*global {
+		return a.usageFail(f, "--harness selects the global units of one harness: use it with --global")
 	}
 	if err := a.sys.harden(); err != nil {
 		return a.fail("restore", err)
@@ -269,7 +273,22 @@ func cmdRestore(a *app, args []string) int {
 		}
 	}
 	if *global {
-		sel = append(sel, harness.Selector{Kind: capsule.KindGlobalStore})
+		// DC-24: global units are restored only explicitly, after unlock
+		// --global: Claude's global stores, and the units of experimental
+		// harnesses (sealed to the global vault, their stores name no
+		// folder), one harness with --harness.
+		if *globalHarness == "" || *globalHarness == string(harness.ClaudeCode) {
+			sel = append(sel, harness.Selector{Kind: capsule.KindGlobalStore})
+		}
+		if *globalHarness != string(harness.ClaudeCode) {
+			keys, err := genericUnitKeys(ctx, eng, *globalHarness)
+			if err != nil {
+				return a.failRestore("restore", err)
+			}
+			if len(keys) > 0 {
+				sel = append(sel, harness.Selector{Kind: capsule.KindGeneric, Keys: keys})
+			}
+		}
 	}
 	if len(sel) > 0 {
 		run(eng.Restore(ctx, keys, sweep.RestoreRequest{Select: sel, Budget: budget, Purpose: purpose, Abort: abort}))
@@ -294,6 +313,23 @@ func cmdRestore(a *app, args []string) int {
 		return a.failRestore("restore", err)
 	}
 	return exitOK
+}
+
+// genericUnitKeys lists the unit keys of sealed generic units (D33), of
+// harness h only when h is set.
+func genericUnitKeys(ctx context.Context, eng engine, h string) ([]string, error) {
+	units, err := eng.List(ctx, sweep.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for _, u := range units {
+		if u.Kind == capsule.KindGeneric && (h == "" || u.Harness == h) {
+			keys = append(keys, u.Unit)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 // sessionSelector selects one Claude session by sid in every registered

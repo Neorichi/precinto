@@ -168,7 +168,8 @@ func TestBackendSealAfterExit(t *testing.T) {
 	e, b := testBackend(t)
 	ctx := context.Background()
 	child := platform.ProcID{PID: 1234, StartUS: 99}
-	plan := harness.LaunchPlan{Harness: harness.ClaudeCode, SealScope: harness.Scope{SIDs: []string{"sid1"}}}
+	plan := harness.LaunchPlan{Harness: harness.ClaudeCode, Roots: []config.Root{{ID: "root-acme", Path: e.h.Root}},
+		SealScope: harness.Scope{SIDs: []string{"sid1"}, RootIDs: []string{"root-acme"}}}
 	e.eng.sealRep = &sweep.Report{Units: []sweep.UnitResult{{Outcome: sweep.OutSealed, Files: 3, Bytes: 100}}}
 	sum, err := b.SealAfterExit(ctx, plan, child)
 	if err != nil || sum.Deferred || sum.Files != 3 || sum.Bytes != 100 || sum.SID != "sid1" {
@@ -178,8 +179,12 @@ func TestBackendSealAfterExit(t *testing.T) {
 	if o.WaitFor == nil || *o.WaitFor != child || o.Reason != "wrapper-exit" {
 		t.Fatalf("seal options %+v", o)
 	}
-	if s := e.eng.sealScope[0]; len(s.SIDs) != 1 || s.SIDs[0] != "sid1" || len(s.Procs) != 1 || s.Procs[0] != child {
-		t.Fatalf("scope %+v, want the plan's sid narrowed to the child (CC-21)", s)
+	if s := e.eng.sealScope[0]; len(s.SIDs) != 1 || s.SIDs[0] != "sid1" || len(s.Procs) != 1 || s.Procs[0] != child ||
+		len(s.RootIDs) != 1 || s.RootIDs[0] != "root-acme" {
+		t.Fatalf("scope %+v, want the plan's scope narrowed to the child (CC-21)", s)
+	}
+	if o.Scope.Procs[0] != child || len(e.eng.sealHarness[0]) != 1 || e.eng.sealHarness[0][0] != harness.ClaudeCode {
+		t.Fatalf("seal of %v with options scope %+v", e.eng.sealHarness[0], o.Scope)
 	}
 
 	e, b = testBackend(t)
@@ -229,11 +234,34 @@ func TestBackendEnsureUnlocked(t *testing.T) {
 	}
 }
 
-func TestBackendDaemonAutostarts(t *testing.T) {
+// CC-41: Backend.Daemon returns a new (autostarted) connection on every
+// call: the wrapper keeps one for its subscription stream and one for
+// requests, and dials again after a loss; nothing is cached.
+func TestBackendDaemonNewConnectionPerCall(t *testing.T) {
 	e, b := testBackend(t)
-	d, err := b.Daemon(context.Background())
-	if err != nil || d == nil || !e.dials[0].Autostart {
-		t.Fatalf("daemon %v err %v dials %+v", d, err, e.dials)
+	ctx := context.Background()
+	d1, err := b.Daemon(ctx)
+	if err != nil || d1 == nil {
+		t.Fatalf("daemon %v err %v", d1, err)
+	}
+	d2, err := b.Daemon(ctx)
+	if err != nil || d2 == nil {
+		t.Fatalf("second daemon %v err %v", d2, err)
+	}
+	if len(e.dials) != 2 || !e.dials[0].Autostart || !e.dials[1].Autostart {
+		t.Fatalf("dials %+v, want two autostarted connections", e.dials)
+	}
+	// Closing one (a lost subscription) leaves the next call working.
+	if err := d1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if d3, err := b.Daemon(ctx); err != nil || d3 == nil || len(e.dials) != 3 {
+		t.Fatalf("redial after a loss: %v %v (%d dials)", d3, err, len(e.dials))
+	}
+	// A daemon that cannot be reached is an error, never a stale client.
+	e.dialErr = ipc.ErrNoDaemon
+	if d, err := b.Daemon(ctx); err == nil || d != nil {
+		t.Fatalf("unreachable daemon: %v %v", d, err)
 	}
 }
 
@@ -252,11 +280,18 @@ func TestBackendSealScopeNeverWidens(t *testing.T) {
 	e, b := testBackend(t)
 	ctx := context.Background()
 	child := platform.ProcID{PID: 1, StartUS: 2}
-	if _, err := b.SealAfterExit(ctx, harness.LaunchPlan{Harness: harness.ClaudeCode}, child); err != nil {
-		t.Fatal(err)
+	for _, unmanaged := range []harness.LaunchPlan{
+		{Harness: harness.ClaudeCode},
+		// Even when the adapter named a session: without a folder the
+		// launch is unmanaged (DC-39).
+		{Harness: harness.ClaudeCode, SealScope: harness.Scope{SIDs: []string{"sid1"}}},
+	} {
+		if sum, err := b.SealAfterExit(ctx, unmanaged, child); err != nil || sum.Files != 0 || sum.Deferred {
+			t.Fatalf("unmanaged: %+v %v", sum, err)
+		}
 	}
-	if e.eng.called("Seal") {
-		t.Fatal("an unmanaged launch sealed something")
+	if e.eng.called("Seal") || len(e.eng.enqueued) != 0 {
+		t.Fatal("an unmanaged launch sealed or queued something")
 	}
 	plan := harness.LaunchPlan{Harness: harness.ClaudeCode, Roots: []config.Root{{ID: "root-acme"}}}
 	if _, err := b.SealAfterExit(ctx, plan, child); err != nil {

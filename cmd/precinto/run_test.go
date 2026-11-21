@@ -10,7 +10,9 @@ import (
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
+	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/wrapper"
 )
 
@@ -81,6 +83,27 @@ func TestRunErrorsKeepTheirClass(t *testing.T) {
 	e.wrapCode, e.wrapErr = 7, errors.New("sealing after exit failed")
 	if code := e.run("run", "--", "claude"); code != 7 {
 		t.Fatalf("a child that ran: exit %d, want its own 7", code)
+	}
+	// API §5 rows for launches that never started: running as root, a
+	// wrong passphrase at the unlock before launch, a declined confirm.
+	for _, c := range []struct {
+		err  error
+		want int
+		text string
+	}{
+		{platform.ErrRoot, exitLocked, ""},
+		{&ipc.Error{Code: ipc.CodeBadSecret}, exitLocked, ui.Format(ui.MsgUnlockBadSecret, ui.Vars{Folder: "the folder"})},
+		{ui.ErrCancelled, exitLocked, ""},
+		{&ipc.Error{Code: ipc.CodeAgentContext, Msg: "precinto: refused"}, exitLocked, "precinto: refused"},
+	} {
+		e = newEnv(t)
+		e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, c.err
+		if code := e.run("run", "--", "claude"); code != c.want {
+			t.Errorf("%v: exit %d, want %d", c.err, code, c.want)
+		}
+		if c.text != "" && !strings.Contains(e.stderr(), c.text) {
+			t.Errorf("%v: stderr %q, want %q", c.err, e.stderr(), c.text)
+		}
 	}
 }
 

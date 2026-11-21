@@ -176,6 +176,11 @@ func (a *app) failWith(name string, err error, code int) int {
 		a.line(ui.MsgAgentDownAll, ui.Vars{})
 		return code
 	}
+	if isBadSecret(err) {
+		// CC-08: C2.badsecret, never the error chain.
+		a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: "the folder"})
+		return code
+	}
 	a.say("%s: %s", name, oneLineText(err.Error()))
 	return code
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 const (
@@ -74,7 +75,8 @@ func setup(t *testing.T) *e2e {
 	if err := os.Symlink(exe, h.Layout.BinLink); err != nil {
 		t.Fatal(err)
 	}
-	h.Cfg.Policy.QuietWindow = config.Duration(5 * time.Second)
+	// The smallest stability window config.Validate accepts (D63).
+	h.Cfg.Policy.QuietWindow = config.Duration(10 * time.Second)
 	if err := config.Save(h.Layout.ConfigFile, h.Cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -198,13 +200,21 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
+// The prompts the answerers wait for are the catalog's (CC-38, D70), never
+// literal copies.
+var (
+	promptNewPassphrase   = ui.Format(ui.MsgPassphraseNew, ui.Vars{})
+	promptAgainPassphrase = ui.Format(ui.MsgPassphraseAgain, ui.Vars{})
+	promptService         = ui.Format(ui.MsgServiceOffer, ui.Vars{})
+)
+
 func (x *e2e) init() {
 	dialog := [][2]string{
-		{"Choose a precinto passphrase", e2ePassphrase + "\r"},
-		{"Type the passphrase again", e2ePassphrase + "\r"},
+		{promptNewPassphrase, e2ePassphrase + "\r"},
+		{promptAgainPassphrase, e2ePassphrase + "\r"},
 	}
 	if runtime.GOOS == "darwin" {
-		dialog = append(dialog, [2]string{"Seal in the background", "n\r"})
+		dialog = append(dialog, [2]string{promptService, "n\r"})
 	}
 	x.tty(x.h.HomeDir, dialog, "init", "--factor", "passphrase", "--recovery-out", filepath.Join(x.h.Dir, "recovery.txt"))
 }

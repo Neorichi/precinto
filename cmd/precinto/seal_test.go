@@ -208,6 +208,57 @@ func TestRestoreRefusals(t *testing.T) {
 	}
 }
 
+// DC-24: restore --global restores Claude's global stores and the units of
+// experimental harnesses; --harness H narrows it to one harness, and needs
+// --global.
+func TestRestoreGlobalHarness(t *testing.T) {
+	units := []sweep.UnitInfo{
+		{Harness: "gemini", Kind: capsule.KindGeneric, Unit: "1111111111111111111111111111111a"},
+		{Harness: "kimi", Kind: capsule.KindGeneric, Unit: "2222222222222222222222222222222b"},
+		{Harness: "claude-code", Kind: capsule.KindClaudeSession, Unit: "3333333333333333333333333333333c", RootIDs: []string{"root-acme"}},
+	}
+	kinds := func(e *env) map[capsule.Kind][]string {
+		m := map[capsule.Kind][]string{}
+		for _, s := range e.eng.restores[0].Select {
+			m[s.Kind] = append(m[s.Kind], s.Keys...)
+		}
+		return m
+	}
+	e := newEnv(t)
+	e.cwd = e.h.HomeDir
+	e.eng.units = units
+	if code := e.run("restore", "--global"); code != exitOK {
+		t.Fatalf("global: exit %d (%s)", code, e.stderr())
+	}
+	k := kinds(e)
+	if _, ok := k[capsule.KindGlobalStore]; !ok || strings.Join(k[capsule.KindGeneric], ",") != units[0].Unit+","+units[1].Unit {
+		t.Fatalf("global selects %v", k)
+	}
+	e = newEnv(t)
+	e.cwd = e.h.HomeDir
+	e.eng.units = units
+	if code := e.run("restore", "--global", "--harness", "kimi"); code != exitOK {
+		t.Fatalf("--harness kimi: exit %d (%s)", code, e.stderr())
+	}
+	k = kinds(e)
+	if _, ok := k[capsule.KindGlobalStore]; ok || strings.Join(k[capsule.KindGeneric], ",") != units[1].Unit {
+		t.Fatalf("--harness kimi selects %v", k)
+	}
+	e = newEnv(t)
+	e.cwd = e.h.HomeDir
+	e.eng.units = units
+	if code := e.run("restore", "--global", "--harness", "claude-code"); code != exitOK {
+		t.Fatalf("--harness claude-code: exit %d (%s)", code, e.stderr())
+	}
+	if sel := e.eng.restores[0].Select; len(sel) != 1 || sel[0].Kind != capsule.KindGlobalStore {
+		t.Fatalf("--harness claude-code selects %+v, want only the global stores", sel)
+	}
+	e = newEnv(t)
+	if code := e.run("restore", "--harness", "kimi"); code != exitUsage || len(e.eng.restores) != 0 {
+		t.Fatalf("--harness without --global: exit %d", code)
+	}
+}
+
 // The post-unlock worker is quiet and never consults the agent context.
 func TestRestoreBackgroundQuiet(t *testing.T) {
 	e := newEnv(t)

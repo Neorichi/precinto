@@ -43,12 +43,12 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - name: Install shellcheck
-        if: runner.os == 'macOS'
-        run: brew install shellcheck
+      - name: Install shellcheck and fish
+        run: sh .github/scripts/install-shells.sh
       # gofmt, go vet for {default, testing+failpoints, testing+crossgroup}
       # × {darwin, linux}, internal/archtest, apidoc -check, staticcheck,
-      # govulncheck, shellcheck of the shims.
+      # govulncheck, shellcheck of the shims (required: CI is set, so a
+      # missing shellcheck fails the target instead of skipping).
       - run: make lint
 
   build:
@@ -74,11 +74,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The shim and shell-integration tests run sh/bash/zsh/fish for real
+      # and shellcheck -s sh over the shims; CI has both installed, so
+      # those tests never skip here (TESTPLAN HOOK-4, D29).
+      - name: Install shellcheck and fish
+        run: sh .github/scripts/install-shells.sh
       # Unit and package-integration tests (-tags testing), including
       # test/integration against the testing binary in throwaway homes.
       - run: make test
@@ -99,14 +105,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Each target bounds its test binaries at 8 min with GOTRACEBACK=all,
+    # so a hang prints every goroutine's stack before the job limit.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Install shellcheck and fish
+        run: sh .github/scripts/install-shells.sh
       # Flows across every group: init, protect, status, run with a fake
-      # harness, lock, unlock, restore; SEC-12 against a production build.
+      # harness, lock, unlock, restore; SEC-12 and SEC-33 against a
+      # production build.
       - run: make crossgroup
+      # The crossgroup crash rows: failpoints over the real fsx, capsule,
+      # sweep and live packages (TESTPLAN §4, §10).
+      - run: make crossgroup-crash
 
   plugin:
     name: plugin validation

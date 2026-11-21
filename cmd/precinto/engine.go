@@ -78,6 +78,10 @@ type engine interface {
 
 	// Codex per-folder homes (D31).
 	PrepareCodexHome(ctx context.Context, rootID string, forceConfig bool) error
+	// WrongHomeRollouts counts, per folder id, the Codex rollouts of
+	// protected folders saved in the user's own Codex home
+	// (codex.WrongHomeRollouts, CC-18; C9.codexoutside).
+	WrongHomeRollouts(ctx context.Context) (map[string]int, error)
 }
 
 // registerBuiltins registers the built-in adapters in the harness registry
@@ -181,6 +185,7 @@ func newSweepEngine(ctx context.Context, a *app, experimental bool) (engine, err
 		Floor:    fsx.DefaultFloor,
 		Sealer:   "precinto " + buildVersion(),
 		Parallel: 2,
+		Sleep:    a.sys.sweepSleep, // nil in production: a real timer (D63)
 	}
 	return e, nil
 }
@@ -411,6 +416,14 @@ func (e *sweepEngine) HooksSeen(h harness.ID, child platform.ProcID) (bool, erro
 func (e *sweepEngine) EnqueueSeal(r queue.Request) error {
 	_, err := queue.Enqueue(e.layout.QueueDir, r)
 	return err
+}
+
+func (e *sweepEngine) WrongHomeRollouts(ctx context.Context) (map[string]int, error) {
+	user, err := codex.UserHome(e.henv.Host)
+	if err != nil {
+		return nil, err
+	}
+	return codex.WrongHomeRollouts(ctx, user, e.cfg)
 }
 
 func (e *sweepEngine) PrepareCodexHome(ctx context.Context, rootID string, forceConfig bool) error {

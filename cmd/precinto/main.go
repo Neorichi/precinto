@@ -22,9 +22,13 @@ const (
 	exitVerify = 5
 )
 
+// devVersion is the version of a build that names none (the Makefile's
+// VERSION fallback is the same string).
+const devVersion = "0.2.0-dev"
+
 // version is set with -ldflags "-X main.version=…" by release builds;
 // `go install` builds read debug.ReadBuildInfo instead.
-var version = "0.1.0-dev"
+var version = devVersion
 
 // stdio bundles the standard streams so handlers stay testable.
 type stdio struct {
@@ -48,8 +52,8 @@ var commands []command
 
 func init() {
 	commands = []command{
-		{"init", "init [--factor se|passphrase|plugin:<recipient>]… [--recovery-out FILE] [--show-recovery]", "create the vault, factors and recovery key (own terminal only, D7)", cmdInit, false},
-		{"factor", "factor list | factor add se|passphrase|plugin:<recipient> [--identity-stub STUB] | factor remove NAME | factor test NAME", "manage unlock factors", cmdFactor, false},
+		{"init", "init [--factor se|passphrase|plugin:<recipient>]… [--identity-stub FILE] [--presence POLICY | --no-presence-ack] [--recovery-out FILE] [--show-recovery]", "create the vault, factors and recovery key (own terminal only, D7)", cmdInit, false},
+		{"factor", "factor list | factor add se|passphrase|plugin:<recipient> [--identity-stub FILE] [--presence POLICY | --no-presence-ack] | factor remove NAME | factor test NAME | factor repin NAME", "manage unlock factors", cmdFactor, false},
 		{"vault", "vault repair --root DIR | --global [--recovery]", "repair a vault whose settings were changed outside precinto (own terminal only, D53)", cmdVault, false},
 		{"protect", "protect DIR [--md ledger|all|off] [--on-enter prompt|notify|off] [--harness LIST] [--claude-settings]", "protect a folder (creates its vault, seals what is there)", cmdProtect, false},
 		{"unprotect", "unprotect DIR", "restore everything of a folder and stop protecting it (asks to confirm)", cmdUnprotect, false},
@@ -58,7 +62,7 @@ func init() {
 		{"lock", "lock [--root DIR | --all] [--end] [--force] [--let-finish]", "lock folders (default: all); --end also ends sessions", cmdLock, false},
 		{"seal", "seal [--harness H] [--session ID] [--root DIR] [--wait-pid PID:START] [--queue] [--adopt] [--dry-run] [--dormant H --experimental]", "seal now (never needs a key)", cmdSeal, false},
 		{"sweep", "sweep [--root DIR] [--lock] [--wait] [--dry-run] [--quiet]", "seal every non-live unit of locked folders", cmdSweep, false},
-		{"restore", "restore [--root DIR] [--session ID] [--recent N] [--all] [--md] [--history] [--global] [--background]", "restore sealed units of unlocked folders", cmdRestore, false},
+		{"restore", "restore [--root DIR] [--session ID] [--recent N] [--all] [--md] [--history] [--global [--harness H]] [--background]", "restore sealed units of unlocked folders", cmdRestore, false},
 		{"resume", "resume [ID | --last | --pick] [--harness claude-code]", "restore one session and exec the harness to resume it", cmdResume, false},
 		{"run", "run [--harness H] [--no-pty] -- CMD [ARGS…]", "run a harness with unlock-before-launch, lock screen and seal-on-exit", cmdRun, false},
 		{"ls", "ls [--root DIR] [--conflicts] [--json]", "list sealed units", cmdLs, false},
@@ -190,7 +194,7 @@ func cmdVersion(a *app, args []string) int {
 
 // buildVersion is version, or the module version of a `go install` build.
 func buildVersion() string {
-	if version != "0.1.0-dev" {
+	if version != devVersion {
 		return version
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {

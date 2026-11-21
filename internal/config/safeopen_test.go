@@ -83,6 +83,28 @@ func TestConfigReadersRefuseUnsafeFiles(t *testing.T) {
 	}
 }
 
+// A file owned by another user is refused before it is read: a system
+// file owned by root stands in for one when the tests do not run as root
+// (its content is never read: the owner check comes first).
+func TestConfigReadersRefuseRootOwnedFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: root-owned files are the user's own")
+	}
+	const path = "/usr/bin/true"
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Skipf("%s is not a regular file here (%v)", path, err)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
+		t.Skipf("%s is not owned by root here", path)
+	}
+	for name, read := range readers(path) {
+		if err := guard(t, name, read); !errors.Is(err, fsx.ErrUnsafe) || !strings.Contains(err.Error(), "owned by uid 0") {
+			t.Errorf("%s of a root-owned file: %v, want fsx.ErrUnsafe naming the owner", name, err)
+		}
+	}
+}
+
 // A file owned by another user is refused (needs root to create one).
 func TestConfigReadersRefuseForeignOwner(t *testing.T) {
 	if os.Geteuid() != 0 {

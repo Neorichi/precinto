@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/agent/agenttest"
 	"github.com/precinto/precinto/internal/capsule"
@@ -42,6 +43,15 @@ func realApp(t *testing.T, h *testkit.Home) (*app, *env) {
 	}
 	sys.procs = func() platform.ProcTable { return h.Procs }
 	sys.clock = func() platform.Clock { return h.Clock }
+	// The D63 quiet-window wait advances the fake clock the engine reads
+	// (sweep.Env.Sleep, CC-29), so a sweep decides at once.
+	sys.sweepSleep = func(ctx context.Context, d time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		h.Clock.Advance(d)
+		return nil
+	}
 	a := newApp(stdio{in: e.in, out: &e.out, err: &e.err}, h.Env, sys)
 	return a, e
 }

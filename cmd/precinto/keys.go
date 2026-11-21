@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/awnumar/memguard"
+
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/sweep"
 )
@@ -65,12 +67,18 @@ func (e *keyDeniedError) exitCode() int {
 }
 
 // FileKeys asks the daemon for the file keys of paths (relative to
-// CapsulesDir) with purpose (ipc.Purpose*). When some capsules are denied
-// the granted keys are returned and sweep treats the missing ones as
-// denied; when every capsule is denied the error matches sweep.ErrKeyDenied.
+// CapsulesDir) with purpose (ipc.Purpose*), in requests of at most
+// ipc.MaxKeysPerRequest capsules (CC-17). When some capsules are denied the
+// granted keys are returned and sweep treats the missing ones as denied;
+// when every capsule is denied the error matches sweep.ErrKeyDenied. A
+// refusal of any batch (an ipc error) fails the whole call and destroys
+// the keys the earlier batches released.
 func (k *keySource) FileKeys(ctx context.Context, capsules []string, purpose string) (sweep.FileKeys, error) {
 	if k.isDestroyed() {
 		return nil, &keyDeniedError{codes: []ipc.Code{ipc.CodeLocked}}
+	}
+	if len(capsules) == 0 {
+		return multiKeys(nil), nil // nothing to release
 	}
 	k.callMu.Lock()
 	defer k.callMu.Unlock()
@@ -81,42 +89,87 @@ func (k *keySource) FileKeys(ctx context.Context, capsules []string, purpose str
 		}
 		k.client = c
 	}
-	refs := make([]ipc.CapsuleRef, len(capsules))
-	for i, p := range capsules {
-		refs[i] = ipc.CapsuleRef{Path: p}
-	}
-	keys, resp, err := k.client.releaseKeys(ctx, ipc.KeysReq{Capsules: refs, Purpose: purpose})
-	if err != nil {
+	var got multiKeys
+	granted := 0
+	denied := map[string]ipc.Code{}
+	for start := 0; start < len(capsules); start += ipc.MaxKeysPerRequest {
+		end := min(start+ipc.MaxKeysPerRequest, len(capsules))
+		refs := make([]ipc.CapsuleRef, 0, end-start)
+		for _, p := range capsules[start:end] {
+			refs = append(refs, ipc.CapsuleRef{Path: p})
+		}
+		keys, resp, err := k.client.releaseKeys(ctx, ipc.KeysReq{Capsules: refs, Purpose: purpose})
+		if err != nil {
+			if keys != nil {
+				keys.Destroy()
+			}
+			got.Destroy()
+			var ie *ipc.Error
+			if errors.As(err, &ie) {
+				return nil, &keyDeniedError{codes: []ipc.Code{ie.Code}, cause: err}
+			}
+			// A transport failure: the next request dials again.
+			_ = k.client.Close()
+			k.client = nil
+			return nil, &keyDeniedError{cause: err}
+		}
+		for p, c := range resp.Denied {
+			denied[p] = c
+		}
 		if keys != nil {
-			keys.Destroy()
+			if len(resp.Granted) == 0 {
+				keys.Destroy()
+			} else if !k.keep(keys) {
+				// A lock arrived while the request was in flight: destroy
+				// wiped the earlier batches already.
+				keys.Destroy()
+				return nil, &keyDeniedError{codes: []ipc.Code{ipc.CodeLocked}}
+			} else {
+				got = append(got, keys)
+				granted += len(resp.Granted)
+			}
 		}
-		var ie *ipc.Error
-		if errors.As(err, &ie) {
-			return nil, &keyDeniedError{codes: []ipc.Code{ie.Code}, cause: err}
-		}
-		// A transport failure: the next request dials again.
-		_ = k.client.Close()
-		k.client = nil
-		return nil, &keyDeniedError{cause: err}
 	}
-	if len(capsules) > 0 && len(resp.Granted) == 0 {
-		if keys != nil {
-			keys.Destroy()
-		}
-		return nil, &keyDeniedError{codes: deniedCodes(resp.Denied)}
+	if granted == 0 || len(got) == 0 {
+		got.Destroy()
+		return nil, &keyDeniedError{codes: deniedCodes(denied)}
 	}
-	if keys == nil {
-		return nil, &keyDeniedError{codes: deniedCodes(resp.Denied)}
+	if len(got) == 1 {
+		return got[0], nil
 	}
+	return got, nil
+}
+
+// keep remembers a released key set for destroy; false (and nothing kept)
+// once the source was destroyed.
+func (k *keySource) keep(keys sweep.FileKeys) bool {
 	k.setsMu.Lock()
 	defer k.setsMu.Unlock()
 	if k.destroyed {
-		// A lock arrived while the request was in flight.
-		keys.Destroy()
-		return nil, &keyDeniedError{codes: []ipc.Code{ipc.CodeLocked}}
+		return false
 	}
 	k.sets = append(k.sets, keys)
-	return keys, nil
+	return true
+}
+
+// multiKeys is the key sets of one FileKeys call that needed several
+// requests; each set is also remembered by the source, so destroy wipes
+// them however the caller holds them.
+type multiKeys []sweep.FileKeys
+
+func (m multiKeys) Key(path string) (*memguard.LockedBuffer, bool) {
+	for _, s := range m {
+		if b, ok := s.Key(path); ok {
+			return b, true
+		}
+	}
+	return nil, false
+}
+
+func (m multiKeys) Destroy() {
+	for _, s := range m {
+		s.Destroy()
+	}
 }
 
 func (k *keySource) isDestroyed() bool {

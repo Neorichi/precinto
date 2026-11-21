@@ -545,6 +545,7 @@ type fakeEngine struct {
 	enqueued  []queue.Request
 	prepared  []string
 	header    []byte
+	wrongHome map[string]int
 }
 
 func newFakeEngine() *fakeEngine {
@@ -787,6 +788,12 @@ func (f *fakeEngine) EnqueueSeal(r queue.Request) error {
 	return nil
 }
 
+func (f *fakeEngine) WrongHomeRollouts(ctx context.Context) (map[string]int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wrongHome, nil
+}
+
 func (f *fakeEngine) PrepareCodexHome(ctx context.Context, rootID string, forceConfig bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -820,6 +827,10 @@ type fakeVaults struct {
 	removed     []string
 	removeErr   error
 	verifiedAt  []time.Time
+	repinned    []string
+	repinOld    string
+	repinNew    string
+	repinErr    error
 }
 
 func newFakeVaults() *fakeVaults {
@@ -870,6 +881,11 @@ func (v *fakeVaults) MarkRecoveryVerified(at time.Time) error {
 		v.metas[id] = m
 	}
 	return nil
+}
+
+func (v *fakeVaults) RepinPlugin(name string) (string, string, error) {
+	v.repinned = append(v.repinned, name)
+	return v.repinOld, v.repinNew, v.repinErr
 }
 
 func (v *fakeVaults) RemoveFactor(id, name string) error {

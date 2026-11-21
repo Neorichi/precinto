@@ -12,6 +12,7 @@ import (
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/vault"
 )
 
@@ -25,12 +26,13 @@ func statusEnv(t *testing.T) *env {
 		Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked", Since: testkit.Epoch,
 			IdleDeadline: testkit.Epoch.Add(15 * time.Minute), AbsDeadline: until}},
 		Sessions: []ipc.SessionStatus{
-			{Harness: "claude-code", SID: "s1", RootIDs: []string{"root-acme"}, State: "running", HooksSeen: true, Registered: true},
+			{Harness: "claude-code", SID: "s1", RootIDs: []string{"root-acme"}, State: "running", HooksSeen: true, Registered: true, Version: "2.1.329"},
 			{Harness: "codex", SID: "s2", Proc: platform.ProcID{PID: 77}, RootIDs: []string{"root-acme"}, State: "running"},
 		},
 		Attention: []ipc.Attention{{Code: ipc.AttnConflict, Folder: "~/work/acme", Count: 1, Fix: "precinto resolve FILE"}},
 	}
 	e.eng.plain = []sweep.Plaintext{{RootID: "root-acme", Files: 3, Bytes: 4200, ByReason: map[string]int{"running": 2, "notes": 1}}}
+	e.eng.wrongHome = map[string]int{"root-acme": 2, "": 1}
 	e.eng.units = []sweep.UnitInfo{
 		{Kind: capsule.KindClaudeSession, Unit: "a", RootIDs: []string{"root-acme"}, Gens: []sweep.Generation{{Gen: 1}}},
 		{Kind: capsule.KindClaudeSession, Unit: "b", RootIDs: []string{"root-acme"}, Gens: []sweep.Generation{{Gen: 1}}, Plaintext: true, Reason: "restored"},
@@ -138,6 +140,71 @@ func TestStatusHuman(t *testing.T) {
 			if strings.Contains(strings.ToLower(line), bad) && !strings.Contains(line, "--root") {
 				t.Errorf("status line uses the forbidden word %q: %q", bad, line)
 			}
+		}
+	}
+}
+
+// SPEC §16.4: AGENTS shows the harness version reported at register (the
+// newest running one, CC-49); codex-wrong-home names the folder with
+// C9.codexoutside (CC-18); a locked folder holding plaintext only because
+// of weak liveness evidence is hold-capped (D63); C9.ungated names its
+// harness (CC-48).
+func TestStatusVersionWrongHomeHoldCapped(t *testing.T) {
+	e := statusEnv(t)
+	e.daemon.status.Sessions = append(e.daemon.status.Sessions,
+		ipc.SessionStatus{Harness: "claude-code", SID: "s3", RootIDs: []string{"root-acme"}, State: "running", HooksSeen: true, Version: "2.1.30"})
+	e.daemon.status.Vaults[0].State = "locked"
+	e.eng.plain[0].ByReason[ipc.AttnHoldCapped] = 1
+	if code := e.run("status", "--json"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	var s statusV1
+	if err := json.Unmarshal(e.out.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Harnesses[0].ID != "claude-code" || s.Harnesses[0].Version != "2.1.329" {
+		t.Fatalf("harnesses %+v, want claude-code at 2.1.329 (the newest)", s.Harnesses)
+	}
+	want := map[string]ipc.Attention{
+		ipc.AttnCodexWrongHome: {Code: ipc.AttnCodexWrongHome, Folder: "~/work/acme", Count: 2,
+			Detail: ui.Format(ui.MsgCodexOutside, ui.Vars{N: 2, Folder: "~/work/acme"}), Fix: "precinto run codex"},
+		ipc.AttnHoldCapped: {Code: ipc.AttnHoldCapped, Folder: "~/work/acme", Count: 1, Fix: "precinto doctor"},
+	}
+	for code, w := range want {
+		found := false
+		for _, at := range s.Attention {
+			if at.Code == code {
+				found = true
+				if at != w {
+					t.Errorf("%s: %+v, want %+v", code, at, w)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s item in %+v", code, s.Attention)
+		}
+	}
+	for _, at := range s.Attention {
+		if at.Code == ipc.AttnUngatedSession && at.Harness != "codex" {
+			t.Errorf("ungated item without its harness: %+v", at)
+		}
+		if at.Code == ipc.AttnCodexWrongHome && at.Folder == "" {
+			t.Errorf("uncheckable rollouts reported as a folder: %+v", at)
+		}
+	}
+	e.out.Reset()
+	if code := e.run("status"); code != exitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(e.stdout(), "claude-code  enabled · version 2.1.329 · hooks OK") {
+		t.Errorf("AGENTS line lacks the version:\n%s", e.stdout())
+	}
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{{"2.1.329", "2.1.30", 1}, {"1.2", "1.10", -1}, {"2.1.329", "2.1.329", 0}} {
+		if got := cmpDotted(c.a, c.b); got != c.want {
+			t.Errorf("cmpDotted(%s, %s) = %d, want %d", c.a, c.b, got, c.want)
 		}
 	}
 }

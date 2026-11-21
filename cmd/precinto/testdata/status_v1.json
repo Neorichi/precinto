@@ -57,6 +57,7 @@
     {
       "id": "claude-code",
       "enabled": true,
+      "version": "2.1.329",
       "hooks": "ok",
       "sessions": 1,
       "wrapper_installed": false,
@@ -83,11 +84,19 @@
       "fix": "precinto recover --verify"
     },
     {
+      "code": "codex-wrong-home",
+      "folder": "~/work/acme",
+      "count": 2,
+      "detail": "precinto: 2 Codex conversation(s) from ~/work/acme were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex",
+      "fix": "precinto run codex"
+    },
+    {
       "code": "ungated-session",
       "folder": "~/work/acme",
       "pid": 77,
       "detail": "precinto: codex (pid 77) runs in ~/work/acme without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run codex",
-      "fix": "precinto run codex"
+      "fix": "precinto run codex",
+      "harness": "codex"
     }
   ]
 }

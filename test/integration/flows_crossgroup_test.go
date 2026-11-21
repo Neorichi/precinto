@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,22 +21,41 @@ import (
 	"filippo.io/age"
 
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 // testPassphrase is the synthetic passphrase of the throwaway vaults (the
 // passphrase factor: the Secure Enclave is never used by tests).
 const testPassphrase = "integration-only passphrase 4 vaults"
 
+// The init prompts the flows answer: the catalog texts (CC-38, D70).
+var (
+	promptNewPassphrase   = ui.Format(ui.MsgPassphraseNew, ui.Vars{})
+	promptAgainPassphrase = ui.Format(ui.MsgPassphraseAgain, ui.Vars{})
+	promptService         = ui.Format(ui.MsgServiceOffer, ui.Vars{})
+)
+
 // The fixture session of the flows (D62 fixture form).
 const flowSID = "00000000-0000-4000-8000-0000000000f1"
 
-// startAgent starts `precinto agent --foreground` as the test's own child
-// and stops it at cleanup (SIGTERM to the process this test started).
+// startAgent starts `precinto agent --foreground` in h's fake HOME as the
+// test's own child and stops it at cleanup.
 func startAgent(t *testing.T, exe string, h *testkit.Home) {
 	t.Helper()
+	startDaemon(t, exe, childEnv(h, nil).Environ(), h.Layout.Socket)
+}
+
+// startDaemon starts `exe agent --foreground` with exactly env (a new
+// session, cwd /), waits until it listens on socket, and returns a stop
+// function (SIGTERM to the process this test started, SIGKILL after 10 s),
+// which the cleanup calls too.
+func startDaemon(t *testing.T, exe string, env []string, socket string) (stop func()) {
+	t.Helper()
 	cmd := exec.Command(exe, "agent", "--foreground")
-	cmd.Env = childEnv(h, nil).Environ()
+	cmd.Env = env
 	cmd.Dir = "/"
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -42,33 +63,43 @@ func startAgent(t *testing.T, exe string, h *testkit.Home) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
-		}
-	})
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
+			}
+			// A stopped daemon leaves its socket file: the next daemon
+			// replaces it, and waits below must not see the old one.
+			_ = os.Remove(socket)
+		})
+	}
+	t.Cleanup(stop)
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(h.Layout.Socket); err == nil {
-			return
+		if _, err := os.Stat(socket); err == nil {
+			return stop
 		}
 		select {
 		case err := <-done:
+			done <- err
 			t.Fatalf("agent exited early: %v", err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 	t.Fatal("agent did not bind its socket")
+	return stop
 }
 
-// fastPolicy shortens the stability window so seals decide quickly.
+// fastPolicy shortens the stability window to the smallest value
+// config.Validate accepts (10 s, D63), so seals decide quickly.
 func fastPolicy(t *testing.T, h *testkit.Home) {
 	t.Helper()
-	h.Cfg.Policy.QuietWindow = config.Duration(time.Second)
+	h.Cfg.Policy.QuietWindow = config.Duration(10 * time.Second)
 	if err := config.Save(h.Layout.ConfigFile, h.Cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +111,12 @@ func initVaults(t *testing.T, exe string, h *testkit.Home) string {
 	t.Helper()
 	rec := filepath.Join(h.Dir, "recovery.txt")
 	p := startPTY(t, exe, h, h.HomeDir, nil, "init", "--factor", "passphrase", "--recovery-out", rec)
-	p.expect("Choose a precinto passphrase")
+	p.expect(promptNewPassphrase)
 	p.send(testPassphrase + "\r")
-	p.expect("Type the passphrase again")
+	p.expect(promptAgainPassphrase)
 	p.send(testPassphrase + "\r")
 	if runtime.GOOS == "darwin" {
-		p.expect("Seal in the background")
+		p.expect(promptService)
 		p.send("n\r")
 	}
 	if code := p.wait(); code != 0 {
@@ -107,13 +138,21 @@ func unlockFolder(t *testing.T, exe string, h *testkit.Home, dir string) {
 	if code := p.wait(); code != 0 {
 		t.Fatalf("unlock exit %d: %q", code, p.output())
 	}
-	if !strings.Contains(p.output(), "unlocked") {
-		t.Fatalf("no C2.ok: %q", p.output())
+	// C2.ok, up to the deadlines (they depend on the clock).
+	ok := ui.Format(ui.MsgUnlockOK, ui.Vars{Folder: paths.Tilde(h.HomeDir, dir), N: h.Cfg.Policy.RestoreRecent})
+	ok = ok[:strings.Index(ok, " Locks after")]
+	if !strings.Contains(p.output(), ok) {
+		t.Fatalf("no C2.ok (%q): %q", ok, p.output())
 	}
 }
 
 type statusJSON struct {
-	V       int `json:"v"`
+	V     int `json:"v"`
+	Vault struct {
+		Initialized        bool       `json:"initialized"`
+		RecoveryTested     bool       `json:"recovery_tested"`
+		RecoveryVerifiedAt *time.Time `json:"recovery_verified_at"`
+	} `json:"vault"`
 	Folders []struct {
 		ID          string `json:"id"`
 		Path        string `json:"path"`
@@ -155,26 +194,39 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 	rec := initVaults(t, exe, h)
 
 	// SEC-21: recover --verify succeeds with the key init wrote, needs
-	// --insecure-key-file for a plain file, and fails on another key.
+	// --insecure-key-file for a plain file, and fails on another key. It is
+	// run by a human on a terminal: without one it is refused (D59).
 	if r := precinto(t, exe, h, h.HomeDir, nil, "", "recover", "--verify", "--key-file", rec); r.code != 2 {
 		t.Fatalf("recover without --insecure-key-file: %+v", r)
 	}
-	if r := precinto(t, exe, h, h.HomeDir, nil, "", "recover", "--verify", "--key-file", rec, "--insecure-key-file"); r.code != 0 {
-		t.Fatalf("recover --verify: %+v", r)
+	if r := precinto(t, exe, h, h.HomeDir, nil, "", "recover", "--verify", "--key-file", rec, "--insecure-key-file"); r.code != 3 {
+		t.Fatalf("recover --verify without a terminal: %+v", r)
+	}
+	if s := status(t, exe, h); s.Vault.RecoveryTested {
+		t.Fatalf("recovery key tested before recover --verify: %+v", s.Vault)
+	}
+	p := startPTY(t, exe, h, h.HomeDir, nil, "recover", "--verify", "--key-file", rec, "--insecure-key-file")
+	if code := p.wait(); code != 0 || !strings.Contains(p.output(), "opens your sealed folders") {
+		t.Fatalf("recover --verify: exit %d: %q", code, p.output())
+	}
+	// CC-07: the test is recorded, so status stops saying "never tested".
+	if s := status(t, exe, h); !s.Vault.RecoveryTested || s.Vault.RecoveryVerifiedAt == nil {
+		t.Fatalf("recover --verify not recorded: %+v", s.Vault)
 	}
 	wrong := filepath.Join(h.Dir, "wrong.txt")
 	if err := os.WriteFile(wrong, []byte(otherRecoveryKey(t)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if r := precinto(t, exe, h, h.HomeDir, nil, "", "recover", "--verify", "--key-file", wrong, "--insecure-key-file"); r.code == 0 {
-		t.Fatalf("a foreign recovery key verified: %+v", r)
+	p = startPTY(t, exe, h, h.HomeDir, nil, "recover", "--verify", "--key-file", wrong, "--insecure-key-file")
+	if code := p.wait(); code == 0 || strings.Contains(p.output(), "opens your sealed folders") {
+		t.Fatalf("a foreign recovery key verified: exit %d: %q", code, p.output())
 	}
 
 	startAgent(t, exe, h)
 
 	// testkit lists root-acme without a vault: protect creates it (the
 	// retry path of a protect whose vault_create failed).
-	p := startPTY(t, exe, h, h.HomeDir, nil, "protect", h.Root)
+	p = startPTY(t, exe, h, h.HomeDir, nil, "protect", h.Root)
 	p.expect("passphrase")
 	p.send(testPassphrase + "\r")
 	if code := p.wait(); code != 0 {
@@ -205,7 +257,21 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 
 	// Sealed after exit (the writer is known to have exited, R20), or by
 	// the queue worker shortly after.
-	waitGone(t, transcript)
+	if err := fsx.CheckSpace(h.Layout.CapsulesDir, 64<<20, fsx.DefaultFloor); errors.Is(err, fsx.ErrNoSpace) {
+		// D38, SPEC §17: precinto never seals into the volume's free-space
+		// floor; it keeps the plaintext and says so (C6.failed). The steps
+		// that need a sealed session cannot run on this disk.
+		if !strings.Contains(r.stderr, "disk full") {
+			t.Fatalf("below the free-space floor the run must report C6.failed (disk full): %q", r.stderr)
+		}
+		if _, err := os.Lstat(transcript); err != nil {
+			t.Fatalf("the transcript is gone although nothing could be sealed: %v", err)
+		}
+		t.Skipf("the fake home's volume is below precinto's free-space floor, so the seal is refused by design (%v); lock, unlock and restore of the sealed session were not exercised", err)
+	}
+	if !waitGone(transcript) {
+		t.Fatalf("%s still in plaintext after the run (run's messages: %q)", transcript, r.stderr)
+	}
 	if hits := testkit.GrepTree(t, h.Dir, marker, "capsules"); len(hits) > 0 {
 		t.Fatalf("marker in plaintext after the seal (I7): %v", hits)
 	}
@@ -224,8 +290,16 @@ func TestFlowInitProtectRunLockUnlockRestore(t *testing.T) {
 		t.Fatalf("restore while locked: %+v", r)
 	}
 	unlockFolder(t, exe, h, h.Root)
-	if r := precinto(t, exe, h, h.Root, nil, "", "restore", "--session", flowSID); r.code != 0 {
+	// The unlock starts the background restore of the recent sessions
+	// (C2.ok, SPEC §11.6), which may be placing this one: the explicit
+	// restore then has nothing left to do, and the file appears once the
+	// worker's unit is complete.
+	r = precinto(t, exe, h, h.Root, nil, "", "restore", "--session", flowSID)
+	if r.code != 0 {
 		t.Fatalf("restore: %+v", r)
+	}
+	if !waitPresent(transcript) {
+		t.Fatalf("restored transcript missing (restore said %q)", r.stdout)
 	}
 	b, err := os.ReadFile(transcript)
 	if err != nil {
@@ -256,16 +330,28 @@ func transcriptPath(h *testkit.Home, sid string) string {
 	return filepath.Join(h.ClaudeConfig, "projects", slug, sid+".jsonl")
 }
 
-func waitGone(t *testing.T, p string) {
-	t.Helper()
+// waitPresent reports whether p exists (is restored) within a minute.
+func waitPresent(p string) bool {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Lstat(p); err == nil {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+// waitGone reports whether p disappears (is sealed) within a minute.
+func waitGone(p string) bool {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Lstat(p); os.IsNotExist(err) {
-			return
+			return true
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("%s still in plaintext", p)
+	return false
 }
 
 // Refusals through the real binary and the real agent-context detection
@@ -290,9 +376,14 @@ func TestFlowAgentContextRefusals(t *testing.T) {
 		}
 	}
 	// Without a controlling terminal (a pipe, no /dev/tty) the same
-	// commands are refused too (D59).
-	r := precinto(t, exe, h, h.Root, nil, "", "forget", "0123456789abcdef0123456789abcdef")
-	if r.code != 3 {
-		t.Errorf("forget without a terminal: %+v", r)
+	// commands are refused too (D59; SEC-26 for vault repair).
+	for _, args := range [][]string{
+		{"forget", "0123456789abcdef0123456789abcdef"},
+		{"vault", "repair", "--root", h.Root},
+		{"vault", "repair", "--root", h.Root, "--recovery"},
+	} {
+		if r := precinto(t, exe, h, h.Root, nil, "", args...); r.code != 3 {
+			t.Errorf("%v without a terminal: %+v", args, r)
+		}
 	}
 }

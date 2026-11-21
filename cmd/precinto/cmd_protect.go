@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -102,6 +103,7 @@ func cmdProtect(a *app, args []string) int {
 		}
 	}
 
+	reused := false
 	root, existing := rootByPath(cfg, dir)
 	if existing {
 		// A protected folder whose vault was never created (an earlier
@@ -124,14 +126,29 @@ func cmdProtect(a *app, args []string) int {
 				return exitLocked
 			}
 		}
-		if slices.Contains(harnesses, string(harness.Codex)) && t != nil {
-			ok, err := t.YesNo(ui.Format(ui.MsgCodexConsent, ui.Vars{Folder: disp}), true)
-			if err == nil && !ok {
+		// D72: the folder manages Codex only with the user's consent,
+		// recorded in its harness list: --harness naming codex is that
+		// consent; otherwise C10.consent is asked when Codex is installed
+		// and a terminal can answer, and `precinto run codex` asks it
+		// later when the folder does not list codex.
+		if slices.Contains(harnesses, string(harness.Codex)) && *harnessList == "" {
+			consent := false
+			if t != nil && a.codexInstalled(cfg) {
+				ok, err := t.YesNo(ui.Format(ui.MsgCodexConsent, ui.Vars{Folder: disp}), true)
+				consent = err == nil && ok
+			}
+			if !consent {
 				harnesses = slices.DeleteFunc(harnesses, func(h string) bool { return h == string(harness.Codex) })
 			}
 		}
+		// D74: a folder protected before keeps its id, so its retired
+		// vault and every capsule sealed for it serve again.
+		id := config.NewRootID()
+		if old, ok := a.retiredVault(vs, cfg, dir); ok {
+			id, reused = old, true
+		}
 		root = config.Root{
-			ID:             config.NewRootID(),
+			ID:             id,
 			Path:           dir,
 			MD:             *md,
 			OnEnter:        *onEnter,
@@ -159,19 +176,25 @@ func cmdProtect(a *app, args []string) int {
 		cfg = next
 	}
 
-	var relay ipc.UIHandler = headlessUI{w: a.err}
-	if t != nil {
-		relay = t
-	}
-	c, err := a.dial(ctx, true)
-	if err == nil {
-		err = c.VaultCreate(ctx, ipc.VaultCreateReq{RootID: root.ID, RootPath: root.Path}, relay)
-		c.Close()
-	}
-	if err != nil {
-		code := a.fail("protect", err)
-		a.say(textVaultRetry, disp, disp)
-		return code
+	if reused {
+		// The vault exists and stays locked until unlocked: nothing to
+		// create (the daemon reads the new config.toml on its next tick).
+		a.say(textProtectReused, disp, disp)
+	} else {
+		var relay ipc.UIHandler = headlessUI{w: a.err}
+		if t != nil {
+			relay = t
+		}
+		c, err := a.dial(ctx, true)
+		if err == nil {
+			err = c.VaultCreate(ctx, ipc.VaultCreateReq{RootID: root.ID, RootPath: root.Path}, relay)
+			c.Close()
+		}
+		if err != nil {
+			code := a.fail("protect", err)
+			a.say(textVaultRetry, disp, disp)
+			return code
+		}
 	}
 
 	if root.ClaudeSettings {
@@ -192,6 +215,80 @@ func cmdProtect(a *app, args []string) int {
 	}
 	a.say(textProtected, disp, disp)
 	return exitOK
+}
+
+// retiredVault finds the vault of a folder that was unprotected (D74): a
+// root vault no configured folder uses whose recorded root_path is dir
+// after realpath; the newest one when there are several.
+func (a *app) retiredVault(vs vaultStore, cfg config.Config, dir string) (string, bool) {
+	ids, err := vs.List()
+	if err != nil {
+		return "", false
+	}
+	best, bestAt := "", time.Time{}
+	for _, id := range ids {
+		if id == vault.GlobalID {
+			continue
+		}
+		if _, used := cfg.RootByID(id); used {
+			continue
+		}
+		m, err := vs.Meta(id)
+		if err != nil || m.RootPath == "" {
+			continue
+		}
+		p := filepath.Clean(m.RootPath)
+		if real, err := a.sys.realpath(p); err == nil {
+			p = real
+		}
+		if p == dir && (best == "" || m.CreatedAt.After(bestAt)) {
+			best, bestAt = id, m.CreatedAt
+		}
+	}
+	return best, best != ""
+}
+
+// codexInstalled reports whether Codex can run here: the configured
+// [harness.codex].bin, or codex on PATH.
+func (a *app) codexInstalled(cfg config.Config) bool {
+	if bin := cfg.Harness[string(harness.Codex)].Bin; filepath.IsAbs(bin) {
+		if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return true
+		}
+	}
+	_, err := paths.LookPath(a.env, "codex")
+	return err == nil
+}
+
+// addCodexConsent records a yes to C10.consent from `precinto run codex`
+// (D72): codex joins the folder's harness list, a strengthening edit (D48).
+func (a *app) addCodexConsent(rootID string) error {
+	l, err := a.layout()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(l.ConfigFile) // the file as it is now, not a cached copy
+	if err != nil {
+		return err
+	}
+	next := cfg
+	next.Roots = append([]config.Root(nil), cfg.Roots...)
+	for i, r := range next.Roots {
+		if r.ID != rootID {
+			continue
+		}
+		if slices.Contains(r.Harnesses, string(harness.Codex)) {
+			return nil
+		}
+		hs := append([]string(nil), r.Harnesses...)
+		if len(hs) == 0 {
+			hs = []string{string(harness.ClaudeCode)} // an empty list meant both built-ins
+		}
+		r.Harnesses = append(hs, string(harness.Codex))
+		next.Roots[i] = r
+		return a.saveConfig(next)
+	}
+	return nil
 }
 
 // rootByPath returns the root whose path is exactly dir.
@@ -375,6 +472,55 @@ func (a *app) writeClaudeSettings(ctx context.Context, cfg config.Config, r conf
 		return "", err
 	}
 	return p, fsx.WriteFileAtomic(p, append(b, '\n'), 0o600)
+}
+
+// removeClaudeSettings undoes protect --claude-settings (DC-42): it
+// removes from DIR/.claude/settings.local.json the keys that still hold
+// the value precinto wrote, keeping every other key (and any key the user
+// changed since). It returns the file's path when it changed it.
+func (a *app) removeClaudeSettings(eng engine, cfg config.Config, r config.Root) (string, error) {
+	var ours map[string]any
+	if err := json.Unmarshal([]byte(eng.ClaudeSettingsJSON(cfg.Policy)), &ours); err != nil {
+		return "", err
+	}
+	p := filepath.Join(r.Path, ".claude", "settings.local.json")
+	fh, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if st, err := fsx.Fstat(fh); err != nil || !st.IsRegular() {
+		fh.Close()
+		return "", fmt.Errorf("%w: %s is not a regular file; left unchanged", fsx.ErrUnsafe, a.display(p))
+	}
+	b, err := readBounded(fh, 1<<20)
+	fh.Close()
+	if err != nil {
+		return "", err
+	}
+	cur := map[string]any{}
+	if len(bytes.TrimSpace(b)) > 0 {
+		if err := json.Unmarshal(b, &cur); err != nil {
+			return "", fmt.Errorf("%s is not a JSON object; left unchanged", a.display(p))
+		}
+	}
+	changed := false
+	for k, v := range ours {
+		if have, ok := cur[k]; ok && reflect.DeepEqual(have, v) {
+			delete(cur, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return "", nil
+	}
+	out, err := json.MarshalIndent(cur, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return p, fsx.WriteFileAtomic(p, append(out, '\n'), 0o600)
 }
 
 // offerGitExclude offers (consent, default yes) to add *.md.precinto to
@@ -597,6 +743,13 @@ func cmdUnprotect(a *app, args []string) int {
 	next.Roots = slices.DeleteFunc(append([]config.Root(nil), cfg.Roots...), func(r config.Root) bool { return r.ID == root.ID })
 	if err := a.saveConfig(next); err != nil {
 		return a.fail("unprotect", err)
+	}
+	if root.ClaudeSettings {
+		if p, err := a.removeClaudeSettings(eng, cfg, root); err != nil {
+			a.say("unprotect: %s", oneLineText(err.Error()))
+		} else if p != "" {
+			a.say(textSettingsRemoved, a.display(p))
+		}
 	}
 	// Removing a folder weakens protection: the daemon keeps it until the
 	// change is confirmed in a terminal (D48). Every pending change is

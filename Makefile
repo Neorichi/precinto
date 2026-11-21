@@ -12,7 +12,7 @@ GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 CGO_ENABLED ?= 0
 export CGO_ENABLED
 
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-dev)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.2.0-dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN     := bin/precinto
 
@@ -48,9 +48,11 @@ test-race:
 crossgroup:
 	GOTRACEBACK=all $(GO) test -tags testing,crossgroup -timeout 8m ./...
 
-## crossgroup-crash: the crossgroup crash rows (failpoints over the real groups)
+## crossgroup-crash: the crossgroup crash rows (failpoints over the real
+## groups) of the crash-matrix packages; test-crash keeps its own list.
+## Bounded and traced like crossgroup (TESTPLAN §10).
 crossgroup-crash:
-	GOTRACEBACK=all $(GO) test -tags testing,crossgroup,failpoints -timeout 8m -count=1 ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/... ./test/integration/...
+	GOTRACEBACK=all $(GO) test -tags testing,failpoints,crossgroup -count=1 -timeout 8m ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/...
 
 ## test-integration: cross-package flows against the testing binary (crossgroup)
 test-integration:
@@ -81,7 +83,10 @@ lint: fmt-check vet vet-crossgroup arch api-check
 	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; else echo "lint: staticcheck not installed, skipped"; fi
 	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "lint: govulncheck not installed, skipped"; fi
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		for f in plugin/scripts/precinto-hook plugins/codex/scripts/precinto-hook; do [ -f "$$f" ] && shellcheck -s sh "$$f"; done; true; \
+		for f in plugin/scripts/precinto-hook plugins/codex/scripts/precinto-hook; do \
+			if [ -f "$$f" ]; then shellcheck -s sh "$$f" || exit 1; fi; \
+		done; \
+	elif [ -n "$$CI" ]; then echo "lint: shellcheck is required in CI (TESTPLAN §10)"; exit 1; \
 	else echo "lint: shellcheck not installed, skipped"; fi
 
 ## fmt: gofmt -w

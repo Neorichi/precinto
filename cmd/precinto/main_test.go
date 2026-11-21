@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,16 @@ func TestVersion(t *testing.T) {
 		}
 		if !strings.HasPrefix(e.stdout(), "precinto ") {
 			t.Fatalf("%v: %q", args, e.stdout())
+		}
+	}
+	// A build that names no version (no -ldflags, no module version) is the
+	// development version of this release line, as the Makefile's fallback.
+	if devVersion != "0.2.0-dev" {
+		t.Fatalf("devVersion %q", devVersion)
+	}
+	if bi, ok := debug.ReadBuildInfo(); version == devVersion && (!ok || bi.Main.Version == "" || bi.Main.Version == "(devel)") {
+		if got := buildVersion(); got != "0.2.0-dev" {
+			t.Fatalf("buildVersion() = %q, want 0.2.0-dev", got)
 		}
 	}
 }

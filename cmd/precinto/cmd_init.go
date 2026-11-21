@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -35,7 +38,120 @@ type factorArg struct {
 	kind      vault.FactorKind
 	recipient string // plugin:<recipient>
 	plugin    string // plugin name from the recipient ("yubikey")
-	stub      string // plugin identity stub (factor add --identity-stub)
+	stub      string // plugin identity stub (read from --identity-stub FILE)
+	presence  string // plugin presence policy (--presence, CC-09)
+	noAck     bool   // --no-presence-ack: no known presence policy, accepted (S10)
+}
+
+// presencePolicies are the plugin presence policies precinto records
+// (vault.FactorSpec.PresencePolicy, CC-09).
+var presencePolicies = []string{"touch-always", "touch-cached", "pin-always", "pin-once", "tpm-pin"}
+
+// pluginFlags are the plugin-factor flags of init and factor add (SPEC
+// §16.1, CC-09).
+type pluginFlags struct {
+	stubFile *string
+	presence *string
+	noAck    *bool
+}
+
+func addPluginFlags(f *flags) pluginFlags {
+	return pluginFlags{
+		stubFile: f.String("identity-stub", "", "the plugin's identity `FILE` (AGE-PLUGIN-…-1…, not secret) for a plugin:<recipient> factor"),
+		presence: f.String("presence", "", "the plugin factor's presence `POLICY`: "+strings.Join(presencePolicies, ", ")),
+		noAck:    f.Bool("no-presence-ack", false, "accept a plugin factor whose presence policy precinto cannot know"),
+	}
+}
+
+func (p pluginFlags) given() bool { return *p.stubFile != "" || *p.presence != "" || *p.noAck }
+
+// check validates the plugin flags against the factors (no I/O): they
+// belong to exactly one plugin factor, which needs an identity stub and
+// either a known presence policy or --no-presence-ack (S10).
+func (p pluginFlags) check(specs []factorArg) error {
+	plugins := 0
+	for _, s := range specs {
+		if s.kind == vault.FactorPlugin {
+			plugins++
+		}
+	}
+	switch {
+	case plugins == 0 && p.given():
+		return usageErrorf("--identity-stub, --presence and --no-presence-ack are for plugin:<recipient> factors")
+	case plugins == 0:
+		return nil
+	case plugins > 1:
+		return usageErrorf("give one plugin factor at a time (add another with precinto factor add)")
+	case *p.presence != "" && *p.noAck:
+		return usageErrorf("use only one of --presence, --no-presence-ack")
+	case *p.presence == "" && !*p.noAck:
+		return usageErrorf("a plugin factor needs --presence %s or --no-presence-ack", strings.Join(presencePolicies, "|"))
+	case *p.presence != "" && !slices.Contains(presencePolicies, *p.presence):
+		return usageErrorf("--presence must be one of %s", strings.Join(presencePolicies, ", "))
+	case *p.stubFile == "":
+		return usageErrorf("a plugin factor needs --identity-stub FILE (the plugin's identity file)")
+	}
+	return nil
+}
+
+// apply reads the identity stub and fills the plugin factor of specs.
+func (p pluginFlags) apply(a *app, specs []factorArg) error {
+	for i := range specs {
+		if specs[i].kind != vault.FactorPlugin {
+			continue
+		}
+		stub, err := a.readIdentityStub(*p.stubFile, specs[i].plugin)
+		if err != nil {
+			return err
+		}
+		specs[i].stub, specs[i].presence, specs[i].noAck = stub, *p.presence, *p.noAck
+	}
+	return nil
+}
+
+// maxStubFile bounds an identity stub file.
+const maxStubFile = 64 << 10
+
+// readIdentityStub reads the plugin identity of an age plugin identity
+// file: the one AGE-PLUGIN-<NAME>-1… line (comments and blank lines are
+// skipped). A file holding a secret key is refused without being kept: a
+// stub is a handle to a hardware key, never key material.
+func (a *app) readIdentityStub(file, plugin string) (string, error) {
+	abs, err := a.absPath(file)
+	if err != nil {
+		return "", err
+	}
+	fh, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", fmt.Errorf("--identity-stub: %w", err)
+	}
+	defer fh.Close()
+	if st, err := fh.Stat(); err != nil || !st.Mode().IsRegular() || st.Size() > maxStubFile {
+		return "", usageErrorf("--identity-stub %s is not a regular file of at most %d bytes", a.display(abs), maxStubFile)
+	}
+	b, err := readBounded(fh, maxStubFile+1)
+	if err != nil {
+		return "", err
+	}
+	defer memguard.WipeBytes(b)
+	prefix := "AGE-PLUGIN-" + strings.ToUpper(plugin) + "-1"
+	var stubs []string
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || strings.HasPrefix(line, "#"):
+		case strings.HasPrefix(strings.ToUpper(line), "AGE-SECRET-KEY-"):
+			return "", usageErrorf("--identity-stub %s holds a secret key, not a plugin identity: precinto never stores it", a.display(abs))
+		case strings.HasPrefix(line, prefix):
+			stubs = append(stubs, line)
+		default:
+			return "", usageErrorf("--identity-stub %s is not an age-plugin-%s identity file", a.display(abs), plugin)
+		}
+	}
+	if len(stubs) != 1 {
+		return "", usageErrorf("--identity-stub %s must hold exactly one %s… identity (found %d)", a.display(abs), prefix, len(stubs))
+	}
+	return stubs[0], nil
 }
 
 // parseFactorArgs validates --factor values; none means the OS default
@@ -109,6 +225,7 @@ func cmdInit(a *app, args []string) int {
 	f := newFlags("init")
 	var factors stringList
 	f.Var(&factors, "factor", "unlock method: se, passphrase or plugin:<recipient> (repeatable; default se on macOS, passphrase on linux)")
+	plugin := addPluginFlags(f)
 	recoveryOut := f.String("recovery-out", "", "write the recovery key to `FILE` (new file, mode 0600) instead of showing it")
 	showRecovery := f.Bool("show-recovery", false, "show the recovery key on screen even with --recovery-out")
 	pos, err := f.parse(args)
@@ -120,6 +237,9 @@ func cmdInit(a *app, args []string) int {
 	}
 	specs, err := parseFactorArgs(factors, a.sys.goos)
 	if err != nil {
+		return a.usageFail(f, err.Error())
+	}
+	if err := plugin.check(specs); err != nil {
 		return a.usageFail(f, err.Error())
 	}
 	// D7: the recovery key is shown or written only to a human: no agent
@@ -137,6 +257,9 @@ func cmdInit(a *app, args []string) int {
 	}
 	defer t.Close()
 	if err := a.sys.harden(); err != nil {
+		return a.fail("init", err)
+	}
+	if err := plugin.apply(a, specs); err != nil {
 		return a.fail("init", err)
 	}
 	vs, err := a.vaults()
@@ -282,7 +405,8 @@ func (a *app) factorSpecs(ctx context.Context, t terminal, specs []factorArg) ([
 			if err != nil {
 				return out, fmt.Errorf("age-plugin-%s: %w", s.plugin, err)
 			}
-			out = append(out, vault.FactorSpec{Kind: vault.FactorPlugin, Name: s.plugin, Recipient: s.recipient, IdentityStub: s.stub, PluginPath: path})
+			out = append(out, vault.FactorSpec{Kind: vault.FactorPlugin, Name: s.plugin, Recipient: s.recipient, IdentityStub: s.stub,
+				PluginPath: path, PresencePolicy: s.presence, NoPresenceAck: s.noAck})
 		}
 	}
 	return out, nil
@@ -486,13 +610,16 @@ func writeSecretFile(f *os.File, secret *memguard.LockedBuffer) error {
 
 func cmdFactor(a *app, args []string) int {
 	f := newFlags("factor")
-	stub := f.String("identity-stub", "", "plugin identity `STUB` (AGE-PLUGIN-…-1…) for factor add plugin:<recipient>")
+	plugin := addPluginFlags(f)
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
 		return code
 	}
 	if len(pos) == 0 {
 		return a.usageFail(f, "missing subcommand")
+	}
+	if pos[0] != "add" && plugin.given() {
+		return a.usageFail(f, "--identity-stub, --presence and --no-presence-ack are for factor add plugin:<recipient>")
 	}
 	if err := a.refuseAgent(refusal{action: "change the unlock methods of", folder: "your folders", command: "factor " + pos[0]}); err != nil {
 		return exitLocked
@@ -515,8 +642,10 @@ func cmdFactor(a *app, args []string) int {
 		if err != nil {
 			return a.usageFail(f, err.Error())
 		}
-		fa.stub = *stub
-		return a.factorAdd(fa)
+		if err := plugin.check([]factorArg{fa}); err != nil {
+			return a.usageFail(f, err.Error())
+		}
+		return a.factorAdd(fa, plugin)
 	case "remove":
 		if len(pos) != 2 {
 			return a.usageFail(f, "factor remove needs a factor name (see precinto factor list)")
@@ -527,8 +656,139 @@ func cmdFactor(a *app, args []string) int {
 			return a.usageFail(f, "factor test needs a factor name (see precinto factor list)")
 		}
 		return a.factorTest(pos[1])
+	case "repin":
+		if len(pos) != 2 {
+			return a.usageFail(f, "factor repin needs a factor name (see precinto factor list)")
+		}
+		return a.factorRepin(vs, pos[1])
 	}
 	return a.usageFail(f, "unknown subcommand "+pos[0])
+}
+
+// factorRepin re-pins a plugin factor to the binary now at its pinned path
+// (D75): on a terminal only (agent contexts were refused by cmdFactor), it
+// shows the path, the pinned and the current SHA-256, the owner and the
+// modification time, asks for the typed word repin (C12.typed) and then
+// rewrites the pin in every vault (vault.Store.RepinPlugin).
+func (a *app) factorRepin(vs vaultStore, name string) int {
+	t, err := a.needTerminal("factor repin")
+	if err != nil {
+		return exitLocked
+	}
+	defer t.Close()
+	if err := a.sys.harden(); err != nil {
+		return a.fail("factor", err)
+	}
+	f, ok, err := pinnedFactor(vs, name)
+	if err != nil {
+		return a.fail("factor", err)
+	}
+	if !ok {
+		a.say(textRepinNotPlugin, name)
+		return exitUsage
+	}
+	cur, err := a.binaryFacts(f.PluginPath)
+	if err != nil {
+		return a.fail("factor", err)
+	}
+	if cur.sha == f.PluginSHA256 {
+		a.sayOut(textRepinSame, name)
+		return exitOK
+	}
+	a.say(textRepinWhat, name)
+	a.say(textRepinLine, "binary", a.display(f.PluginPath))
+	a.say(textRepinLine, "pinned SHA-256", orUnknown(f.PluginSHA256))
+	a.say(textRepinLine, "current SHA-256", cur.sha)
+	a.say(textRepinLine, "owner", cur.owner)
+	a.say(textRepinLine, "modified", cur.mtime.In(a.sys.loc).Format("2006-01-02 15:04"))
+	if err := a.typedConfirm(t, fmt.Sprintf("re-pinning %s to this binary", name), wordRepin); err != nil {
+		return exitLocked
+	}
+	_, pinned, err := vs.RepinPlugin(name)
+	if err != nil {
+		return a.fail("factor", err)
+	}
+	if pinned != cur.sha {
+		// The binary changed again between the display and the pin: what
+		// is pinned now is not what was confirmed.
+		a.say(textRepinChanged, name, name)
+		return exitVerify
+	}
+	a.say(textRepinDone, name)
+	return exitOK
+}
+
+// pinnedFactor finds the plugin-backed factor name (se or plugin) in the
+// vaults, with its pinned path and hash.
+func pinnedFactor(vs vaultStore, name string) (vault.Factor, bool, error) {
+	ids, err := vs.List()
+	if err != nil {
+		return vault.Factor{}, false, err
+	}
+	for _, id := range ids {
+		m, err := vs.Meta(id)
+		if err != nil {
+			return vault.Factor{}, false, err
+		}
+		for _, fc := range m.Factors {
+			if fc.Name == name && (fc.Kind == vault.FactorSE || fc.Kind == vault.FactorPlugin) && fc.PluginPath != "" {
+				return fc, true, nil
+			}
+		}
+	}
+	return vault.Factor{}, false, nil
+}
+
+// binaryInfo is what factor repin shows about a plugin binary.
+type binaryInfo struct {
+	sha   string
+	owner string
+	mtime time.Time
+}
+
+// binaryFacts hashes the regular file at path (never through a symlink)
+// and describes its owner and modification time; the checks of
+// vault.Store.RepinPlugin (owner root or the user, not group- or
+// other-writable) are applied again by the store.
+func (a *app) binaryFacts(path string) (binaryInfo, error) {
+	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return binaryInfo{}, err
+	}
+	defer fh.Close()
+	st, err := fh.Stat()
+	if err != nil {
+		return binaryInfo{}, err
+	}
+	if !st.Mode().IsRegular() {
+		return binaryInfo{}, fmt.Errorf("%s is not a regular file", a.display(path))
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, fh); err != nil {
+		return binaryInfo{}, err
+	}
+	info := binaryInfo{sha: hex.EncodeToString(h.Sum(nil)), owner: "unknown", mtime: st.ModTime()}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+		switch uid := int(sys.Uid); {
+		case uid == 0:
+			info.owner = "the system (uid 0)"
+		case uid == a.sys.uid():
+			info.owner = fmt.Sprintf("you (uid %d)", uid)
+		default:
+			info.owner = fmt.Sprintf("another user (uid %d)", uid)
+		}
+		if mode := st.Mode().Perm(); mode&0o022 != 0 {
+			info.owner += fmt.Sprintf(", writable by others (mode %04o)", mode)
+		}
+	}
+	return info, nil
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
 func (a *app) factorList(vs vaultStore) int {
@@ -554,7 +814,7 @@ func (a *app) factorList(vs vaultStore) int {
 	return exitOK
 }
 
-func (a *app) factorAdd(fa factorArg) int {
+func (a *app) factorAdd(fa factorArg, plugin pluginFlags) int {
 	t, err := a.needTerminal("factor add")
 	if err != nil {
 		return exitLocked
@@ -563,6 +823,11 @@ func (a *app) factorAdd(fa factorArg) int {
 	if err := a.sys.harden(); err != nil {
 		return a.fail("factor", err)
 	}
+	specs := []factorArg{fa}
+	if err := plugin.apply(a, specs); err != nil {
+		return a.fail("factor", err)
+	}
+	fa = specs[0]
 	ctx := context.Background()
 	req := ipc.FactorAddReq{Kind: string(fa.kind)}
 	switch fa.kind {
@@ -578,6 +843,7 @@ func (a *app) factorAdd(fa factorArg) int {
 			return a.fail("factor", fmt.Errorf("age-plugin-%s: %w", fa.plugin, err))
 		}
 		req.Recipient, req.IdentityStub, req.PluginPath = fa.recipient, fa.stub, path
+		req.PresencePolicy, req.NoPresenceAck = fa.presence, fa.noAck
 	}
 	// factor_add needs every vault unlocked: a daemon that is not running
 	// has none, so there is nothing to autostart.
@@ -630,8 +896,11 @@ func (a *app) factorRemove(vs vaultStore, name string) int {
 	return exitOK
 }
 
-// factorTest unlocks the global vault with one factor for one minute and
-// locks it again unless it was already unlocked.
+// factorTest unwraps the global vault with one factor and verifies it,
+// then drops it (ipc.UnlockReq.Test, CC-50): no grant, no restore worker,
+// no policy re-pin. A daemon that still answers a test with a grant is
+// held to one minute and locked again, unless the vault was unlocked
+// before.
 func (a *app) factorTest(name string) int {
 	t, err := a.needTerminal("factor test")
 	if err != nil {
@@ -651,11 +920,15 @@ func (a *app) factorTest(name string) int {
 	if st, err := c.Status(ctx); err == nil {
 		wasOpen = unlockedVaults(st)[vault.GlobalID]
 	}
-	_, err = c.Unlock(ctx, ipc.UnlockReq{Global: true, Factor: name, TTL: time.Minute, TTY: true, Deadline: a.now().Add(3 * time.Minute)}, t)
+	resp, err := c.Unlock(ctx, ipc.UnlockReq{Global: true, Factor: name, Test: true, TTL: time.Minute, TTY: true, Deadline: a.now().Add(3 * time.Minute)}, t)
 	if err != nil {
+		if isBadSecret(err) {
+			a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: "the global vault"})
+			return exitLocked
+		}
 		return a.fail("factor", err)
 	}
-	if !wasOpen {
+	if !wasOpen && slices.Contains(resp.Unlocked, vault.GlobalID) {
 		_, _ = c.Lock(ctx, ipc.LockReq{RootIDs: []string{vault.GlobalID}})
 	}
 	a.say(textFactorTested, name)

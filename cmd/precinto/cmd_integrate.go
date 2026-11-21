@@ -33,7 +33,7 @@ const (
 var experimentalHosts = map[string]string{
 	"cursor":  "Cursor can't block a prompt reliably and fails open unless failClosed is set; install the plugin from plugin/.cursor-plugin.",
 	"copilot": "Copilot can't block prompts (only tools); run it through precinto run so the lock screen covers it.",
-	"droid":   "Droid loads the Claude plugin (claude plugin install precinto@precinto in Droid); tool names differ, so test the gate first.",
+	"droid":   "Droid loads the Claude plugin (claude plugin install " + pluginRef + " in Droid); tool names differ, so test the gate first.",
 }
 
 var versionRE = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)

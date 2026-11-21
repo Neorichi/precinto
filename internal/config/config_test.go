@@ -127,3 +127,61 @@ func TestSaveRootsListPinned(t *testing.T) {
 		t.Errorf("pinned mode %v", fi.Mode().Perm())
 	}
 }
+
+// D63: quiet_window "0" keeps the 120 s default; any other value below
+// 10 s is refused (every sealing process waits once for the window, so it
+// must be long enough to see a writer pause).
+func TestQuietWindowFloor(t *testing.T) {
+	for v, ok := range map[string]bool{"0": true, "10s": true, "2m": true, "9s": false, "1s": false, "500ms": false, "-1m": false} {
+		_, err := config.Load(write(t, "version = 1\n[policy]\nquiet_window = \""+v+"\"\n"))
+		if ok && err != nil {
+			t.Errorf("quiet_window = %q refused: %v", v, err)
+		}
+		if !ok && !errors.Is(err, config.ErrInvalid) {
+			t.Errorf("quiet_window = %q: err = %v, want ErrInvalid", v, err)
+		}
+	}
+	c := config.Default()
+	c.Policy.QuietWindow = config.Duration(5 * time.Second)
+	if err := config.Save(filepath.Join(t.TempDir(), "config.toml"), c); !errors.Is(err, config.ErrInvalid) {
+		t.Errorf("Save with quiet_window 5s: %v, want ErrInvalid", err)
+	}
+	if config.Default().Policy.QuietWindow.D() != 120*time.Second {
+		t.Errorf("default quiet_window %v", config.Default().Policy.QuietWindow.D())
+	}
+}
+
+// D63: "0" means the 120 s default in the protection order too, so a merge
+// never prefers a longer window over it and 2m → 0 is no weakening.
+func TestQuietWindowZeroMeansDefault(t *testing.T) {
+	zero, long := config.Default(), config.Default()
+	zero.Policy.QuietWindow = 0
+	long.Policy.QuietWindow = config.Duration(5 * time.Minute)
+	if got := config.Strictest(zero, long).Policy.QuietWindow; got != 0 {
+		t.Errorf("Strictest(0, 5m) = %v, want 0 (= 120 s)", got.D())
+	}
+	if got := config.Strictest(long, zero).Policy.QuietWindow; got != 0 {
+		t.Errorf("Strictest(5m, 0) = %v, want 0 (= 120 s)", got.D())
+	}
+	short := config.Default()
+	short.Policy.QuietWindow = config.Duration(30 * time.Second)
+	if got := config.Strictest(zero, short).Policy.QuietWindow.D(); got != 30*time.Second {
+		t.Errorf("Strictest(0, 30s) = %v, want 30s", got)
+	}
+	for _, c := range []struct {
+		from, to  config.Duration
+		weakening bool
+	}{
+		{config.Duration(2 * time.Minute), 0, false},
+		{0, config.Duration(2 * time.Minute), false},
+		{0, config.Duration(5 * time.Minute), true},
+		{0, config.Duration(30 * time.Second), false},
+	} {
+		a, b := config.Default(), config.Default()
+		a.Policy.QuietWindow, b.Policy.QuietWindow = c.from, c.to
+		cs := config.Diff(a, b)
+		if len(cs) != 1 || cs[0].Key != "policy.quiet_window" || cs[0].Weakening != c.weakening {
+			t.Errorf("Diff quiet_window %v → %v = %+v, want weakening=%v", c.from.D(), c.to.D(), cs, c.weakening)
+		}
+	}
+}

@@ -117,6 +117,8 @@ func (v storeAdapter) List() ([]string, error) { return v.s.List() }
 
 func (v storeAdapter) MarkRecoveryVerified(at time.Time) error { return v.s.MarkRecoveryVerified(at) }
 
+func (v storeAdapter) RepinPlugin(name string) (string, string, error) { return v.s.RepinPlugin(name) }
+
 func (v storeAdapter) Meta(id string) (vault.Meta, error) {
 	vv, err := v.s.Open(id)
 	if err != nil {
@@ -166,7 +168,38 @@ func (a *app) dial(ctx context.Context, autostart bool) (daemonClient, error) {
 			o.Autostart, o.Exe, o.Env, o.Timeout = true, exe, daemonEnv(a.env), autostartTimeout
 		}
 	}
-	return a.sys.dial(ctx, o)
+	c, err := a.sys.dial(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	if m := paths.AgentMarkers(a.env); len(m) > 0 {
+		return markedClient{daemonClient: c, markers: m}, nil
+	}
+	return c, nil
+}
+
+// markedClient fills UnlockReq.AgentMarkers and KeysReq.AgentMarkers with
+// this process's own paths.AgentMarkers when the request names none
+// (CC-11): a self-restricting claim the daemon unions with the ancestry
+// and controlling-terminal facts it measures itself. It can only narrow
+// what the daemon grants, never widen it.
+type markedClient struct {
+	daemonClient
+	markers []string
+}
+
+func (c markedClient) Unlock(ctx context.Context, r ipc.UnlockReq, relay ipc.UIHandler) (ipc.UnlockResp, error) {
+	if len(r.AgentMarkers) == 0 {
+		r.AgentMarkers = append([]string(nil), c.markers...)
+	}
+	return c.daemonClient.Unlock(ctx, r, relay)
+}
+
+func (c markedClient) releaseKeys(ctx context.Context, r ipc.KeysReq) (sweep.FileKeys, ipc.KeysResp, error) {
+	if len(r.AgentMarkers) == 0 {
+		r.AgentMarkers = append([]string(nil), c.markers...)
+	}
+	return c.daemonClient.releaseKeys(ctx, r)
 }
 
 // daemonEnvKeys are the variables an autostarted daemon or a spawned worker

@@ -81,13 +81,14 @@ func (a *app) shellInstall(shell string) int {
 	return exitOK
 }
 
-// cmdShellHook is the folder-entry hook (SPEC §15.5, D29). The decision is
-// shellinit.OnEnter (≤ 150 ms daemon query, never reads the TTY, never
-// autostarts). Only when it says "prompt" does this command read the
-// terminal: Enter unlocks, anything else (or Ctrl-C) skips. Its stdout is
-// shell assignments for the calling shell (the skip key, so the folder
-// asks at most once per lock epoch). Any failure is silent: a broken hook
-// must never break the user's prompt.
+// cmdShellHook is the folder-entry hook (SPEC §15.5, D29, D69). The
+// decision is shellinit.OnEnter (≤ 150 ms daemon query, never reads the
+// TTY, never autostarts); its stdout is shellinit.EnterResult.Lines() and
+// nothing else: key=value data the calling shell parses without eval. The
+// scripts print the message, keep the skip key, and for action=prompt read
+// one key and run `precinto unlock --root PATH` themselves; this command
+// never prompts or unlocks. Any failure is silent: a broken hook must
+// never break the user's prompt.
 func cmdShellHook(a *app, args []string) int {
 	f := newFlags("shell-hook")
 	shell := f.String("shell", "", "zsh, bash or fish")

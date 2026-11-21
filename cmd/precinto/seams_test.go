@@ -17,3 +17,11 @@ func TestMarkerMirrorsCatalog(t *testing.T) {
 		t.Fatalf("sweep.MarkerText = %q, ui C11.marker = %q", got, want)
 	}
 }
+
+// D63, CC-29: production leaves sweep.Env.Sleep nil (sweep's own real
+// timer); only tests over a fake clock replace it.
+func TestProductionSweepSleepIsNil(t *testing.T) {
+	if productionSystem().sweepSleep != nil {
+		t.Fatal("production wiring sets sweep.Env.Sleep")
+	}
+}

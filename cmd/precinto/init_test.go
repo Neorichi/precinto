@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/ipc"
@@ -227,15 +230,32 @@ func TestFactorListAddRemoveTest(t *testing.T) {
 	if code := e.run("factor", "remove", "recovery"); code == exitOK {
 		t.Fatal("recovery removed")
 	}
+	// factor test is a test unlock (CC-50): unwrap and verify, no grant.
 	e = newEnv(t)
 	if code := e.run("factor", "test", "se"); code != exitOK {
 		t.Fatalf("test: exit %d (%s)", code, e.stderr())
 	}
-	if r := e.daemon.unlocks[0]; !r.Global || r.Factor != "se" || r.TTL <= 0 {
-		t.Fatalf("unlock %+v", r)
+	if r := e.daemon.unlocks[0]; !r.Global || r.Factor != "se" || !r.Test || !r.TTY {
+		t.Fatalf("unlock %+v, want a test unlock of the global vault", r)
 	}
-	if len(e.daemon.locks) != 1 {
-		t.Fatal("test left the global vault unlocked")
+	if len(e.daemon.locks) != 0 {
+		t.Fatal("a test unlock that granted nothing was followed by a lock")
+	}
+	// A daemon that answered with a grant anyway: locked again (it was
+	// locked before), never left open.
+	e = newEnv(t)
+	e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{vault.GlobalID}}
+	if code := e.run("factor", "test", "se"); code != exitOK {
+		t.Fatalf("test: exit %d (%s)", code, e.stderr())
+	}
+	if len(e.daemon.locks) != 1 || e.daemon.locks[0].RootIDs[0] != vault.GlobalID {
+		t.Fatalf("locks %+v", e.daemon.locks)
+	}
+	// A wrong passphrase: C2.badsecret, exit 3.
+	e = newEnv(t)
+	e.daemon.unlockErr = &ipc.Error{Code: ipc.CodeBadSecret}
+	if code := e.run("factor", "test", "passphrase"); code != exitLocked || !strings.Contains(e.stderr(), "not right") {
+		t.Fatalf("bad secret: exit %d %q", code, e.stderr())
 	}
 }
 
@@ -250,6 +270,11 @@ func TestVaultRepairTwoPhases(t *testing.T) {
 	}
 	if n := len(e.daemon.repairs); n != 2 || e.daemon.repairs[0].Confirmed || !e.daemon.repairs[1].Confirmed || e.daemon.repairs[0].VaultID != "root-acme" {
 		t.Fatalf("repairs %+v", e.daemon.repairs)
+	}
+	// CC-32: the dry run and the confirmed call share one connection, so
+	// the daemon unwraps (one presence prompt) only for the dry run.
+	if len(e.dials) != 1 || e.daemon.closed != 1 {
+		t.Fatalf("dials %d closes %d, want both calls on one connection", len(e.dials), e.daemon.closed)
 	}
 	if !strings.Contains(e.tty.allPrompts(), ui.Format(ui.MsgVaultRepairConfirm, ui.Vars{Folder: "~/work/acme"})) {
 		t.Fatalf("prompts %q", e.tty.allPrompts())
@@ -270,6 +295,29 @@ func TestVaultRepairTwoPhases(t *testing.T) {
 	e.daemon.repairErr = &ipc.Error{Code: ipc.CodeVerify, Msg: msg}
 	if code := e.run("vault", "repair", "--root", e.h.Root); code != exitVerify || !strings.Contains(e.stderr(), msg) {
 		t.Fatalf("not genuine: exit %d %q", code, e.stderr())
+	}
+}
+
+// vault repair --recovery: the key is typed once and travels with both
+// calls of the one connection (the daemon needs it to rewrite the recovery
+// recipient at the confirmed call).
+func TestVaultRepairRecoveryKeyOnce(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t)
+	e.tty.secrets = []string{id.String()}
+	e.tty.lines = []string{wordRepair}
+	e.daemon.repairRes = []ipc.VaultRepairResp{{RecoveryChanged: true}, {RecoveryChanged: true}}
+	if code := e.run("vault", "repair", "--root", e.h.Root, "--recovery"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if len(e.daemon.repairs) != 2 || !e.daemon.repairs[0].UseRecovery || !e.daemon.repairs[1].UseRecovery || len(e.dials) != 1 {
+		t.Fatalf("repairs %+v dials %d", e.daemon.repairs, len(e.dials))
+	}
+	if n := strings.Count(e.tty.allPrompts(), ui.Format(ui.MsgRecoveryPrompt, ui.Vars{})); n != 1 {
+		t.Fatalf("recovery key asked %d times", n)
 	}
 }
 
@@ -311,4 +359,169 @@ func (c *cancelOnceTTY) ShowSecretScreen(h []string, s *memguard.LockedBuffer, n
 		return ui.ErrCancelled
 	}
 	return c.fakeTTY.ShowSecretScreen(h, s, n)
+}
+
+// pluginStub writes an age plugin identity file the way age-plugin-yubikey
+// prints one (comments, then the identity) and returns its path.
+func pluginStub(t *testing.T, e *env, body string) string {
+	t.Helper()
+	p := filepath.Join(e.h.Dir, "identity.txt")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+const yubikeyStub = "#       Serial: 1, Slot: 1\n#   PIN policy: Once\n#     Recipient: age1yubikey1qexample\nAGE-PLUGIN-YUBIKEY-1QEXAMPLE\n"
+
+// CC-09: plugin factors take --identity-stub FILE and --presence POLICY or
+// --no-presence-ack, in init and in factor add.
+func TestPluginFactorFlags(t *testing.T) {
+	e := newEnv(t)
+	e.vaults.initialized = false
+	fakePluginDir(t, e, "age-plugin-yubikey")
+	stub := pluginStub(t, e, yubikeyStub)
+	e.tty.secrets = []string{"a long enough passphrase 4 tests", "a long enough passphrase 4 tests"}
+	e.tty.yesno = []bool{false} // no background service
+	code := e.run("init", "--factor", "passphrase", "--factor", "plugin:age1yubikey1qexample",
+		"--identity-stub", stub, "--presence", "touch-always", "--recovery-out", filepath.Join(e.h.Dir, "rec.txt"))
+	if code != exitOK {
+		t.Fatalf("init: exit %d (%s)", code, e.stderr())
+	}
+	var plugin *vault.FactorSpec
+	for i, f := range e.vaults.initOpts[0].Factors {
+		if f.Kind == vault.FactorPlugin {
+			plugin = &e.vaults.initOpts[0].Factors[i]
+		}
+	}
+	if plugin == nil || plugin.IdentityStub != "AGE-PLUGIN-YUBIKEY-1QEXAMPLE" || plugin.PresencePolicy != "touch-always" ||
+		plugin.NoPresenceAck || plugin.Recipient != "age1yubikey1qexample" || !strings.HasSuffix(plugin.PluginPath, "age-plugin-yubikey") {
+		t.Fatalf("plugin spec %+v", plugin)
+	}
+
+	e = newEnv(t)
+	fakePluginDir(t, e, "age-plugin-yubikey")
+	stub = pluginStub(t, e, yubikeyStub)
+	if code := e.run("factor", "add", "plugin:age1yubikey1qexample", "--identity-stub", stub, "--no-presence-ack"); code != exitOK {
+		t.Fatalf("factor add: exit %d (%s)", code, e.stderr())
+	}
+	if r := e.daemon.factors[0]; r.Kind != "plugin" || r.IdentityStub != "AGE-PLUGIN-YUBIKEY-1QEXAMPLE" || !r.NoPresenceAck || r.PresencePolicy != "" {
+		t.Fatalf("factor_add %+v", r)
+	}
+
+	// Refusals, before anything is read or asked.
+	for name, args := range map[string][]string{
+		"no presence":         {"factor", "add", "plugin:age1yubikey1qexample", "--identity-stub", "x"},
+		"both":                {"factor", "add", "plugin:age1yubikey1qexample", "--identity-stub", "x", "--presence", "pin-once", "--no-presence-ack"},
+		"unknown policy":      {"factor", "add", "plugin:age1yubikey1qexample", "--identity-stub", "x", "--presence", "always"},
+		"no stub":             {"factor", "add", "plugin:age1yubikey1qexample", "--presence", "pin-once"},
+		"not a plugin":        {"factor", "add", "passphrase", "--presence", "pin-once"},
+		"other subcommand":    {"factor", "list", "--no-presence-ack"},
+		"init without plugin": {"init", "--factor", "passphrase", "--presence", "pin-once"},
+		"two plugins":         {"init", "--factor", "plugin:age1yubikey1qa", "--factor", "plugin:age1yubikey1qb", "--identity-stub", "x", "--no-presence-ack"},
+	} {
+		e := newEnv(t)
+		if code := e.run(args...); code != exitUsage {
+			t.Errorf("%s: exit %d (%s), want 2", name, code, e.stderr())
+		}
+		if len(e.daemon.factors) != 0 || e.hardened != 0 {
+			t.Errorf("%s: acted before refusing", name)
+		}
+	}
+
+	// A stub file that holds a secret key, or another plugin's identity, is
+	// refused and nothing is enrolled.
+	for name, body := range map[string]string{
+		"secret key":   "AGE-SECRET-KEY-1QEXAMPLEQEXAMPLE\n",
+		"other plugin": "AGE-PLUGIN-SE-1QEXAMPLE\n",
+		"two":          "AGE-PLUGIN-YUBIKEY-1QA\nAGE-PLUGIN-YUBIKEY-1QB\n",
+	} {
+		e := newEnv(t)
+		fakePluginDir(t, e, "age-plugin-yubikey")
+		stub := pluginStub(t, e, body)
+		if code := e.run("factor", "add", "plugin:age1yubikey1qexample", "--identity-stub", stub, "--presence", "pin-once"); code != exitUsage {
+			t.Errorf("%s: exit %d (%s), want 2", name, code, e.stderr())
+		}
+		if len(e.daemon.factors) != 0 {
+			t.Errorf("%s: enrolled", name)
+		}
+		if strings.Contains(e.stderr(), "QEXAMPLE") || strings.Contains(e.stderr(), "1QA") {
+			t.Errorf("%s: the file's content was printed: %q", name, e.stderr())
+		}
+	}
+}
+
+// D75: factor repin shows the pinned path, both hashes, owner and mtime,
+// asks for the typed word repin and re-pins through the store; refused in
+// agent contexts and without a terminal or the word.
+func TestFactorRepin(t *testing.T) {
+	setup := func(t *testing.T) (*env, string, string) {
+		e := newEnv(t)
+		bin := filepath.Join(e.h.Dir, "age-plugin-se")
+		if err := os.WriteFile(bin, []byte("new plugin build\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte("new plugin build\n"))
+		newSHA := hex.EncodeToString(sum[:])
+		m := e.vaults.metas[vault.GlobalID]
+		m.Factors[0].PluginPath, m.Factors[0].PluginSHA256 = bin, strings.Repeat("a", 64)
+		e.vaults.metas[vault.GlobalID] = m
+		e.vaults.repinOld, e.vaults.repinNew = strings.Repeat("a", 64), newSHA
+		return e, bin, newSHA
+	}
+	e, _, newSHA := setup(t)
+	e.tty.lines = []string{wordRepin}
+	if code := e.run("factor", "repin", "se"); code != exitOK {
+		t.Fatalf("repin: exit %d (%s)", code, e.stderr())
+	}
+	if len(e.vaults.repinned) != 1 || e.vaults.repinned[0] != "se" {
+		t.Fatalf("repinned %v", e.vaults.repinned)
+	}
+	out := e.stderr()
+	for _, want := range []string{strings.Repeat("a", 64), newSHA, "(uid ", "modified", "age-plugin-se"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("repin output lacks %q: %q", want, out)
+		}
+	}
+	if !strings.Contains(e.tty.allPrompts(), `Type "repin" to confirm`) {
+		t.Errorf("prompts %q", e.tty.allPrompts())
+	}
+
+	// Without the typed word nothing is re-pinned.
+	e, _, _ = setup(t)
+	e.tty.lines = []string{"yes"}
+	if code := e.run("factor", "repin", "se"); code != exitLocked || len(e.vaults.repinned) != 0 {
+		t.Fatalf("no typed word: exit %d repinned %v", code, e.vaults.repinned)
+	}
+	// Agent context and no terminal: refused before anything is shown.
+	e, _, _ = setup(t)
+	e.agentCtx = true
+	if code := e.run("factor", "repin", "se"); code != exitLocked || len(e.vaults.repinned) != 0 || strings.Contains(e.stderr(), "SHA-256") {
+		t.Fatalf("agent context: exit %d (%s)", code, e.stderr())
+	}
+	e, _, _ = setup(t)
+	e.tty = nil
+	if code := e.run("factor", "repin", "se"); code != exitLocked || len(e.vaults.repinned) != 0 {
+		t.Fatalf("no terminal: exit %d", code)
+	}
+	// A binary that changed again after the display: exit 5, warned.
+	e, _, _ = setup(t)
+	e.tty.lines = []string{wordRepin}
+	e.vaults.repinNew = strings.Repeat("b", 64)
+	if code := e.run("factor", "repin", "se"); code != exitVerify || !strings.Contains(e.stderr(), "changed again") {
+		t.Fatalf("changed again: exit %d (%s)", code, e.stderr())
+	}
+	// Already pinned to this binary: nothing to do.
+	e, _, newSHA = setup(t)
+	m := e.vaults.metas[vault.GlobalID]
+	m.Factors[0].PluginSHA256 = newSHA
+	e.vaults.metas[vault.GlobalID] = m
+	if code := e.run("factor", "repin", "se"); code != exitOK || len(e.vaults.repinned) != 0 {
+		t.Fatalf("unchanged: exit %d repinned %v", code, e.vaults.repinned)
+	}
+	// Not a plugin factor.
+	e, _, _ = setup(t)
+	if code := e.run("factor", "repin", "recovery"); code != exitUsage {
+		t.Fatalf("recovery: exit %d", code)
+	}
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +47,7 @@ func cmdUnlock(a *app, args []string) int {
 	}
 	req := ipc.UnlockReq{Factor: *factor, TTL: *dur, Extend: *extend, Deadline: a.now().Add(unlockDeadline)}
 	var targets []config.Root
+	pick := false // outside every folder, on a terminal: choose (DC-35)
 	switch {
 	case *global:
 		req.Global = true
@@ -66,7 +69,12 @@ func cmdUnlock(a *app, args []string) int {
 			// per_root_auth = false: unlock every folder, one prompt each
 			// (D40); the policy itself is the confirmation.
 			req.All, req.Confirmed, targets = true, true, cfg.Roots
+		case len(cfg.Roots) > 0 && a.sys.interactive() && !*extend:
+			// --extend names an unlocked folder; picking is for locked ones.
+			pick = true
 		default:
+			// Without a terminal only the working directory's folder can be
+			// unlocked (SPEC §12.8).
 			wd, _ := a.sys.getwd()
 			a.say(textUnlockWhich, a.display(wd))
 			return exitUsage
@@ -83,6 +91,11 @@ func cmdUnlock(a *app, args []string) int {
 			t = tt
 			defer t.Close()
 		}
+	}
+	if pick && t == nil {
+		wd, _ := a.sys.getwd()
+		a.say(textUnlockWhich, a.display(wd))
+		return exitUsage
 	}
 	if req.All && !req.Confirmed {
 		// D40: typed confirmation on a TTY; without one only the folder
@@ -108,10 +121,23 @@ func cmdUnlock(a *app, args []string) int {
 		return a.fail("unlock", err)
 	}
 	defer c.Close()
+	if pick {
+		chosen, code, ok := a.pickLocked(ctx, c, t, cfg)
+		if !ok {
+			return code
+		}
+		targets, req.RootIDs = chosen, rootIDs(chosen)
+		req.Confirmed = len(chosen) > 1 // typed "unlock" in pickLocked (D40)
+	}
 	resp, err := c.Unlock(ctx, req, relay)
 	if err != nil {
-		if isCancel(err) {
+		switch {
+		case isCancel(err):
 			a.line(ui.MsgUnlockCancelled, ui.Vars{Folder: a.folderList(cfg, req, targets)})
+			return exitLocked
+		case isBadSecret(err):
+			// CC-08: a wrong passphrase or recovery key is no tamper alert.
+			a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: a.folderList(cfg, req, targets)})
 			return exitLocked
 		}
 		return a.fail("unlock", err)
@@ -145,6 +171,52 @@ func cmdUnlock(a *app, args []string) int {
 	return exitOK
 }
 
+// pickLocked chooses what `precinto unlock` unlocks outside every folder on
+// a terminal (SPEC §12.8, DC-35): the one locked folder, or one of several
+// by its number, or all of them after the typed "unlock" (C2.confirmall).
+// ok is false when the command ends with code (nothing locked, a cancel).
+func (a *app) pickLocked(ctx context.Context, c daemonClient, t terminal, cfg config.Config) ([]config.Root, int, bool) {
+	open := map[string]bool{}
+	if st, err := c.Status(ctx); err == nil {
+		open = unlockedVaults(st)
+	}
+	var locked []config.Root
+	for _, r := range cfg.Roots {
+		if !open[r.ID] {
+			locked = append(locked, r)
+		}
+	}
+	switch len(locked) {
+	case 0:
+		a.sayOut(textAllOpen)
+		return nil, exitOK, false
+	case 1:
+		return locked, 0, true
+	}
+	for i, r := range locked {
+		a.say(textUnlockPickLine, i+1, a.display(r.Path))
+	}
+	answer, err := t.ReadLine(fmt.Sprintf(textUnlockPick, len(locked)))
+	if err != nil {
+		a.say(textNotConfirmed)
+		return nil, exitLocked, false
+	}
+	answer = strings.TrimSpace(answer)
+	if strings.EqualFold(answer, "all") {
+		prompt := ui.Format(ui.MsgUnlockConfirmAll, ui.Vars{N: len(locked), Folder: a.display(locked[0].Path)})
+		if err := a.typedWord(t, prompt, wordUnlock); err != nil {
+			return nil, exitLocked, false
+		}
+		return locked, 0, true
+	}
+	n, err := strconv.Atoi(answer)
+	if err != nil || n < 1 || n > len(locked) {
+		a.say(textNotConfirmed)
+		return nil, exitLocked, false
+	}
+	return locked[n-1 : n], 0, true
+}
+
 // isCancel reports a user cancel (daemon code cancelled, or a local one).
 func isCancel(err error) bool {
 	var ie *ipc.Error
@@ -152,6 +224,16 @@ func isCancel(err error) bool {
 		return ie.Code == ipc.CodeCancelled
 	}
 	return errors.Is(err, ui.ErrCancelled) || errors.Is(err, vault.ErrCancelled)
+}
+
+// isBadSecret reports a wrong passphrase or recovery key (CC-08): the
+// daemon's bad_secret code, or vault.ErrBadSecret from a local unwrap.
+func isBadSecret(err error) bool {
+	var ie *ipc.Error
+	if errors.As(err, &ie) {
+		return ie.Code == ipc.CodeBadSecret
+	}
+	return errors.Is(err, vault.ErrBadSecret)
 }
 
 // folderList names the folders of an unlock request for messages.

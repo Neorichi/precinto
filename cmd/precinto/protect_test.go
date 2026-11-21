@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/sweep"
+	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 func mkdir(t *testing.T, p string) string {
@@ -26,6 +31,7 @@ func mkdir(t *testing.T, p string) string {
 // it, D22) before asking the daemon to create its vault.
 func TestProtectNewFolder(t *testing.T) {
 	e := newEnv(t)
+	fakePluginDir(t, e, "codex") // Codex is installed: C10.consent is asked
 	dir := mkdir(t, filepath.Join(e.h.HomeDir, "work", "beta"))
 	e.cwd = e.h.HomeDir
 	e.vaults.metas["x"] = e.vaults.metas["root-acme"]
@@ -73,6 +79,7 @@ func TestProtectNewFolder(t *testing.T) {
 // Declining C10.consent keeps Codex unmanaged in the folder.
 func TestProtectCodexDeclined(t *testing.T) {
 	e := newEnv(t)
+	fakePluginDir(t, e, "codex")
 	mkdir(t, filepath.Join(e.h.HomeDir, "beta"))
 	e.tty.yesno = []bool{false}
 	if code := e.run("protect", filepath.Join(e.h.HomeDir, "beta")); code != exitOK {
@@ -80,6 +87,83 @@ func TestProtectCodexDeclined(t *testing.T) {
 	}
 	if r := e.loadConfig().Roots[1]; !slices.Equal(r.Harnesses, []string{"claude-code"}) {
 		t.Fatalf("harnesses %v", r.Harnesses)
+	}
+}
+
+// D72: Codex consent is recorded in the folder's harness list. Without
+// Codex installed, or without a terminal to answer, protect does not ask
+// and the folder does not list codex (precinto run codex asks later);
+// --harness naming codex is the consent itself.
+func TestProtectCodexConsentRecorded(t *testing.T) {
+	cases := []struct {
+		name      string
+		installed bool
+		tty       bool
+		args      []string
+		asked     bool
+		want      []string
+	}{
+		{"not installed", false, true, nil, false, []string{"claude-code"}},
+		{"no terminal", true, false, nil, false, []string{"claude-code"}},
+		{"explicit", false, true, []string{"--harness", "claude-code,codex"}, false, []string{"claude-code", "codex"}},
+		{"installed, yes", true, true, nil, true, []string{"claude-code", "codex"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			if c.installed {
+				fakePluginDir(t, e, "codex")
+			}
+			if !c.tty {
+				e.tty, e.interactive = nil, false
+			} else {
+				e.tty.yesno = []bool{true}
+			}
+			dir := mkdir(t, filepath.Join(e.h.HomeDir, "beta"))
+			if code := e.run(append([]string{"protect", dir}, c.args...)...); code != exitOK {
+				t.Fatalf("exit %d (%s)", code, e.stderr())
+			}
+			if r := e.loadConfig().Roots[1]; !slices.Equal(r.Harnesses, c.want) {
+				t.Fatalf("harnesses %v, want %v", r.Harnesses, c.want)
+			}
+			if asked := e.tty != nil && strings.Contains(e.tty.allPrompts(), "Protect Codex in"); asked != c.asked {
+				t.Fatalf("C10.consent asked=%v, want %v", asked, c.asked)
+			}
+		})
+	}
+}
+
+// D72: a yes to run's C10.consent adds codex to the folder (the wrapper
+// runs Prepare only after it); the plan's own Prepare still runs.
+func TestRunCodexConsentAddsCodex(t *testing.T) {
+	e := newEnv(t)
+	c := e.loadConfig()
+	c.Roots[0].Harnesses = []string{"claude-code"}
+	e.saveConfig(c)
+	prepared := false
+	e.eng.plan = harness.LaunchPlan{
+		Mode: harness.LaunchInteractive, Roots: []config.Root{c.Roots[0]}, Confirm: string(ui.MsgCodexConsent),
+		Prepare: func(context.Context) error { prepared = true; return nil },
+	}
+	b := newBackend(e.app(), e.eng)
+	plan, err := b.Plan(context.Background(), harness.Codex, e.h.Root, []string{"codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.loadConfig().Roots[0].Harnesses; slices.Contains(got, "codex") {
+		t.Fatalf("codex added before the answer: %v", got)
+	}
+	if err := plan.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.loadConfig().Roots[0].Harnesses; !slices.Equal(got, []string{"claude-code", "codex"}) || !prepared {
+		t.Fatalf("after yes: harnesses %v, prepared %v", got, prepared)
+	}
+	// Any other plan is left as it is.
+	e.eng.plan = harness.LaunchPlan{Mode: harness.LaunchInteractive, Roots: []config.Root{c.Roots[0]}}
+	plan, err = b.Plan(context.Background(), harness.ClaudeCode, e.h.Root, []string{"claude"})
+	if err != nil || plan.Prepare != nil {
+		t.Fatalf("plan without consent got a Prepare: %v", err)
 	}
 }
 
@@ -170,6 +254,7 @@ func TestProtectClaudeSettingsAndGitExclude(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("# git ls-files --others --exclude-from=.git/info/exclude"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fakePluginDir(t, e, "codex")
 	e.tty.yesno = []bool{true, true} // Codex consent, git exclude
 	if code := e.run("protect", dir, "--claude-settings"); code != exitOK {
 		t.Fatalf("exit %d (%s)", code, e.stderr())
@@ -281,17 +366,112 @@ func TestProtectRefusesHarnessAndOwnData(t *testing.T) {
 	}
 }
 
-// --root accepts a folder id (the daemon's workers), not only a path.
-func TestRootArgByID(t *testing.T) {
+// CC-43: --root takes a path only (the daemon's workers get the folder's
+// absolute path): a folder id with no such directory is a usage error.
+func TestRootArgIsAPath(t *testing.T) {
+	for _, args := range [][]string{
+		{"sweep", "--root", "root-acme", "--quiet"},
+		{"seal", "--root", "root-acme"},
+		{"restore", "--root", "root-acme"},
+		{"lock", "--root", "root-acme"},
+		{"unlock", "--root", "root-acme"},
+		{"ls", "--root", "root-acme"},
+	} {
+		e := newEnv(t)
+		e.cwd = e.h.HomeDir
+		if code := e.run(args...); code != exitUsage {
+			t.Errorf("%v from outside the folder: exit %d (%s), want 2", args, code, e.stderr())
+		}
+		if len(e.eng.sweepOpts)+len(e.eng.sealOpts)+len(e.eng.restores)+len(e.daemon.locks)+len(e.daemon.unlocks)+len(e.eng.listOpts) != 0 {
+			t.Errorf("%v acted on a folder id", args)
+		}
+	}
+	// The workers' form: the folder's absolute path, from any directory.
 	e := newEnv(t)
 	e.cwd = "/"
-	if code := e.run("sweep", "--root", "root-acme", "--quiet"); code != exitOK {
+	if code := e.run("sweep", "--root", e.h.Root, "--quiet"); code != exitOK {
 		t.Fatalf("exit %d (%s)", code, e.stderr())
 	}
 	if ids := e.eng.sweepOpts[0].Scope.RootIDs; len(ids) != 1 || ids[0] != "root-acme" {
 		t.Fatalf("scope %v", ids)
 	}
-	if code := e.run("sweep", "--root", "root-nope"); code != exitUsage {
-		t.Fatalf("unknown id: exit %d", code)
+}
+
+// D74: protecting a folder whose retired vault still exists (root_path
+// equal after realpath) reuses that id: no new vault is created and the
+// old capsules serve again; another folder's retired vault is not taken.
+func TestProtectReusesRetiredVault(t *testing.T) {
+	e := newEnv(t)
+	dir := mkdir(t, filepath.Join(e.h.HomeDir, "beta"))
+	e.vaults.metas["root-old"] = vault.Meta{ID: "root-old", RootPath: dir, CreatedAt: testkit.Epoch}
+	e.vaults.metas["root-older"] = vault.Meta{ID: "root-older", RootPath: dir, CreatedAt: testkit.Epoch.Add(-time.Hour)}
+	e.vaults.metas["root-other"] = vault.Meta{ID: "root-other", RootPath: filepath.Join(e.h.HomeDir, "gamma")}
+	if code := e.run("protect", dir); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	c := e.loadConfig()
+	if len(c.Roots) != 2 || c.Roots[1].ID != "root-old" || c.Roots[1].Path != dir {
+		t.Fatalf("roots %+v, want the retired id root-old", c.Roots)
+	}
+	if len(e.daemon.creates) != 0 {
+		t.Fatalf("vault_create %+v for a folder whose vault exists", e.daemon.creates)
+	}
+	if !strings.Contains(e.stderr(), "was protected before") {
+		t.Fatalf("stderr %q", e.stderr())
+	}
+	// A folder protected for the first time gets a fresh id and a vault.
+	e = newEnv(t)
+	other := mkdir(t, filepath.Join(e.h.HomeDir, "delta"))
+	e.vaults.metas["root-old"] = vault.Meta{ID: "root-old", RootPath: filepath.Join(e.h.HomeDir, "beta")}
+	if code := e.run("protect", other); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if c := e.loadConfig(); c.Roots[1].ID == "root-old" || len(e.daemon.creates) != 1 {
+		t.Fatalf("roots %+v creates %+v", c.Roots, e.daemon.creates)
+	}
+}
+
+// DC-42: unprotect removes from .claude/settings.local.json only the keys
+// that still hold the value precinto wrote; every other key stays.
+func TestUnprotectRemovesOnlyPrecintoSettings(t *testing.T) {
+	e := newEnv(t)
+	c := e.loadConfig()
+	c.Roots[0].ClaudeSettings = true
+	e.saveConfig(c)
+	settings := filepath.Join(mkdir(t, filepath.Join(e.h.Root, ".claude")), "settings.local.json")
+	// idleCompaction as precinto wrote it; awaySummaryEnabled changed by the
+	// user since; precomputeCompactionEnabled absent; model is the user's.
+	if err := os.WriteFile(settings, []byte(`{"model":"x","idleCompaction":false,"awaySummaryEnabled":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+	e.tty.lines = []string{wordUnprotect}
+	if code := e.run("unprotect", e.h.Root); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	var got map[string]any
+	b, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["model"] != "x" || got["awaySummaryEnabled"] != true {
+		t.Fatalf("settings after unprotect %v", got)
+	}
+	// Without --claude-settings at protect time the file is never touched.
+	e = newEnv(t)
+	settings = filepath.Join(mkdir(t, filepath.Join(e.h.Root, ".claude")), "settings.local.json")
+	if err := os.WriteFile(settings, []byte(`{"idleCompaction":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+	e.tty.lines = []string{wordUnprotect}
+	if code := e.run("unprotect", e.h.Root); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if b, _ := os.ReadFile(settings); string(b) != `{"idleCompaction":false}` {
+		t.Fatalf("settings changed without claude_settings: %q", b)
 	}
 }

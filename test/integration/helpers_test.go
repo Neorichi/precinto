@@ -9,10 +9,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +24,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/testkit"
 )
 
@@ -40,7 +43,111 @@ func needBinary(t *testing.T) string {
 	if testing.Short() {
 		t.Skip("builds the precinto binary (slow)")
 	}
-	return testkit.BuildBinary(t)
+	exe := testkit.BuildBinary(t)
+	ownBinary(filepath.Dir(exe), false)
+	return exe
+}
+
+// Directories holding the binaries this package built (the testing build,
+// the production build, helper programs): every process running one of
+// them was started by these tests, directly or through a daemon they
+// started, so TestMain may wait for and end them (TESTPLAN §1.8). The
+// directories this package created itself are removed at the end.
+var (
+	ownMu      sync.Mutex
+	ownDirs    = map[string]bool{}
+	ownCreated = map[string]bool{}
+)
+
+func ownBinary(dir string, created bool) {
+	ownMu.Lock()
+	defer ownMu.Unlock()
+	ownDirs[dir] = true
+	// The kernel reports executables by their resolved path (darwin's
+	// TMPDIR is below the /var symlink).
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		ownDirs[real] = true
+	}
+	if created {
+		ownCreated[dir] = true
+	}
+}
+
+// TestMain fails the package when a process running one of its binaries
+// outlives the tests (a helper without a lifeline, a daemon or worker that
+// was not stopped): it waits up to leakWait for them to exit, then kills
+// them (they run binaries only these tests built) and exits non-zero.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if left := waitOwnProcesses(leakWait); len(left) > 0 {
+		fmt.Fprintf(os.Stderr, "integration: %d test process(es) outlived the tests and were killed: %s\n", len(left), strings.Join(left, "; "))
+		if code == 0 {
+			code = 1
+		}
+	}
+	ownMu.Lock()
+	for d := range ownCreated {
+		_ = os.RemoveAll(d)
+	}
+	ownMu.Unlock()
+	os.Exit(code)
+}
+
+// leakWait bounds how long detached workers (a daemon's start-up sweep,
+// a post-unlock restore) may take to finish after the last test.
+const leakWait = 20 * time.Second
+
+// waitOwnProcesses waits until no live process runs a binary of ownDirs,
+// killing what is left after d; it returns those, as "pid exe".
+func waitOwnProcesses(d time.Duration) []string {
+	ownMu.Lock()
+	dirs := make([]string, 0, len(ownDirs))
+	for dir := range ownDirs {
+		dirs = append(dirs, dir+string(filepath.Separator))
+	}
+	ownMu.Unlock()
+	if len(dirs) == 0 {
+		return nil
+	}
+	procs := platform.System()
+	self := os.Getpid()
+	find := func() []platform.ProcInfo {
+		all, err := procs.List()
+		if err != nil {
+			return nil
+		}
+		var out []platform.ProcInfo
+		for _, p := range all {
+			if p.ID.PID == self || p.State == platform.StateZombie || p.Exe == "" {
+				continue
+			}
+			for _, dir := range dirs {
+				if strings.HasPrefix(p.Exe, dir) {
+					out = append(out, p)
+					break
+				}
+			}
+		}
+		return out
+	}
+	deadline := time.Now().Add(d)
+	for {
+		left := find()
+		if len(left) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			var names []string
+			for _, p := range left {
+				if procs.Alive(p.ID) {
+					_ = syscall.Kill(p.ID.PID, syscall.SIGKILL) // runs a binary these tests built
+				}
+				names = append(names, fmt.Sprintf("%d %s", p.ID.PID, filepath.Base(p.Exe)))
+			}
+			return names
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // childEnv is the fake home's environment plus extra variables. It is built
@@ -57,10 +164,17 @@ func childEnv(h *testkit.Home, extra map[string]string) paths.Env {
 // precinto runs the binary exe in h's fake HOME from dir with stdin.
 func precinto(t *testing.T, exe string, h *testkit.Home, dir string, extra map[string]string, stdin string, args ...string) result {
 	t.Helper()
+	return runEnv(t, exe, childEnv(h, extra).Environ(), dir, stdin, args...)
+}
+
+// runEnv runs exe with exactly env, from dir, with stdin, in a new session
+// without a controlling terminal, and waits for it.
+func runEnv(t *testing.T, exe string, env []string, dir string, stdin string, args ...string) result {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), binTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, args...)
-	cmd.Env = childEnv(h, extra).Environ()
+	cmd.Env = env
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
 	// A new session without a controlling terminal: the binary can never
@@ -117,6 +231,7 @@ func buildHelper(t *testing.T, pkg, name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ownBinary(dir, true)
 	out := filepath.Join(dir, name)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -172,27 +287,38 @@ func goEnv() []string {
 // ptySession drives the binary on a pseudo-terminal (init, protect and
 // unlock need a terminal for their prompts).
 type ptySession struct {
-	t    *testing.T
-	cmd  *exec.Cmd
-	tty  *os.File
-	mu   sync.Mutex
-	out  bytes.Buffer
-	seen int
-	done chan error
+	t       *testing.T
+	cmd     *exec.Cmd
+	tty     *os.File
+	mu      sync.Mutex
+	out     bytes.Buffer
+	seen    int
+	done    chan error
+	drained chan struct{} // closed when the terminal has nothing more to read
 }
 
 // startPTY starts exe on a new pseudo-terminal in h's fake HOME.
 func startPTY(t *testing.T, exe string, h *testkit.Home, dir string, extra map[string]string, args ...string) *ptySession {
 	t.Helper()
+	return startPTYEnv(t, exe, childEnv(h, extra).With("TERM", "xterm-256color").Environ(), dir, args...)
+}
+
+// startPTYEnv starts exe with exactly env on a new pseudo-terminal (its
+// controlling terminal: exe leads a new session). The cleanup asks it to
+// stop (SIGTERM, then SIGKILL after ptyGrace) and closes the terminal,
+// which hangs up whatever it started on it.
+func startPTYEnv(t *testing.T, exe string, env []string, dir string, args ...string) *ptySession {
+	t.Helper()
 	cmd := exec.Command(exe, args...)
-	cmd.Env = childEnv(h, extra).With("TERM", "xterm-256color").Environ()
+	cmd.Env = env
 	cmd.Dir = dir
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
 	if err != nil {
 		t.Fatalf("pty: %v", err)
 	}
-	p := &ptySession{t: t, cmd: cmd, tty: f, done: make(chan error, 1)}
+	p := &ptySession{t: t, cmd: cmd, tty: f, done: make(chan error, 1), drained: make(chan struct{})}
 	go func() {
+		defer close(p.drained)
 		buf := make([]byte, 4096)
 		for {
 			n, err := f.Read(buf)
@@ -209,43 +335,102 @@ func startPTY(t *testing.T, exe string, h *testkit.Home, dir string, extra map[s
 	go func() { p.done <- cmd.Wait() }()
 	t.Cleanup(func() {
 		select {
-		case <-p.done:
+		case err := <-p.done:
+			p.done <- err
 		default:
-			_ = cmd.Process.Kill() // started by this test
-			<-p.done
+			_ = cmd.Process.Signal(syscall.SIGTERM) // started by this test
+			select {
+			case err := <-p.done:
+				p.done <- err
+			case <-time.After(ptyGrace):
+				_ = cmd.Process.Kill()
+				p.done <- <-p.done
+			}
 		}
 		f.Close()
 	})
 	return p
 }
 
+// ptyGrace is how long a process on a test terminal gets to stop.
+const ptyGrace = 5 * time.Second
+
 // expect waits until the output after the previous match contains s.
 func (p *ptySession) expect(s string) {
 	p.t.Helper()
+	p.expectAny(s)
+}
+
+// expectAny waits until the output after the previous match contains one
+// of ss and returns its index (the earliest one when several appear). When
+// the process exits first, what it wrote is read to the end before the
+// output is judged (the reader may lag behind under load).
+func (p *ptySession) expectAny(ss ...string) int {
+	p.t.Helper()
 	deadline := time.Now().Add(binTimeout)
-	for time.Now().Before(deadline) {
+	exited := false
+	for {
 		p.mu.Lock()
 		rest := p.out.String()[p.seen:]
-		if i := strings.Index(rest, s); i >= 0 {
-			p.seen += i + len(s)
+		best, at := -1, len(rest)
+		for i, s := range ss {
+			if j := strings.Index(rest, s); j >= 0 && j < at {
+				best, at = i, j
+			}
+		}
+		if best >= 0 {
+			p.seen += at + len(ss[best])
 			p.mu.Unlock()
-			return
+			return best
 		}
 		p.mu.Unlock()
+		if exited {
+			err := <-p.done
+			p.done <- err
+			p.t.Fatalf("process exited (%v) before printing any of %q; output: %q", err, ss, p.output())
+		}
+		if time.Now().After(deadline) {
+			p.t.Fatalf("timed out waiting for any of %q; output: %q", ss, p.output())
+		}
 		select {
 		case err := <-p.done:
 			p.done <- err
-			p.mu.Lock()
-			rest = p.out.String()[p.seen:]
-			p.mu.Unlock()
-			if strings.Contains(rest, s) {
-				continue
+			// Look once more after the reader reached the end (bounded:
+			// a descendant may keep the terminal open).
+			select {
+			case <-p.drained:
+			case <-time.After(5 * time.Second):
 			}
-			p.t.Fatalf("process exited (%v) before printing %q; output: %q", err, s, p.output())
+			exited = true
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
-	p.t.Fatalf("timed out waiting for %q; output: %q", s, p.output())
+}
+
+var procIDRE = regexp.MustCompile(`procid=([0-9]+:[0-9]+)`)
+
+// expectProcID waits for the "fakeharness: procid=PID:START" line of a
+// fake harness in handshake mode and returns PID:START.
+func (p *ptySession) expectProcID() string {
+	p.t.Helper()
+	p.expect("procid=")
+	deadline := time.Now().Add(binTimeout)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		out := p.out.String()
+		start := p.seen - len("procid=")
+		m := procIDRE.FindStringSubmatchIndex(out[start:])
+		if m != nil && strings.ContainsAny(out[start+m[1]:], "\r\n") {
+			id := out[start+m[2] : start+m[3]]
+			p.seen = start + m[1]
+			p.mu.Unlock()
+			return id
+		}
+		p.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	p.t.Fatalf("no procid line; output: %q", p.output())
+	return ""
 }
 
 // send types s (a carriage return ends a line on a terminal).
@@ -256,12 +441,17 @@ func (p *ptySession) send(s string) {
 	}
 }
 
-// wait returns the exit code.
+// wait returns the exit code, once the output is read to the end (so
+// output() holds everything the process wrote).
 func (p *ptySession) wait() int {
 	p.t.Helper()
 	select {
 	case err := <-p.done:
 		p.done <- err
+		select {
+		case <-p.drained:
+		case <-time.After(5 * time.Second): // a descendant keeps the terminal open
+		}
 		if err == nil {
 			return 0
 		}

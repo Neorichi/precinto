@@ -14,8 +14,11 @@ import (
 //
 // Conventions where the contract leaves room (strictest reading):
 //   - Durations that must be positive (idle_soft, max_unlock, busy_timeout,
-//     quiet_window, hold_cap): smaller is stricter; a value <= 0 is invalid
-//     and is the weakest (it never wins a merge).
+//     hold_cap): smaller is stricter; a value <= 0 is invalid and is the
+//     weakest (it never wins a merge).
+//   - quiet_window: smaller is stricter (sealing starts sooner); 0 means
+//     the 120 s default and compares as 120 s; any other value below 10 s
+//     is invalid (D63) and the weakest.
 //   - Timers ending sessions or turns (idle_hard, screen_lock_hard_after,
 //     busy_grace): smaller is stricter; "0" means "never" (Duration doc,
 //     SPEC §12.2 for idle_hard), so it is the weakest valid value; negative
@@ -47,6 +50,30 @@ func cmpPositiveLower(a, b Duration) int {
 	case av:
 		return 1
 	case bv:
+		return -1
+	}
+	return 0
+}
+
+// cmpQuietWindow orders quiet_window values by the window they mean.
+func cmpQuietWindow(a, b Duration) int {
+	mean := func(d Duration) (Duration, bool) {
+		switch {
+		case d == 0:
+			return Duration(defaultQuietWindow), true
+		case d < Duration(minQuietWindow):
+			return 0, false
+		}
+		return d, true
+	}
+	av, aok := mean(a)
+	bv, bok := mean(b)
+	switch {
+	case aok && bok:
+		return cmp.Compare(bv, av)
+	case aok:
+		return 1
+	case bok:
 		return -1
 	}
 	return 0
@@ -169,7 +196,7 @@ var policyRules = []policyRule{
 	fieldRule[Duration]{"screen_lock_hard_after", func(p *Policy) *Duration { return &p.ScreenLockHardAfter }, cmpTimerZeroNever, durationText},
 	fieldRule[Duration]{"busy_grace", func(p *Policy) *Duration { return &p.BusyGrace }, cmpTimerZeroNever, durationText},
 	fieldRule[Duration]{"busy_timeout", func(p *Policy) *Duration { return &p.BusyTimeout }, cmpPositiveLower, durationText},
-	fieldRule[Duration]{"quiet_window", func(p *Policy) *Duration { return &p.QuietWindow }, cmpPositiveLower, durationText},
+	fieldRule[Duration]{"quiet_window", func(p *Policy) *Duration { return &p.QuietWindow }, cmpQuietWindow, durationText},
 	fieldRule[Duration]{"hold_cap", func(p *Policy) *Duration { return &p.HoldCap }, cmpPositiveLower, durationText},
 	fieldRule[int]{"restore_recent", func(p *Policy) *int { return &p.RestoreRecent }, cmpCountLower[int], intText},
 	fieldRule[int64]{"restore_max_bytes", func(p *Policy) *int64 { return &p.RestoreMaxBytes }, cmpCountLower[int64], int64Text},

@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
@@ -240,3 +244,133 @@ func TestKeySourceRedialsAfterTransportError(t *testing.T) {
 		t.Fatalf("dials %d, want a redial", len(e.dials))
 	}
 }
+
+// CC-17: a key request names at most ipc.MaxKeysPerRequest capsules; the
+// adapter splits a longer list, merges the granted sets and destroys every
+// batch at a lock.
+func TestKeySourceBatches(t *testing.T) {
+	e := newEnv(t)
+	var sets []*pathKeys
+	e.daemon.keysFunc = func(r ipc.KeysReq) (sweep.FileKeys, ipc.KeysResp, error) {
+		k := &pathKeys{paths: map[string]bool{}}
+		var resp ipc.KeysResp
+		for _, c := range r.Capsules {
+			k.paths[c.Path] = true
+			resp.Granted = append(resp.Granted, ipc.KeyGrant{Path: c.Path, VaultID: "root-acme"})
+		}
+		sets = append(sets, k)
+		return k, resp, nil
+	}
+	ks := e.app().keys()
+	var paths []string
+	for i := 0; i < 2*ipc.MaxKeysPerRequest+3; i++ {
+		paths = append(paths, fmt.Sprintf("codex/%032x/g%06d.pcap", i, 1))
+	}
+	got, err := ks.FileKeys(context.Background(), paths, ipc.PurposeRestore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.daemon.keys) != 3 {
+		t.Fatalf("%d requests for %d capsules, want 3", len(e.daemon.keys), len(paths))
+	}
+	for i, r := range e.daemon.keys {
+		if len(r.Capsules) > ipc.MaxKeysPerRequest {
+			t.Fatalf("request %d names %d capsules", i, len(r.Capsules))
+		}
+	}
+	for _, p := range []string{paths[0], paths[ipc.MaxKeysPerRequest], paths[len(paths)-1]} {
+		if _, ok := got.Key(p); !ok {
+			t.Errorf("no key for %s in the merged set", p)
+		}
+	}
+	ks.destroy()
+	for i, s := range sets {
+		if !s.destroyed {
+			t.Errorf("batch %d survived the lock", i)
+		}
+	}
+
+	// A refusal of a later batch fails the call and wipes the earlier ones.
+	e = newEnv(t)
+	sets = nil
+	n := 0
+	e.daemon.keysFunc = func(r ipc.KeysReq) (sweep.FileKeys, ipc.KeysResp, error) {
+		n++
+		if n == 2 {
+			return nil, ipc.KeysResp{}, &ipc.Error{Code: ipc.CodeAgentContext, Msg: "refused"}
+		}
+		k := &pathKeys{paths: map[string]bool{}}
+		sets = append(sets, k)
+		return k, ipc.KeysResp{Granted: []ipc.KeyGrant{{Path: r.Capsules[0].Path}}}, nil
+	}
+	ks = e.app().keys()
+	if _, err := ks.FileKeys(context.Background(), paths, ipc.PurposeRestore); !errors.Is(err, sweep.ErrKeyDenied) || exitFor(err) != exitLocked {
+		t.Fatalf("refused batch: %v (exit %d)", err, exitFor(err))
+	}
+	if len(sets) != 1 || !sets[0].destroyed {
+		t.Fatal("the first batch's keys survived a refused second batch")
+	}
+}
+
+// CC-11: unlock and key requests carry the client's own agent markers (a
+// self-restricting claim); without markers nothing is added.
+func TestAgentMarkersInRequests(t *testing.T) {
+	e := newEnv(t)
+	e.h.Env = e.h.Env.With("CLAUDECODE", "1").With("CLAUDE_CODE_ENTRYPOINT", "cli")
+	e.daemon.keysFunc = func(r ipc.KeysReq) (sweep.FileKeys, ipc.KeysResp, error) {
+		return &fakeKeys{}, ipc.KeysResp{Granted: []ipc.KeyGrant{{Path: "a"}}}, nil
+	}
+	if code := e.run("unlock"); code != exitOK {
+		t.Fatalf("unlock: exit %d (%s)", code, e.stderr())
+	}
+	ks := e.app().keys()
+	if _, err := ks.FileKeys(context.Background(), []string{"a"}, ipc.PurposeRestore); err != nil {
+		t.Fatal(err)
+	}
+	want := paths.AgentMarkers(e.h.Env)
+	if len(want) != 2 {
+		t.Fatalf("markers %v", want)
+	}
+	if got := e.daemon.unlocks[0].AgentMarkers; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("unlock markers %v, want %v", got, want)
+	}
+	if got := e.daemon.keys[0].AgentMarkers; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("keys markers %v, want %v", got, want)
+	}
+	// The wrapper's own unlock (from the overlay) goes through the same
+	// client: backend.Daemon.
+	b := newBackend(e.app(), e.eng)
+	d, err := b.Daemon(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Unlock(context.Background(), ipc.UnlockReq{RootIDs: []string{"root-acme"}}, headlessUI{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.daemon.unlocks[1].AgentMarkers; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("wrapper unlock markers %v", got)
+	}
+
+	e = newEnv(t)
+	if code := e.run("unlock"); code != exitOK {
+		t.Fatalf("unlock: exit %d", code)
+	}
+	if got := e.daemon.unlocks[0].AgentMarkers; len(got) != 0 {
+		t.Errorf("markers %v without any in the environment", got)
+	}
+}
+
+// pathKeys is a released key set that knows its paths.
+type pathKeys struct {
+	paths     map[string]bool
+	destroyed bool
+}
+
+func (k *pathKeys) Key(p string) (*memguard.LockedBuffer, bool) {
+	if k.destroyed || !k.paths[p] {
+		return nil, false
+	}
+	return memguard.NewBuffer(32), true
+}
+
+func (k *pathKeys) Destroy() { k.destroyed = true }

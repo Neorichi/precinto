@@ -108,3 +108,46 @@ func TestFactorName(t *testing.T) {
 		t.Errorf("C1.prompt.plain = %q", got)
 	}
 }
+
+// CC-38, CC-08, CC-40: the texts the plan made normative, pinned here so a
+// drift of the comment and the table together is still caught. The B.* and
+// E.* entries keep the texts cmd/precinto printed before they moved (D70).
+func TestNormativeTexts(t *testing.T) {
+	v := ui.Vars{Folder: "~/work/acme", Factor: "precinto passphrase", File: "~/rec.txt", Command: "precinto init"}
+	for id, want := range map[ui.MsgID]string{
+		ui.MsgToolStop:         "precinto: ~/work/acme is locked",
+		ui.MsgGateFailed:       "precinto: precinto could not check ~/work/acme, so it stays locked. Run precinto unlock in a terminal, then precinto doctor if this repeats.",
+		ui.MsgSettingsKept:     "precinto: you passed your own --settings, so precinto did not add its settings that stop Claude compacting or summarizing while you are away. Add idleCompaction: false and awaySummaryEnabled: false to them.",
+		ui.MsgPurgeForget:      "precinto: also delete precinto's sealed copies of the sessions claude purge removes? [y/N]",
+		ui.MsgUnlockBadSecret:  "precinto: that passphrase or recovery key is not right. ~/work/acme stays locked.",
+		ui.MsgOverlayKeysPlain: "Enter   unlock          Ctrl-D   end session and seal it",
+		ui.MsgEnterPromptPlain: "precinto: ~/work/acme is locked. Unlock now? [Enter = yes · any other key = skip]",
+		ui.MsgEnterPrompt:      "precinto: ~/work/acme is locked. Unlock now with your precinto passphrase? [Enter = yes · any other key = skip]",
+		ui.MsgPassphraseNew:    "Choose a precinto passphrase (at least 12 characters), or press Enter to get a generated one:",
+		ui.MsgPassphraseAgain:  "Type the passphrase again:",
+		ui.MsgPassphraseWeak:   "that passphrase is too weak (at least 12 characters and about 80 bits are needed). Try again.",
+		ui.MsgPassphraseDiff:   "the two passphrases differ. Try again.",
+		ui.MsgPassphraseGen:    "Your new precinto passphrase:",
+		ui.MsgRecoveryHeader:   "Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.",
+		ui.MsgRecoveryAgain:    "The recovery key is shown only now. Show it again? [Y/n]",
+		ui.MsgRecoveryLost:     "WARNING: the recovery key was not confirmed and cannot be shown again. Keep your other ways to unlock safe.",
+		ui.MsgRecoveryWritten:  "recovery key written to ~/rec.txt. Move it offline (it opens every sealed folder).",
+		ui.MsgRecoveryPrompt:   "precinto recovery key:",
+		ui.MsgServiceOffer:     "Seal in the background every 10 minutes (installs a LaunchAgent)? [Y/n]",
+		ui.MsgNotProtected:     "~/work/acme is not inside a protected folder. Protect it with: precinto protect DIR",
+		ui.MsgNotInitialized:   "precinto is not set up yet. Run: precinto init",
+		ui.MsgAgentDownAll:     "the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock",
+		ui.MsgNeedTerminal:     "precinto init needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.",
+	} {
+		if got := ui.Format(id, v); got != want {
+			t.Errorf("%s = %q, want %q", id, got, want)
+		}
+	}
+	if got := ui.ReasonText(ui.ReasonAgent, 0); got != "the precinto agent stopped responding" {
+		t.Errorf("ReasonAgent = %q", got)
+	}
+	// ReasonAgent renders inside the messages that name a reason.
+	if got := ui.Format(ui.MsgOverlayLine, ui.Vars{Folder: "~/work/acme", Reason: ui.ReasonAgent}); got != "~/work/acme · locked after the precinto agent stopped responding" {
+		t.Errorf("C4.line with ReasonAgent = %q", got)
+	}
+}

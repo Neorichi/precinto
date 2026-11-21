@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,7 +95,8 @@ type statusHarness struct {
 	ID           string     `json:"id"`
 	Enabled      bool       `json:"enabled"`
 	Experimental bool       `json:"experimental,omitempty"`
-	Hooks        string     `json:"hooks"` // "ok" | "not-seen" | "unknown"
+	Version      string     `json:"version,omitempty"` // reported at register by its running sessions (ipc.SessionStatus.Version)
+	Hooks        string     `json:"hooks"`             // "ok" | "not-seen" | "unknown"
 	Sessions     int        `json:"sessions"`
 	Wrapper      bool       `json:"wrapper_installed"`
 	SeenAt       *time.Time `json:"seen_at,omitempty"`
@@ -203,6 +205,7 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 
 	plain := map[string]sweep.Plaintext{}
 	var units []sweep.UnitInfo
+	var wrongHome map[string]int
 	if s.Vault.Initialized {
 		if eng, err := a.engine(ctx, false); err == nil {
 			if ps, err := eng.PlaintextSummary(ctx); err == nil {
@@ -212,6 +215,11 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 			}
 			if us, err := eng.List(ctx, sweep.ListOptions{}); err == nil {
 				units = us
+			}
+			// CC-18: Codex conversations of protected folders saved in the
+			// user's own Codex home (started without precinto run codex).
+			if n, err := eng.WrongHomeRollouts(ctx); err == nil {
+				wrongHome = n
 			}
 		}
 	}
@@ -279,8 +287,18 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 		if fo.State != "unlocked" && fo.Unencrypted.Files > 0 {
 			local = append(local, ipc.Attention{Code: ipc.AttnUnsealed, Folder: a.display(r.Path), Count: fo.Unencrypted.Files, Fix: "precinto doctor"})
 		}
+		// D63: plaintext a locked folder keeps only because of weak
+		// liveness evidence (PlaintextSummary reason hold-capped).
+		if n := fo.Unencrypted.ByReason[ipc.AttnHoldCapped]; n > 0 && fo.State != "unlocked" {
+			local = append(local, ipc.Attention{Code: ipc.AttnHoldCapped, Folder: a.display(r.Path), Count: n, Fix: "precinto doctor"})
+		}
+		if n := wrongHome[r.ID]; n > 0 {
+			local = append(local, ipc.Attention{Code: ipc.AttnCodexWrongHome, Folder: a.display(r.Path), Count: n,
+				Detail: ui.Format(ui.MsgCodexOutside, ui.Vars{N: n, Folder: a.display(r.Path)}),
+				Fix:    "precinto run codex"})
+		}
 		for _, u := range fo.Ungated {
-			local = append(local, ipc.Attention{Code: ipc.AttnUngatedSession, Folder: a.display(r.Path), PID: u.PID,
+			local = append(local, ipc.Attention{Code: ipc.AttnUngatedSession, Folder: a.display(r.Path), PID: u.PID, Harness: u.Harness,
 				Detail: ui.Format(ui.MsgUngatedSession, ui.Vars{Harness: u.Harness, PID: u.PID, Folder: a.display(r.Path)}),
 				Fix:    "precinto run " + strings.TrimSuffix(u.Harness, "-code")})
 		}
@@ -317,6 +335,9 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 				any++
 				if ss.HooksSeen {
 					ok++
+				}
+				if ss.Version != "" && (sh.Version == "" || cmpDotted(ss.Version, sh.Version) > 0) {
+					sh.Version = ss.Version // the newest version running
 				}
 			}
 			sh.Sessions = any
@@ -360,6 +381,33 @@ func mergeAttention(lists ...[]ipc.Attention) []ipc.Attention {
 		}
 	}
 	return out
+}
+
+// cmpDotted compares dotted numeric versions ("2.1.329" > "2.1.30");
+// non-numeric parts compare as strings.
+func cmpDotted(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y string
+		if i < len(as) {
+			x = as[i]
+		}
+		if i < len(bs) {
+			y = bs[i]
+		}
+		xn, xerr := strconv.Atoi(x)
+		yn, yerr := strconv.Atoi(y)
+		switch {
+		case xerr == nil && yerr == nil && xn != yn:
+			if xn < yn {
+				return -1
+			}
+			return 1
+		case (xerr != nil || yerr != nil) && x != y:
+			return strings.Compare(x, y)
+		}
+	}
+	return 0
 }
 
 func timePtr(t time.Time) *time.Time {
@@ -472,6 +520,9 @@ func (a *app) printStatus(w io.Writer, s statusV1) {
 		wrap := "wrapper not installed (precinto shell-init --install)"
 		if h.Wrapper {
 			wrap = "wrapper installed"
+		}
+		if h.Version != "" {
+			state += " · version " + oneLineText(h.Version)
 		}
 		fmt.Fprintf(w, "  %-12s %s · %s · %s\n", h.ID, state, hooks, wrap)
 	}
