@@ -1,10 +1,24 @@
 package journal
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/fsx/failpoint"
 )
 
 // Version is the record format.
@@ -92,27 +106,289 @@ type Journal struct {
 	Dir string
 }
 
+// recordExt is the suffix of record files; temporaries start with a dot
+// and are never listed by Pending.
+const recordExt = ".json"
+
+// maxRecordBytes bounds a record read (a unit with a million files still
+// fits; anything larger is not a record precinto wrote).
+const maxRecordBytes = 256 << 20
+
 // Open returns the journal rooted at dir.
-func Open(dir string) *Journal { panic("unimplemented: journal.Open") }
+func Open(dir string) *Journal { return &Journal{Dir: dir} }
 
 // Begin creates and persists a new record at PhasePrepared.
 func (j *Journal) Begin(kind Kind, harness, unit string) (*Record, error) {
-	panic("unimplemented: journal.Journal.Begin")
+	// The record file is created exclusively: the bytes go to a hidden
+	// temporary that is FullSynced and then hard-linked to <id>.json
+	// (link(2) fails if the name exists), so a record is either absent or
+	// complete — a crash never leaves a torn record behind. A pending
+	// record for the same non-empty unit makes Begin return ErrConflict
+	// (callers hold the unit lock, so the check is not racy between
+	// precinto processes).
+	if j == nil || j.Dir == "" {
+		return nil, errors.New("journal: no directory")
+	}
+	if err := ensureDir(j.Dir); err != nil {
+		return nil, err
+	}
+	if unit != "" {
+		// Unreadable records cannot name a unit we could compare: they are
+		// reported by Pending to recovery, not used to block new work.
+		pending, _ := j.Pending()
+		for _, p := range pending {
+			if p.Unit == unit {
+				return nil, fmt.Errorf("%w (%s, record %s)", ErrConflict, p.Kind, p.ID)
+			}
+		}
+	}
+	now := time.Now().UTC()
+	r := &Record{
+		V: Version, ID: NewID(), Kind: kind, Unit: unit, Harness: harness,
+		Phase: PhasePrepared, PID: os.Getpid(), Started: now, Updated: now,
+	}
+	if err := failpoint.Hit("journal.save"); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	if err := createExclusive(j.Dir, r.ID+recordExt, data); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // Save persists r as is (FullSync of the record and its directory); used
 // for progress within a phase (Files[i].Done, Offset, Pending).
-func (j *Journal) Save(r *Record) error { panic("unimplemented: journal.Journal.Save") }
+func (j *Journal) Save(r *Record) error {
+	if j == nil || r == nil {
+		return errors.New("journal: nil record")
+	}
+	if !validID(r.ID) {
+		return fmt.Errorf("journal: invalid record id %q", r.ID)
+	}
+	if err := failpoint.Hit("journal.save"); err != nil {
+		return err
+	}
+	r.V = Version
+	r.Updated = time.Now().UTC()
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return fsx.WriteFileAtomic(filepath.Join(j.Dir, r.ID+recordExt), data, 0o600)
+}
 
 // Advance sets r.Phase = p and persists it. Call it AFTER the step named by
 // p has completed and is durable (phases are milestones, D58).
-func (j *Journal) Advance(r *Record, p Phase) error { panic("unimplemented: journal.Journal.Advance") }
+func (j *Journal) Advance(r *Record, p Phase) error {
+	if r == nil {
+		return errors.New("journal: nil record")
+	}
+	old := r.Phase
+	r.Phase = p
+	if err := j.Save(r); err != nil {
+		r.Phase = old // the record on disk still names the previous milestone
+		return err
+	}
+	return nil
+}
 
 // Done removes the record (fsync of the directory).
-func (j *Journal) Done(r *Record) error { panic("unimplemented: journal.Journal.Done") }
+func (j *Journal) Done(r *Record) error {
+	if j == nil || r == nil {
+		return errors.New("journal: nil record")
+	}
+	if !validID(r.ID) {
+		return fmt.Errorf("journal: invalid record id %q", r.ID)
+	}
+	err := os.Remove(filepath.Join(j.Dir, r.ID+recordExt))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	r.Phase = PhaseDone
+	return fsx.SyncDir(j.Dir)
+}
 
 // Pending lists unfinished records, oldest first.
-func (j *Journal) Pending() ([]*Record, error) { panic("unimplemented: journal.Journal.Pending") }
+func (j *Journal) Pending() ([]*Record, error) {
+	// Records that cannot be read or decoded are reported in the returned
+	// error (joined, one per file) while every readable record is still
+	// returned, so recovery proceeds with what it can and callers that
+	// must know every in-flight operation (Quarantine) can refuse to act.
+	// A missing directory means no pending record.
+	if j == nil || j.Dir == "" {
+		return nil, errors.New("journal: no directory")
+	}
+	ents, err := os.ReadDir(j.Dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []*Record
+	var bad []error
+	for _, de := range ents {
+		name := de.Name()
+		id, ok := strings.CutSuffix(name, recordExt)
+		if !ok || !validID(id) {
+			continue // temporaries and foreign files
+		}
+		r, err := readRecord(filepath.Join(j.Dir, name))
+		if err != nil {
+			bad = append(bad, fmt.Errorf("journal: record %s: %w", id, err))
+			continue
+		}
+		if r.ID != id {
+			bad = append(bad, fmt.Errorf("journal: record %s names id %q", id, r.ID))
+			continue
+		}
+		if r.Phase == PhaseDone {
+			continue // finished; only its removal was interrupted
+		}
+		out = append(out, r)
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].ID < out[b].ID })
+	return out, errors.Join(bad...)
+}
+
+// readRecord reads one record without following symlinks.
+func readRecord(path string) (*Record, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := fsx.Fstat(f)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsRegular() {
+		return nil, fmt.Errorf("%w: not a regular file", fsx.ErrUnsafe)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRecordBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRecordBytes {
+		return nil, errors.New("record too large")
+	}
+	var r Record
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// idState makes NewID strictly increasing within a process even when the
+// wall clock does not move between calls (or steps back).
+var idState struct {
+	sync.Mutex
+	last int64
+}
 
 // NewID returns a sortable unique operation id.
-func NewID() string { panic("unimplemented: journal.NewID") }
+func NewID() string {
+	// The id is 16 hex digits of the creation time in nanoseconds
+	// (strictly increasing within a process), a dash and 8 random hex
+	// digits, so ids of concurrent processes do not collide and sort by
+	// creation time.
+	idState.Lock()
+	n := time.Now().UnixNano()
+	if n <= idState.last {
+		n = idState.last + 1
+	}
+	idState.last = n
+	idState.Unlock()
+	var rnd [4]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		// crypto/rand never fails on supported systems; fall back to the
+		// pid so the id stays unique per process.
+		pid := uint32(os.Getpid())
+		rnd = [4]byte{byte(pid >> 24), byte(pid >> 16), byte(pid >> 8), byte(pid)}
+	}
+	return fmt.Sprintf("%016x-%s", uint64(n), hex.EncodeToString(rnd[:]))
+}
+
+// validID reports whether id has the form NewID produces (it is used as a
+// file name, so nothing else is ever accepted).
+func validID(id string) bool {
+	if len(id) != 25 || id[16] != '-' {
+		return false
+	}
+	for i, c := range id {
+		if i == 16 {
+			continue
+		}
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ensureDir creates dir (0700) if missing and requires a private
+// directory owned by the current user that is not a symlink.
+func ensureDir(dir string) error {
+	st, err := fsx.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		st, err = fsx.Lstat(dir)
+	}
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%w: journal directory is not a directory", fsx.ErrUnsafe)
+	}
+	if int(st.UID) != os.Getuid() || st.Mode&0o077 != 0 {
+		return fmt.Errorf("%w: journal directory is not private", fsx.ErrUnsafe)
+	}
+	return nil
+}
+
+// createExclusive writes data to dir/name, failing if the name exists. The
+// data is FullSynced in a hidden temporary which is then hard-linked to the
+// final name, so the record appears atomically and completely.
+func createExclusive(dir, name string, data []byte) error {
+	var f *os.File
+	var tmp string
+	for i := 0; ; i++ {
+		tmp = filepath.Join(dir, "."+name+".tmp-"+strconv.Itoa(os.Getpid())+"-"+strconv.Itoa(i))
+		var err error
+		f, err = os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) || i >= 100 {
+			return err
+		}
+	}
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := fsx.FullSync(f); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmp, filepath.Join(dir, name)); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%w: %s", fsx.ErrExist, name)
+		}
+		return err
+	}
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return fsx.SyncDir(dir)
+}

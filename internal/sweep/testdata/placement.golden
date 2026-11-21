@@ -1,0 +1,31 @@
+# placement table (SPEC §11.3): policy | situation -> action
+exact         | equal bytes                     -> noop
+exact         | F starts with C (superset)      -> conflict
+exact         | C starts with F (stale prefix)  -> conflict
+exact         | linked classic fragment         -> conflict
+exact         | unrelated                       -> conflict
+jsonl-append  | equal bytes                     -> noop
+jsonl-append  | F starts with C (superset)      -> keep-existing
+jsonl-append  | C starts with F (stale prefix)  -> replace
+jsonl-append  | linked classic fragment         -> merge
+jsonl-append  | unrelated                       -> conflict
+line-union    | equal bytes                     -> noop
+line-union    | F starts with C (superset)      -> line-union
+line-union    | C starts with F (stale prefix)  -> line-union
+line-union    | linked classic fragment         -> line-union
+line-union    | unrelated                       -> line-union
+sqlite-group  | equal bytes                     -> noop
+sqlite-group  | F starts with C (superset)      -> conflict
+sqlite-group  | C starts with F (stale prefix)  -> conflict
+sqlite-group  | linked classic fragment         -> conflict
+sqlite-group  | unrelated                       -> conflict
+md            | equal bytes                     -> noop
+md            | F starts with C (superset)      -> conflict
+md            | C starts with F (stale prefix)  -> conflict
+md            | linked classic fragment         -> conflict
+md            | unrelated                       -> conflict
+(unknown)     | equal bytes                     -> noop
+(unknown)     | F starts with C (superset)      -> conflict
+(unknown)     | C starts with F (stale prefix)  -> conflict
+(unknown)     | linked classic fragment         -> conflict
+(unknown)     | unrelated                       -> conflict
