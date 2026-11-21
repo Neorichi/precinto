@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/awnumar/memguard"
 
@@ -381,8 +382,16 @@ func Format(id MsgID, v Vars) string {
 		return string(id)
 	}
 	sid := v.SID
-	if len(sid) > 8 {
-		sid = sid[:8]
+	if utf8.RuneCountInString(sid) > 8 {
+		// The first 8 characters, never a cut inside a multi-byte one.
+		n := 0
+		for i := range sid {
+			if n == 8 {
+				sid = sid[:i]
+				break
+			}
+			n++
+		}
 	}
 	reasonDur := v.Idle
 	if v.Reason == ReasonLimit {

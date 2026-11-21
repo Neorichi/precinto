@@ -42,10 +42,15 @@ import (
 // random bytes cannot fake one.
 
 // scanWindow is the size of the read window; patterns are bounded by
-// scanOverlap bytes, which consecutive windows share.
+// scanOverlap bytes, which consecutive windows share. Each window also
+// keeps scanContext bytes before the first offset it is responsible for,
+// so that a match deciding on the character before it (a path boundary,
+// \b) or starting with a keyword before its value sees the same bytes as
+// in a whole-file scan.
 const (
 	scanWindow   = 1 << 20
 	scanOverlap  = 4 << 10
+	scanContext  = 64
 	maxFindings  = 50
 	ageMagic     = "age-encryption.org/v1\n"
 	maxAgeHeader = 1 << 20
@@ -212,6 +217,21 @@ type hygieneScanner struct {
 	allowRoots []string // temp roots, symlinked and resolved forms
 	allowSlugs []string // the same roots in Claude slug form
 	realHome   *regexp.Regexp
+	// window and overlap, when set, replace scanWindow and scanOverlap
+	// (self-tests use small windows to hit their boundaries quickly).
+	window, overlap int
+}
+
+// geometry returns the read window and overlap of scanFile.
+func (s *hygieneScanner) geometry() (window, overlap int) {
+	window, overlap = scanWindow, scanOverlap
+	if s.window > scanContext {
+		window = s.window
+	}
+	if s.overlap > 0 {
+		overlap = s.overlap
+	}
+	return window, overlap
 }
 
 // pathKinds are the rules whose matches are paths (allowed inside a temp
@@ -304,6 +324,16 @@ func pathRun(w []byte, i int) string {
 // belong to the next window; report receives the offset and kind of each
 // finding.
 func (s *hygieneScanner) scanBytes(w []byte, limit int, report func(off int, kind string)) {
+	s.scanRange(w, 0, limit, report)
+}
+
+// scanRange checks w for the matches that start in [from, limit): bytes
+// before from are context already scanned by the previous window, bytes
+// from limit on belong to the next one. A match is assigned by the start
+// of the whole match (the boundary character before a path, the keyword
+// before a secret value), not by its reported group, so a keyword at the
+// end of one window and its value in the next are seen together.
+func (s *hygieneScanner) scanRange(w []byte, from, limit int, report func(off int, kind string)) {
 	binary := bytes.IndexByte(w, 0) >= 0
 	rules := hygieneRules
 	if s.realHome != nil {
@@ -312,7 +342,7 @@ func (s *hygieneScanner) scanBytes(w []byte, limit int, report func(off int, kin
 	for _, r := range rules {
 		for _, m := range r.re.FindAllSubmatchIndex(w, -1) {
 			start, end := m[2*r.group], m[2*r.group+1]
-			if start < 0 || start >= limit {
+			if start < 0 || m[0] < from || m[0] >= limit {
 				continue
 			}
 			match := w[start:end]
@@ -412,8 +442,10 @@ func (s *hygieneScanner) scanFile(p string, report func(line int, kind string)) 
 		return err
 	}
 	defer f.Close()
-	buf := make([]byte, 0, scanWindow+scanOverlap)
+	window, overlap := s.geometry()
+	buf := make([]byte, 0, window+overlap)
 	lines := 1 // line number at buf[0]
+	from := 0  // matches starting before it were scanned by the previous window
 	first := true
 	for {
 		n, rerr := io.ReadFull(f, buf[len(buf):cap(buf)])
@@ -438,16 +470,20 @@ func (s *hygieneScanner) scanFile(p string, report func(line int, kind string)) 
 		}
 		limit := len(buf)
 		if !eof {
-			limit = len(buf) - scanOverlap
+			limit = len(buf) - overlap
 		}
-		s.scanBytes(buf, limit, func(off int, kind string) {
+		s.scanRange(buf, from, limit, func(off int, kind string) {
 			report(lines+bytes.Count(buf[:off], []byte("\n")), kind)
 		})
 		if eof {
 			return nil
 		}
-		lines += bytes.Count(buf[:limit], []byte("\n"))
-		buf = append(buf[:0], buf[limit:]...)
+		// The next window starts scanContext bytes before limit (context
+		// only) and is responsible from limit on.
+		keep := limit - scanContext
+		lines += bytes.Count(buf[:keep], []byte("\n"))
+		buf = append(buf[:0], buf[keep:]...)
+		from = scanContext
 	}
 }
 

@@ -80,7 +80,7 @@ type Options struct {
 }
 
 // Run executes every applicable check.
-func Run(ctx context.Context, o Options) ([]Finding, error) { panic("unimplemented: doctor.Run") }
+func Run(ctx context.Context, o Options) ([]Finding, error) { return run(ctx, o, defaultDeps(o)) }
 
 // Codes lists every check code in display order.
-func Codes() []string { panic("unimplemented: doctor.Codes") }
+func Codes() []string { return codes() }

@@ -92,3 +92,58 @@ func TestIsFixtureUUID(t *testing.T) {
 		}
 	}
 }
+
+// TestScanFileWindowContext is a regression test: a match at a window
+// boundary is decided with the bytes before the window, as in a whole-file
+// scan. Before the fix, a secret whose keyword ended one window and whose
+// value began the next was missed, and a path continuing a word across the
+// boundary ("x/Users/…") was flagged because the next window began at it.
+// Small windows keep the test fast; TestScanFileWindows covers the real
+// geometry.
+func TestScanFileWindowContext(t *testing.T) {
+	const window, overlap = 4096, 256
+	value := strings.Repeat("Zq9xK2mP", 3) // letters and digits, no placeholder word
+	tail := strings.Repeat(" ", overlap+scanContext) + "\n"
+	cases := []struct {
+		name, body string
+		want       []string
+	}{
+		{"keyword before the boundary, value after it",
+			strings.Repeat(" ", window-len("token=")) + "token=" + value + tail, []string{"secret assignment"}},
+		{"path continuing a word across the boundary",
+			strings.Repeat(" ", window-1) + "x/Users/bob/notes" + tail, nil},
+		{"path right after a boundary character",
+			strings.Repeat(" ", window-1) + " /Users/bob/notes" + tail, []string{"home directory path"}},
+		{"\\b at the window start",
+			strings.Repeat(" ", window-1) + "x" + "gh" + "p_" + strings.Repeat("a1B2", 10) + tail, nil},
+		{"keyword ending where the third window's responsibility starts",
+			strings.Repeat(" ", 2*window-scanContext-len("password=")) + "password=" + value + tail, []string{"secret assignment"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "window.txt")
+			if err := os.WriteFile(p, []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := &hygieneScanner{window: window, overlap: overlap}
+			var got []string
+			if err := s.scanFile(p, func(l int, kind string) {
+				got = append(got, kind)
+				if l != 1 {
+					t.Errorf("finding on line %d, want 1", l)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, ",") != strings.Join(c.want, ",") {
+				t.Errorf("findings %v, want %v", got, c.want)
+			}
+			// The whole-file scan agrees.
+			var whole []string
+			s.scanBytes([]byte(c.body), len(c.body), func(_ int, kind string) { whole = append(whole, kind) })
+			if strings.Join(whole, ",") != strings.Join(c.want, ",") {
+				t.Errorf("whole-file scan %v, want %v", whole, c.want)
+			}
+		})
+	}
+}
