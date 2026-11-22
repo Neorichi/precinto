@@ -231,12 +231,20 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 		}
 		c.Close()
 	}
-	if st != nil && cfgErr != nil {
-		for _, v := range st.Vaults {
-			if v.VaultID != vault.GlobalID {
-				addStandInRoot(&cfg, v.VaultID, v.RootPath)
-			}
-		}
+	// D142: the folders the agent enforces, not only config.toml's: a
+	// folder whose removal waits for a confirmation (the confirmed
+	// settings still hold it), the folders vaults record while the pin is
+	// forged or missing, and every folder the agent itself reports, so
+	// that --check never passes while one of them holds plaintext.
+	cfg = a.enforcedConfig(cfg, l)
+	if st != nil {
+		cfg = config.WithRoots(cfg, agentRoots(*st)...)
+	}
+	// D145: settings that name no folder are checked only by unlock
+	// --global; folders whose vault is kept but that nothing protects are
+	// named, so a pin that dropped every folder never goes unseen.
+	if rs := a.unprotectedFolders(cfg, l); len(rs) > 0 {
+		local = append(local, a.unprotectedAttention(rs))
 	}
 	s.policy = floorPolicy(cfg, l)
 	if st != nil {
@@ -266,13 +274,10 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 	var wrongHome map[string]int
 	s.plainNote = textPlainNotSetUp
 	if s.Vault.Initialized {
-		// The engine is built from config.toml, or from the stand-in
-		// settings when it does not load, so that the folders are still
-		// scanned (UX-09).
-		src := a
-		if cfgErr != nil {
-			src = a.withConfig(cfg)
-		}
+		// The engine is built from the folders listed below: config.toml's
+		// (or the stand-in settings' when it does not load, UX-09) and
+		// those the agent enforces (D142), so that each is scanned.
+		src := a.withConfig(cfg)
 		s.plainNote = textPlainUnscanned
 		if eng, err := src.engine(ctx, false); err == nil {
 			if ps, err := eng.PlaintextSummary(ctx); err == nil {
@@ -441,65 +446,31 @@ func configErrorText(err error) string {
 
 // standInConfig is what stands in for a config.toml that does not load
 // (UX-09): the settings confirmed last (state/policy.pinned), else the
-// defaults, plus every protected folder whose vault records its path
-// (vault.toml root_path), so that status, doctor and their scans still
-// see each folder. what names the settings for the user.
+// defaults, with the folders the agent enforces (enforcedConfig, D142):
+// the confirmed settings' folders and, while the pin is missing or has a
+// forged shape, every folder whose vault records its path (vault.toml
+// root_path), so that status, doctor, their scans and the sealing commands
+// still see each protected folder. A retired vault (D74) is not one: a
+// broken config.toml never makes precinto seal or scan a folder the user
+// stopped protecting. what names the settings for the user. Neither source
+// is validated as a configuration: a folder whose path could not be saved
+// (relative, unclean, "/", a control character) is left out
+// (config.WithRoots, D149).
 func (a *app) standInConfig(l paths.Layout) (cfg config.Config, what string) {
 	cfg, what = config.Default(), textStandInDefaults
 	if pinned, ok, err := config.LoadPinned(l.PolicyPinned); err == nil && ok {
 		cfg, what = pinned.Config, textStandInPinned
 	}
-	// A pin is never validated (a forged one may list "/"): its folders
-	// pass the checks of addStandIn like every other.
 	pinnedRoots := cfg.Roots
 	cfg.Roots = nil
-	for _, r := range pinnedRoots {
-		addStandIn(&cfg, r)
-	}
-	if !fileExists(l.VaultsDir) {
-		return cfg, what
-	}
-	vs, err := a.vaults()
-	if err != nil {
-		return cfg, what
-	}
-	ids, err := vs.List()
-	if err != nil {
-		return cfg, what
-	}
-	for _, id := range ids {
-		if id == vault.GlobalID {
-			continue
-		}
-		if m, err := vs.Meta(id); err == nil {
-			addStandInRoot(&cfg, id, m.RootPath)
-		}
-	}
-	return cfg, what
+	cfg = config.WithRoots(cfg, pinnedRoots...)
+	return a.enforcedConfig(cfg, l), what
 }
 
 // addStandInRoot adds the folder id at path, with the default settings,
-// to stand-in settings (addStandIn).
+// to settings that lack it (config.WithRoots).
 func addStandInRoot(cfg *config.Config, id, path string) {
-	addStandIn(cfg, config.Root{ID: id, Path: path})
-}
-
-// addStandIn adds folder r to stand-in settings unless they already have
-// its id or its path, or r has no id or a path that is not absolute and
-// clean (or is /).
-func addStandIn(cfg *config.Config, r config.Root) {
-	if r.ID == "" {
-		return
-	}
-	if p, ok := paths.Clean(r.Path); !ok || p != r.Path || p == "/" {
-		return
-	}
-	for _, x := range cfg.Roots {
-		if x.ID == r.ID || x.Path == r.Path {
-			return
-		}
-	}
-	cfg.Roots = append(cfg.Roots, r)
+	*cfg = config.WithRoots(*cfg, config.Root{ID: id, Path: path})
 }
 
 // withConfig returns a copy of a whose config() is cfg, for an engine

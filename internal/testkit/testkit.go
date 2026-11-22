@@ -69,6 +69,29 @@ func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string) 
 	settle(t, timeout, exes, dirs)
 }
 
+// StopInstallation ends what a test's installation of the testing build
+// left running, before its fake home is removed, and fails the test when
+// something outlives it (TESTPLAN §1.8, D129): `bin agent --stop` with env
+// (the installation's environment: HOME, PRECINTO_HOME,
+// PRECINTO_RUNTIME_DIR…) stops its agent, whose keys are wiped, and waits
+// until it no longer answers; every other process that runs bin — the
+// workers the agent spawned (sweep, seal --queue, restore), a stray CLI —
+// gets a moment to end by itself, then SIGTERM; one that needs SIGKILL
+// fails the test, and so does any process still running bin or naming a
+// path below dirs in its arguments afterwards. Only processes running bin
+// (a binary the test built) are ever signalled. Register it with t.Cleanup
+// right after creating the fake home, so it runs after the cleanups of the
+// sessions the test started and before the home is removed.
+func StopInstallation(t testing.TB, bin string, env []string, dirs ...string) {
+	t.Helper()
+	stopInstallation(t, bin, env, dirs)
+}
+
+// Leftovers describes ("pid name args…") the live processes, other than
+// this one, that run bin or name a path below dirs in their arguments: what
+// a test's installation left running.
+func Leftovers(bin string, dirs ...string) []string { return describe(leftovers(bin, dirs)) }
+
 // Epoch is the fixed wall time frozen fake clocks start at. Fixture times
 // derive from the clock of the code under test (Epoch for h.Clock), never
 // from a copy of the date; code that compares its clock with times the

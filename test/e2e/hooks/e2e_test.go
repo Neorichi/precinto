@@ -45,6 +45,15 @@ const repoRoot = "../../.."
 // e2ePassphrase is the passphrase factor of throwaway vaults.
 const e2ePassphrase = "e2e passphrase for a throwaway vault only"
 
+// TestMain removes the binaries the tests built (testkit.BuildBinary), so
+// the package leaves nothing in TMPDIR (TESTPLAN §1.8):
+// TestSandboxCleanupLeavesNothingRunning builds one without PRECINTO_E2E.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	testkit.RemoveBinaries()
+	os.Exit(code)
+}
+
 // requireE2E skips unless the opt-in E2E run was asked for.
 func requireE2E(t *testing.T) {
 	t.Helper()
@@ -91,6 +100,12 @@ func harnessPath(t *testing.T, name string) (string, bool) {
 func newSandbox(t *testing.T, harnesses ...string) *sandbox {
 	t.Helper()
 	requireE2E(t)
+	return buildSandbox(t, harnesses...)
+}
+
+// buildSandbox is newSandbox without the opt-in check.
+func buildSandbox(t *testing.T, harnesses ...string) *sandbox {
+	t.Helper()
 	for _, p := range []string{"/opt/homebrew/bin/precinto", "/usr/local/bin/precinto", "/usr/bin/precinto"} {
 		if _, err := os.Lstat(p); err == nil {
 			t.Skipf("%s is installed: the shim could reach it", p)
@@ -159,7 +174,14 @@ func newSandbox(t *testing.T, harnesses ...string) *sandbox {
 		}
 	}
 	s.writeConfig()
-	t.Cleanup(s.stopAgent)
+	// D129: before the sandbox is removed, the agent this test started and
+	// everything the installation spawned (sweep, seal --queue, restore
+	// workers, an agent a hook autostarted) are stopped; one still running
+	// then fails the test.
+	t.Cleanup(func() {
+		s.stopAgent()
+		testkit.StopInstallation(t, s.bin, s.env, s.home)
+	})
 	for _, h := range harnesses {
 		link := filepath.Join(s.fakeBin, h)
 		target, _ := filepath.EvalSymlinks(link)
@@ -616,5 +638,32 @@ func (s *sandbox) leakCheck(marker string) {
 	s.t.Helper()
 	if hits := testkit.GrepTree(s.t, s.base, marker, "capsules"); len(hits) > 0 {
 		s.t.Errorf("marker in precinto's state: %v", hits)
+	}
+}
+
+// TestSandboxCleanupLeavesNothingRunning runs without PRECINTO_E2E and
+// without a harness: the sandbox's setup starts its agent, init and
+// protect, and a lock makes the agent spawn its lock workers; when the
+// test ends the sandbox stops its agent and every worker of its binary
+// before the sandbox is removed, so nothing of it outlives the test
+// (D129; a `sweep --lock` worker used to).
+func TestSandboxCleanupLeavesNothingRunning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the precinto binary (slow)")
+	}
+	var bin, home string
+	ok := t.Run("sandbox", func(t *testing.T) {
+		s := buildSandbox(t)
+		bin, home = s.bin, s.home
+		s.initVault() // agent, init, protect, lock: the agent spawns its workers
+		if left := testkit.Leftovers(s.bin); len(left) == 0 {
+			t.Fatal("the sandbox runs no process of its installation: nothing to stop")
+		}
+	})
+	if !ok {
+		t.Fatal("the sandbox's cleanup failed")
+	}
+	if left := testkit.Leftovers(bin, home); len(left) > 0 {
+		t.Fatalf("left running after the sandbox's test: %v", left)
 	}
 }

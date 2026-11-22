@@ -64,8 +64,14 @@ type Env struct {
 	Procs    platform.ProcTable
 	Clock    platform.Clock
 	Grants   Grants
-	Floor    fsx.Floor
-	Sealer   string // "precinto <version>"
+	// Protected reports the root ids protected right now, as a run started
+	// now would take them (cmd/precinto: config.toml on disk merged with
+	// the confirmed settings and the folders a running agent reports,
+	// D142). ok false says nothing: every root of the run stays protected
+	// (seal on doubt). nil: config.toml on disk alone decides (D133, D151).
+	Protected func(ctx context.Context) (ids map[string]bool, ok bool)
+	Floor     fsx.Floor
+	Sealer    string // "precinto <version>"
 	// Parallel bounds concurrent unit seals (default 2; units > 1 GiB run alone, R19).
 	Parallel int
 	// Sleep waits d or until ctx ends; nil = a real timer. It is used for

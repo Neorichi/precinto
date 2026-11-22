@@ -28,9 +28,12 @@ import (
 //   - min_free (D76): larger is stricter (more of the volume stays free);
 //     0 means the 2 GiB default and compares as 2 GiB; any other value
 //     below 512 MiB is invalid and the weakest.
-//   - Counters (restore_recent, restore_max_bytes, prompt_rate_per_minute):
-//     smaller is stricter and 0 means none (the contract gives 0 no other
-//     meaning); negative values are invalid and the weakest.
+//   - Counters (restore_recent, restore_max_bytes): smaller is stricter
+//     and 0 means none (the contract gives 0 no other meaning); negative
+//     values are invalid and the weakest.
+//   - prompt_rate_per_minute: smaller is stricter down to 1; a value below
+//     1 would turn unlock prompts off, which Validate refuses (D130), so it
+//     is invalid and the weakest: it never wins a merge.
 //   - Booleans: lock_on_screen_lock, per_root_auth, clear_terminal_on_end,
 //     clear_scrollback_on_lock, include_tracked, claude_settings, enabled and
 //     experimental are stricter when true; restore_history and
@@ -146,6 +149,21 @@ func cmpCountLower[T int | int64](a, b T) int {
 	return cmp.Compare(b, a)
 }
 
+// cmpPromptRate orders prompt_rate_per_minute values (D130): a rate
+// below minPromptRate is invalid and the weakest.
+func cmpPromptRate(a, b int) int {
+	av, bv := a >= minPromptRate, b >= minPromptRate
+	switch {
+	case av && bv:
+		return cmp.Compare(b, a)
+	case av:
+		return 1
+	case bv:
+		return -1
+	}
+	return 0
+}
+
 func cmpTrue(a, b bool) int { return cmp.Compare(b2i(a), b2i(b)) }
 
 func cmpFalse(a, b bool) int { return cmp.Compare(b2i(b), b2i(a)) }
@@ -240,7 +258,7 @@ var policyRules = []policyRule{
 	fieldRule[string]{"md_seal_on", func(p *Policy) *string { return &p.MDSealOn }, cmpRank(mdSealOnRank), stringText},
 	fieldRule[bool]{"clear_terminal_on_end", func(p *Policy) *bool { return &p.ClearTerminalOnEnd }, cmpTrue, boolText},
 	fieldRule[bool]{"clear_scrollback_on_lock", func(p *Policy) *bool { return &p.ClearScrollbackLock }, cmpTrue, boolText},
-	fieldRule[int]{"prompt_rate_per_minute", func(p *Policy) *int { return &p.PromptRatePerMinute }, cmpCountLower[int], intText},
+	fieldRule[int]{"prompt_rate_per_minute", func(p *Policy) *int { return &p.PromptRatePerMinute }, cmpPromptRate, intText},
 	fieldRule[Duration]{"prompt_backoff", func(p *Policy) *Duration { return &p.PromptBackoff }, cmpDelayHigher, durationText},
 	fieldRule[Duration]{"hook_prompt_cooldown", func(p *Policy) *Duration { return &p.HookPromptCooldown }, cmpDelayHigher, durationText},
 }

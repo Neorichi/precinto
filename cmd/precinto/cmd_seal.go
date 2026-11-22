@@ -54,10 +54,11 @@ func cmdSeal(a *app, args []string) int {
 	if err := a.sys.harden(); err != nil {
 		return a.fail("seal", err)
 	}
-	cfg, err := a.config()
+	sl, err := a.sealingApp()
 	if err != nil {
 		return a.fail("seal", err)
 	}
+	a, cfg, cfgErr := sl.a, sl.cfg, sl.cfgErr
 	// D106: --adopt is part of the scope the adapters scan, not only an
 	// option of the seal.
 	o := sweep.Options{DryRun: *dryRun, Adopt: *adopt, Reason: "manual", Scope: harness.Scope{Adopt: *adopt}}
@@ -108,11 +109,49 @@ func cmdSeal(a *app, args []string) int {
 		}
 		rep, err = eng.Seal(ctx, hs, o.Scope, o)
 	}
-	shown := a.printSeal(rep)
+	shown := a.printSeal(rep, o.DryRun)
 	if err != nil {
-		return a.failShown("seal", err, shown, false)
+		code := a.failShown("seal", err, shown, false)
+		a.reportBrokenConfig("seal", cfgErr)
+		return code
 	}
+	a.reportBrokenConfig("seal", cfgErr)
 	return exitOK
+}
+
+// sealing is what a sealing command (seal, sweep, the agent's lock worker
+// sweep --lock, the SessionEnd worker seal --queue) works with (D142): the
+// app whose engine it builds and the settings it seals with — the folders
+// the agent enforces, as far as this process can tell (enforcedConfig)
+// and as a running agent reports them (withAgentRoots), with config.toml's
+// policy, or, when config.toml does not load, with the settings that stand
+// in for it (D121): sealing only strengthens protection, so a broken file
+// never stops it (UX-09) — and that file's error, which the command
+// reports after the seal. A retired vault (D74) is none of those folders,
+// broken file or not. Restores and edits keep refusing a config.toml that
+// does not load. A --root DIR resolves against the same folders, so the
+// lock worker finds a folder the agent enforces only because it found the
+// confirmed settings tampered, and a folder no setting and no agent
+// protects is "not inside a protected folder".
+type sealing struct {
+	a      *app
+	cfg    config.Config
+	cfgErr error
+}
+
+func (a *app) sealingApp() (sealing, error) {
+	l, err := a.layout()
+	if err != nil {
+		return sealing{a: a}, err
+	}
+	cfg, cfgErr := a.config()
+	if cfgErr != nil {
+		cfg, _ = a.standInConfig(l)
+	} else {
+		cfg = a.enforcedConfig(cfg, l)
+	}
+	cfg = a.withAgentRoots(cfg)
+	return sealing{a: a.withConfig(cfg), cfg: cfg, cfgErr: cfgErr}, nil
 }
 
 // quietWaitNotice is Options.OnQuietWait for a seal or sweep run from a
@@ -144,10 +183,11 @@ func cmdSweep(a *app, args []string) int {
 	if err := a.sys.harden(); err != nil {
 		return a.fail("sweep", err)
 	}
-	cfg, err := a.config()
+	sl, err := a.sealingApp()
 	if err != nil {
 		return a.fail("sweep", err)
 	}
+	a, cfg, cfgErr := sl.a, sl.cfg, sl.cfgErr
 	o := sweep.Options{Lock: *lock, Wait: *wait, DryRun: *dryRun, Quiet: *quiet, Reason: "sweep"}
 	if *lock {
 		o.Reason = "lock"
@@ -173,15 +213,19 @@ func cmdSweep(a *app, args []string) int {
 		if !*quiet {
 			a.sayOut(textBusySweep)
 		}
+		a.reportBrokenConfig("sweep", cfgErr)
 		return exitOK
 	}
 	var shown []error
 	if !*quiet {
-		shown = a.printSeal(rep)
+		shown = a.printSeal(rep, o.DryRun)
 	}
 	if err != nil {
-		return a.failShown("sweep", err, shown, false)
+		code := a.failShown("sweep", err, shown, false)
+		a.reportBrokenConfig("sweep", cfgErr)
+		return code
 	}
+	a.reportBrokenConfig("sweep", cfgErr)
 	return exitOK
 }
 

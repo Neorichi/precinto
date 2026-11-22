@@ -1020,6 +1020,14 @@ func cmdRecover(a *app, args []string) int {
 	}
 	defer key.Destroy()
 	if _, err := vault.ParseRecoveryKey(key); err != nil {
+		if isBadSecret(err) {
+			// A mistyped key (a character wrong or missing, the usual
+			// slip when it is typed back from paper) is not this
+			// installation's recovery key either: recover's own words, no
+			// folder is being unlocked (UX-18, D150).
+			a.line(ui.MsgRecoveryWrongKey, ui.Vars{})
+			return exitLocked
+		}
 		return a.fail("recover", err)
 	}
 	ctx := context.Background()

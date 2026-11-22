@@ -14,19 +14,36 @@ import (
 	"github.com/precinto/precinto/internal/ipc"
 )
 
-// shutdownWait bounds how long `agent --restart` waits for the old daemon.
+// shutdownWait bounds how long `agent --stop` and `agent --restart` wait
+// for the running daemon to exit.
 const shutdownWait = 10 * time.Second
 
 func cmdAgent(a *app, args []string) int {
 	f := newFlags("agent")
 	foreground := f.Bool("foreground", false, "stay attached to this terminal (logs on stderr)")
-	restart := f.Bool("restart", false, "stop the running agent first")
+	restart := f.Bool("restart", false, "stop the running agent, then start it again in the background (with --foreground: in this terminal)")
+	stop := f.Bool("stop", false, "stop the running agent: its keys are wiped, so every folder locks")
 	pos, err := f.parse(args)
 	if code, ok := a.handleParse(f, err); !ok {
 		return code
 	}
 	if len(pos) > 0 {
 		return a.usageFail(f, "unexpected argument "+pos[0])
+	}
+	if *stop && (*restart || *foreground) {
+		return a.usageFail(f, "--stop takes no other flag")
+	}
+	if *stop {
+		// D129: like `precinto lock` it only locks (the keys are wiped),
+		// so an agent context may run it too.
+		stopped, err := a.stopAgent()
+		if err != nil {
+			return a.fail("agent", err)
+		}
+		if !stopped {
+			a.say(textAgentNotRunning)
+		}
+		return exitOK
 	}
 	l, err := a.layout()
 	if err != nil {
@@ -35,9 +52,25 @@ func cmdAgent(a *app, args []string) int {
 	if err := l.EnsureDirs(); err != nil {
 		return a.fail("agent", err)
 	}
+	ctx := context.Background()
 	if *restart {
-		if err := a.stopAgent(); err != nil {
+		if _, err := a.stopAgent(); err != nil {
 			return a.fail("agent", err)
+		}
+		if !*foreground {
+			// D141: the new agent starts detached, as an autostart starts
+			// it, and the terminal gets its prompt back.
+			c, err := a.dial(ctx, true)
+			if err != nil {
+				return a.fail("agent", err)
+			}
+			defer c.Close()
+			st, err := c.Status(ctx)
+			if err != nil {
+				return a.fail("agent", err)
+			}
+			a.say(textAgentRunning, st.PID)
+			return exitOK
 		}
 	}
 	exe, err := a.sys.executable()
@@ -46,8 +79,8 @@ func cmdAgent(a *app, args []string) int {
 	}
 	// The daemon runs in this process: `precinto agent` is what ipc.Dial's
 	// autostart executes detached. SIGINT/SIGTERM end it (keys wiped).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	err = a.sys.agentRun(ctx, agent.Options{
 		Layout: l,
 		// Started from an agent's shell, the daemon gets no dialog
@@ -66,35 +99,40 @@ func cmdAgent(a *app, args []string) int {
 }
 
 // stopAgent asks a running daemon to wipe its keys and exit, and waits
-// until it no longer answers.
-func (a *app) stopAgent() error {
+// until it no longer answers (D129); stopped is false when none ran.
+func (a *app) stopAgent() (stopped bool, err error) {
 	ctx := context.Background()
 	c, err := a.dial(ctx, false)
 	if err != nil {
 		if errors.Is(err, ipc.ErrNoDaemon) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	err = c.Shutdown(ctx)
 	c.Close()
 	if err != nil {
-		return err
+		return false, err
 	}
+	// While it exits the agent may still accept a connection and close it
+	// at once (the dial then cannot read its credentials): only "no agent"
+	// ends the wait.
 	const poll = 100 * time.Millisecond
+	last := errors.New("it still answers")
 	for i := 0; i < int(shutdownWait/poll); i++ {
 		c, err := a.dial(ctx, false)
-		if err != nil {
-			if errors.Is(err, ipc.ErrNoDaemon) {
-				a.say(textAgentStopped)
-				return nil
-			}
-			return err
+		if errors.Is(err, ipc.ErrNoDaemon) {
+			a.say(textAgentStopped)
+			return true, nil
 		}
-		c.Close()
+		if err == nil {
+			c.Close()
+		} else {
+			last = err
+		}
 		a.sys.sleep(poll)
 	}
-	return errors.New("the running agent did not stop in time")
+	return false, fmt.Errorf("the running agent did not stop in time (%v)", last)
 }
 
 func cmdDoctor(a *app, args []string) int {

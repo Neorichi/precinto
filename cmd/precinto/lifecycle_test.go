@@ -532,3 +532,71 @@ func TestRegisterHomesKeepsAConcurrentEdit(t *testing.T) {
 		t.Fatalf("roots.list %v (%v) lacks the folder saved meanwhile", list, err)
 	}
 }
+
+// D147 (D6-1): a launch the wrapper refuses after its pre-exec restore
+// placed units — the folder locked during or right after RestoreSync, or
+// the child could not start — releases its lease without a child and never
+// reaches SealAfterExit; the release itself spawns the keyless sweep of
+// every folder of the plan that is locked by then, since the lock's sweep
+// left the leased units alone. A launch whose child started leaves it to
+// SealAfterExit, and one that placed nothing, or whose folder is unlocked,
+// spawns nothing.
+func TestRefusedLaunchSweepsTheLockedFolderItRestoredInto(t *testing.T) {
+	ctx := context.Background()
+	const unit = "0123456789abcdef0123456789abcdef"
+	for _, tc := range []struct {
+		name     string
+		place    bool
+		started  bool
+		unlocked bool
+		want     int
+	}{
+		{"refused after placing units in a locked folder", true, false, false, 1},
+		{"refused, the folder still unlocked", true, false, true, 0},
+		{"refused, nothing placed", false, false, false, 0},
+		{"the child started (SealAfterExit sweeps)", true, true, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, b := testBackend(t)
+			if tc.unlocked {
+				e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+			}
+			plan := harness.LaunchPlan{Harness: harness.ClaudeCode, Roots: []config.Root{{ID: "root-acme", Path: e.h.Root}},
+				Sync: []harness.Selector{{Kind: capsule.KindClaudeSession, Keys: []string{unit}}}}
+			lease, err := b.AcquireLease(ctx, plan)
+			if err != nil || lease == nil {
+				t.Fatalf("lease %v %v", lease, err)
+			}
+			abort := make(chan struct{})
+			e.eng.restoreFn = func(keys sweep.KeySource, r sweep.RestoreRequest) {
+				if tc.place {
+					if err := r.BeforePlace(unit); err != nil {
+						t.Error(err)
+					}
+				}
+				close(abort) // the folder locks meanwhile (REST-8)
+			}
+			if _, err := b.RestoreSync(ctx, plan, abort); err != nil {
+				t.Fatal(err)
+			}
+			if tc.started {
+				if err := lease.SetChild(platform.ProcID{PID: 1234, StartUS: 99}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := lease.Release(); err != nil {
+				t.Fatal(err)
+			}
+			_ = lease.Release() // a second release sweeps nothing more
+			n := 0
+			for _, argv := range e.spawned {
+				if strings.Join(argv[1:], " ") == "sweep --root "+e.h.Root+" --quiet" {
+					n++
+				}
+			}
+			if n != tc.want {
+				t.Fatalf("spawned %v, want %d sweep(s) of the folder", e.spawned, tc.want)
+			}
+		})
+	}
+}

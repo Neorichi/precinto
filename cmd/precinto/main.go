@@ -73,7 +73,7 @@ func init() {
 		{"forget", "forget FILE|UNIT", "delete the sealed copies of a unit (asks to confirm)", cmdForget, false},
 		{"prune", "prune [--unit KEY] [--keep N] [--diverged] [--dry-run]", "delete superseded generations (only when you run it; asks to confirm)", cmdPrune, false},
 		{"codex", "codex reconcile --root DIR --prefer capsule|plaintext | codex sync-config --root DIR", "per-folder Codex homes: reconcile a diverged home, re-seed config", cmdCodex, false},
-		{"agent", "agent [--foreground] [--restart]", "run the per-user daemon", cmdAgent, false},
+		{"agent", "agent [--foreground] [--restart] | agent --stop", "run, restart or stop the per-user daemon", cmdAgent, false},
 		{"service", "service install|uninstall|status", "background re-seal every 10 minutes (a macOS LaunchAgent; not available on linux yet)", cmdService, false},
 		{"shell-init", "shell-init zsh|bash|fish [--install]", "print (or install) the shell integration", cmdShellInit, false},
 		{"integrate", "integrate HARNESS [--print] [--experimental]", "install or print the harness plugin/hooks", cmdIntegrate, false},

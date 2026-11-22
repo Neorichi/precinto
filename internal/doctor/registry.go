@@ -63,6 +63,7 @@ func registry() []check {
 		{code: CheckResidue, run: checkResidue},
 		{code: CheckPendingPolicy, folders: true, run: checkPendingPolicy},
 		{code: CheckPolicyTampered, folders: true, run: checkPolicyTampered},
+		{code: CheckUnprotectedFolders, folders: true, run: checkUnprotectedFolders},
 		{code: CheckHistoryPending, harness: claudeH, folders: true, run: checkHistoryPending},
 		{code: CheckVaultTampered, folders: true, run: checkVaultTampered},
 		{code: CheckExposed, folders: true, run: checkExposed},

@@ -39,6 +39,14 @@ const (
 	stepTimeout   = 5 * time.Minute
 )
 
+// TestMain removes the binaries the tests built (testkit.BuildBinary), so
+// the package leaves nothing in TMPDIR (TESTPLAN §1.8).
+func TestMain(m *testing.M) {
+	code := m.Run()
+	testkit.RemoveBinaries()
+	os.Exit(code)
+}
+
 // e2e is one throwaway installation driving a real Claude Code.
 type e2e struct {
 	t      *testing.T
@@ -95,6 +103,11 @@ func setup(t *testing.T) *e2e {
 		env = env.With("TERM", v)
 	}
 	x := &e2e{t: t, h: h, exe: exe, claude: claude, plugin: plugin, env: env}
+	// D129: after the agent this test starts (its cleanup runs first) and
+	// before the home is removed, everything the installation spawned
+	// (sweep, seal --queue, restore workers, an agent a hook autostarted)
+	// is stopped; one still running then fails the test.
+	t.Cleanup(func() { testkit.StopInstallation(t, exe, env.Environ(), h.Dir) })
 	x.init()
 	x.startAgent()
 	x.protect()

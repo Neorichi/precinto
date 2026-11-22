@@ -113,3 +113,39 @@ func TestRecoverWrongKeyMessage(t *testing.T) {
 		t.Fatalf("stderr %q, want %q", got, want)
 	}
 }
+
+// D150 (UX-18, U6-7): a recovery key with a mistyped character fails its
+// checksum before anything is unlocked; recover and recover --verify say
+// it is not this installation's recovery key (B.recovery.wrong, exit 3),
+// never C2.badsecret's "the folder stays locked".
+func TestRecoverMistypedKeyIsNotTheRecoveryKey(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := id.String()
+	repl := byte('Q')
+	if key[len(key)-1] == 'Q' {
+		repl = 'P'
+	}
+	typo := key[:len(key)-1] + string(repl) // one character wrong: the checksum fails
+	for _, args := range [][]string{{"recover", "--verify"}, {"recover"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			e := newEnv(t)
+			e.tty = nil // the key comes from stdin
+			m := e.vaults.metas[vault.GlobalID]
+			m.RecoveryRecipient = id.Recipient().String()
+			e.vaults.metas[vault.GlobalID] = m
+			e.in.WriteString(typo + "\n")
+			if code := e.run(args...); code != exitLocked {
+				t.Errorf("exit %d, want %d", code, exitLocked)
+			}
+			if want := ui.Format(ui.MsgRecoveryWrongKey, ui.Vars{}) + "\n"; e.stderr() != want {
+				t.Errorf("stderr %q, want %q", e.stderr(), want)
+			}
+			if len(e.dials) != 0 {
+				t.Error("a mistyped key reached the daemon")
+			}
+		})
+	}
+}

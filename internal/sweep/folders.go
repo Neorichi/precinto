@@ -81,18 +81,33 @@ func (r *run) folders(ctx context.Context, fresh bool) *folderView {
 	r.viewMu.Lock()
 	defer r.viewMu.Unlock()
 	if r.view == nil || fresh {
-		r.view = &folderView{unlocked: r.unlocked(ctx), gone: r.goneRoots()}
+		r.view = &folderView{unlocked: r.unlocked(ctx), gone: r.goneRoots(ctx)}
 	}
 	return r.view
 }
 
-// goneRoots returns the roots of the run's configuration that config.toml
-// on disk no longer lists. Only a config.toml that is there and reads
-// (the same file before and after the read) says so: anything else says
-// nothing, and every root counts as still protected (seal on doubt).
-func (r *run) goneRoots() map[string]bool {
+// goneRoots returns the roots of the run's configuration that are no
+// longer protected. With Env.Protected, a root it does not name is gone:
+// the run's folders came from that same source (config.toml merged with
+// the confirmed settings and the agent's folders, D142), so a folder whose
+// removal waits for its confirmation stays protected (D151). Without it,
+// a root config.toml on disk no longer lists is gone; only a config.toml
+// that is there and reads (the same file before and after the read) says
+// so. Anything else says nothing, and every root counts as still
+// protected (seal on doubt).
+func (r *run) goneRoots(ctx context.Context) map[string]bool {
+	if len(r.e.Cfg.Roots) == 0 {
+		return nil
+	}
+	if r.e.Protected != nil {
+		ids, ok := r.e.Protected(ctx)
+		if !ok {
+			return nil
+		}
+		return r.goneFrom(func(id string) bool { return ids[id] })
+	}
 	p := r.l.ConfigFile
-	if p == "" || len(r.e.Cfg.Roots) == 0 {
+	if p == "" {
 		return nil
 	}
 	before, err := fsx.Lstat(p)
@@ -106,9 +121,18 @@ func (r *run) goneRoots() map[string]bool {
 	if after, err := fsx.Lstat(p); err != nil || after.Dev != before.Dev || after.Ino != before.Ino {
 		return nil // replaced meanwhile: decided at the next look
 	}
+	return r.goneFrom(func(id string) bool {
+		_, ok := disk.RootByID(id)
+		return ok
+	})
+}
+
+// goneFrom returns the roots of the run's configuration that protected
+// does not hold (nil when none).
+func (r *run) goneFrom(protected func(id string) bool) map[string]bool {
 	var gone map[string]bool
 	for _, root := range r.e.Cfg.Roots {
-		if _, ok := disk.RootByID(root.ID); !ok {
+		if !protected(root.ID) {
 			if gone == nil {
 				gone = map[string]bool{}
 			}

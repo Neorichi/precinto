@@ -4413,8 +4413,14 @@ type Env struct {
 	Procs    platform.ProcTable
 	Clock    platform.Clock
 	Grants   Grants
-	Floor    fsx.Floor
-	Sealer   string // "precinto <version>"
+	// Protected reports the root ids protected right now, as a run started
+	// now would take them (cmd/precinto: config.toml on disk merged with
+	// the confirmed settings and the folders a running agent reports,
+	// D142). ok false says nothing: every root of the run stays protected
+	// (seal on doubt). nil: config.toml on disk alone decides (D133, D151).
+	Protected func(ctx context.Context) (ids map[string]bool, ok bool)
+	Floor     fsx.Floor
+	Sealer    string // "precinto <version>"
 	// Parallel bounds concurrent unit seals (default 2; units > 1 GiB run alone, R19).
 	Parallel int
 	// Sleep waits d or until ctx ends; nil = a real timer. It is used for
@@ -5735,6 +5741,16 @@ func Load(path string) (Config, error)
 // by hooks with the daemon's pinned policy (D48).
 func Strictest(a, b Config) Config
 
+// WithRoots returns c with every root of add whose id and path c does not
+// have yet, in order, when the root has an id and a path Validate accepts
+// (absolute, clean, not "/") without a control character (C0, DEL or C1):
+// folders that another source records — the confirmed settings of
+// state/policy.pinned, a vault's vault.toml root_path — added to settings
+// that lack them (D121, D142, D145). Those sources are never validated as
+// a configuration, so a root they hold that could not be saved is left
+// out. Nothing in the result aliases c or add.
+func WithRoots(c Config, add ...Root) Config
+
 // EffectiveOnEnter returns the root override or the policy value.
 func (c Config) EffectiveOnEnter(r Root) string
 
@@ -5824,6 +5840,13 @@ func LoadPinned(path string) (p Pinned, ok bool, err error)
 // naming a vault that exists (vaultExists: vaults/<id>/vault.toml). The
 // daemon and doctor apply the same rule; MAC values are checked by the
 // daemon with the vault keys at unlock.
+//
+// A pin whose settings name folders also carries a MAC keyed by one of
+// those folders (D145): a "global" MAC is checked only by `unlock
+// --global` and `recover`, so it alone never authenticates settings that
+// name folders (the daemon's writePin refuses to write such a pin). And
+// the pinned policy keeps unlock prompts on (prompt_rate_per_minute at
+// least 1, D130), as every configuration precinto saves does.
 func (p Pinned) CheckShape(vaultExists func(id string) bool) error
 
 // Policy is the [policy] table. TOML keys are the snake_case tags.
@@ -5998,6 +6021,7 @@ const (
 	MsgUnlockPassphrase   MsgID = "C2.passphrase"      // precinto passphrase for {folder} (Ctrl-C to cancel):
 	MsgUnlockTouch        MsgID = "C2.touch"           // Touch your YubiKey...
 	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring up to {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
+	MsgUnlockOKGlobal     MsgID = "C2.okglobal"        // precinto: the global vault unlocked. Locks after {idle} idle, at {until} at the latest. Restore what belongs to no folder with: precinto restore --global
 	MsgUnlockCancelled    MsgID = "C2.cancelled"       // precinto: unlock cancelled. {folder} stays locked.
 	MsgUnlockBadSecret    MsgID = "C2.badsecret"       // precinto: that passphrase or recovery key is not right. {folder} stays locked.
 	MsgUnlockNoGUI        MsgID = "C2.nogui"           // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
@@ -6042,7 +6066,7 @@ const (
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
 	MsgCodexModified      MsgID = "C9.codexmodified"   // precinto: the trust Codex keeps for precinto's hooks doesn't match the hooks precinto ships: they changed since you trusted them, or this Codex version records trust differently. If /hooks in Codex shows them as changed, Codex skips them and won't pause prompts when this folder locks: trust "precinto" again there. Your history is still sealed when Codex exits. Start anyway? [Y/n]
 	MsgCodexNoPlugin      MsgID = "C9.codexplugin"     // precinto: this folder's Codex doesn't have precinto's plugin enabled, so it won't pause prompts when the folder locks. Your history is still sealed when Codex exits. Run precinto integrate codex (if it is installed already: precinto codex sync-config --root {folder}). Start anyway? [Y/n]
-	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks), so its prompts weren't paused while the folder was locked.
+	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin not installed or disabled, --bare or disableAllHooks), so its prompts can't be paused when the folder locks. Check why with: precinto doctor claude-code
 	MsgBareWarning        MsgID = "C9.bare"            // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
 	MsgUngatedSession     MsgID = "C9.ungated"         // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
 	MsgCodexOutside       MsgID = "C9.codexoutside"    // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
@@ -6059,6 +6083,7 @@ const (
 	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
 	MsgPolicyConfirm      MsgID = "C13.confirm"        // Confirm these changes? [y/N]
 	MsgPolicyReview       MsgID = "C13.review"         // precinto: these config.toml changes weaken protection and wait for your confirmation ({n}):
+	MsgPolicySigner       MsgID = "C13.signer"         // precinto: confirming needs {folder} unlocked: precinto signs the settings you confirm with its key. Unlock it now? [Y/n]
 	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
 	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
 	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
@@ -6070,7 +6095,7 @@ const (
 	MsgPassphraseAgain    MsgID = "B.passphrase.again" // Type the passphrase again:
 	MsgPassphraseWeak     MsgID = "B.passphrase.weak"  // that passphrase is too weak (at least 12 characters and about 80 bits are needed). Try again.
 	MsgPassphraseDiff     MsgID = "B.passphrase.diff"  // the two passphrases differ. Try again.
-	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase:
+	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase. Type it exactly as shown, hyphens included:
 	MsgRecoveryHeader     MsgID = "B.recovery.header"  // Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.
 	MsgTypeBack           MsgID = "B.typeback"         // Type its last {n} characters to continue:
 	MsgTypeBackWrong      MsgID = "B.typeback.wrong"   // Those are not its last {n} characters. Type them again:
@@ -6230,11 +6255,16 @@ const (
 	CheckResidue           = "residue" // shell-snapshots, usage-data, bash-edit-diff, hook_outputs (IM14)
 	CheckPendingPolicy     = ipc.AttnPendingPolicy
 	CheckPolicyTampered    = ipc.AttnPolicyTampered
-	CheckHistoryPending    = ipc.AttnHistoryPending
-	CheckVaultTampered     = ipc.AttnVaultTampered
-	CheckExposed           = ipc.AttnExposed
-	CheckUngatedSession    = ipc.AttnUngatedSession
-	CheckConflict          = ipc.AttnConflict
+	// CheckUnprotectedFolders: the confirmed settings name no folder, and
+	// folders whose vault is kept are protected by nothing (D145). Such
+	// settings are checked only by `precinto unlock --global`; also a
+	// status item.
+	CheckUnprotectedFolders = "unprotected-folders"
+	CheckHistoryPending     = ipc.AttnHistoryPending
+	CheckVaultTampered      = ipc.AttnVaultTampered
+	CheckExposed            = ipc.AttnExposed
+	CheckUngatedSession     = ipc.AttnUngatedSession
+	CheckConflict           = ipc.AttnConflict
 	// CheckPermissions: precinto's own directories and Claude's temp folder
 	// are not private (owner, mode, symlinks; S7, D6).
 	CheckPermissions = "permissions"
@@ -6342,6 +6372,11 @@ func GrepTree(t testing.TB, dir, marker string, exclude ...string) []string
 // tokens, or UUIDs that are not fixtures (S13).
 func Hygiene(t testing.TB, dir string)
 
+// Leftovers describes ("pid name args…") the live processes, other than
+// this one, that run bin or name a path below dirs in their arguments: what
+// a test's installation left running.
+func Leftovers(bin string, dirs ...string) []string
+
 // Marker returns a unique marker string for leak greps.
 func Marker(t testing.TB) string
 
@@ -6368,6 +6403,21 @@ func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string)
 // ends; a process the test started that still writes there is waited for
 // first (Settle), and reported when it outlives the wait.
 func ShortTempDir(t testing.TB) string
+
+// StopInstallation ends what a test's installation of the testing build
+// left running, before its fake home is removed, and fails the test when
+// something outlives it (TESTPLAN §1.8, D129): `bin agent --stop` with env
+// (the installation's environment: HOME, PRECINTO_HOME,
+// PRECINTO_RUNTIME_DIR…) stops its agent, whose keys are wiped, and waits
+// until it no longer answers; every other process that runs bin — the
+// workers the agent spawned (sweep, seal --queue, restore), a stray CLI —
+// gets a moment to end by itself, then SIGTERM; one that needs SIGKILL
+// fails the test, and so does any process still running bin or naming a
+// path below dirs in its arguments afterwards. Only processes running bin
+// (a binary the test built) are ever signalled. Register it with t.Cleanup
+// right after creating the fake home, so it runs after the cleanups of the
+// sessions the test started and before the home is removed.
+func StopInstallation(t testing.TB, bin string, env []string, dirs ...string)
 
 // Home is a throwaway environment.
 type Home struct {

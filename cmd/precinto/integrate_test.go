@@ -13,7 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 )
 
@@ -443,4 +445,105 @@ func TestShellJoin(t *testing.T) {
 			t.Errorf("shellJoin(%q) = %q, want %q", argv, got, want)
 		}
 	}
+}
+
+// D148 (S6-7, D6-4): Claude Code loads precinto's plugin in place from
+// <base>/marketplace, so no integrate leaves it without one. An integrate
+// stopped between the two renames of a swap (a crash, a power loss) left
+// the working tree only under its hidden name; the next integrate puts it
+// back first, even when that integrate fails too, and a later successful
+// one leaves no hidden tree behind.
+func TestIntegrateRestoresAMarketplaceAnInterruptedSwapLeftHidden(t *testing.T) {
+	e := newEnv(t)
+	fakePluginDir(t, e, "claude")
+	e.execOut["--version"] = []byte("2.1.329 (Claude Code)\n")
+	if code := e.integrate("claude-code"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	dir := e.h.Layout.Marketplace
+	hidden := filepath.Join(e.h.Layout.Base, ".marketplace.old-0123456789ab")
+	if err := os.Rename(dir, hidden); err != nil { // the crash between the renames
+		t.Fatal(err)
+	}
+	e.execErr["plugin"] = errors.New("exit status 1")
+	e.execs = nil
+	if code := e.integrate("claude-code"); code != exitError {
+		t.Fatalf("a failing plugin command: exit %d (%s)", code, e.stderr())
+	}
+	checkTree(t, dir) // the working tree is back, byte for byte
+	delete(e.execErr, "plugin")
+	e.execs = nil
+	if code := e.integrate("claude-code"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	checkTree(t, dir)
+	es, err := os.ReadDir(e.h.Layout.Base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range es {
+		if strings.HasPrefix(x.Name(), ".marketplace") {
+			t.Errorf("left %s in the base", x.Name())
+		}
+	}
+}
+
+// D148: one integrate replaces the marketplace at a time (state/locks/
+// marketplace.lock), so the hidden trees found at its start are an
+// interrupted integrate's: a half-built ".marketplace.new-*" tree is
+// removed, whether the live tree is replaced or already matches. While
+// another process holds the lock, integrate waits, then says so and
+// changes nothing.
+func TestIntegrateRemovesHalfBuiltTreesUnderItsLock(t *testing.T) {
+	e := newEnv(t)
+	fakePluginDir(t, e, "claude")
+	e.execOut["--version"] = []byte("2.1.329 (Claude Code)\n")
+	halfBuilt := func() string {
+		t.Helper()
+		p := filepath.Join(e.h.Layout.Base, ".marketplace.new-0123456789ab")
+		if err := os.MkdirAll(filepath.Join(p, "plugin"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "plugin", "partial"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if err := os.MkdirAll(e.h.Layout.Base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := halfBuilt()
+	if code := e.integrate("claude-code"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if fileExists(p) {
+		t.Fatal("a half-built tree is left next to a new marketplace")
+	}
+	checkTree(t, e.h.Layout.Marketplace)
+	p = halfBuilt()
+	e.execs = nil
+	if code := e.integrate("claude-code"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	if fileExists(p) {
+		t.Fatal("a half-built tree is left next to a marketplace that already matched")
+	}
+
+	// Another integrate holds the lock.
+	defer func(d time.Duration) { marketplaceLockWait = d }(marketplaceLockWait)
+	marketplaceLockWait = 50 * time.Millisecond
+	lk, err := fsx.WaitLock(context.Background(), e.h.Layout.LockFile("marketplace"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lk.Unlock()
+	p = halfBuilt()
+	e.execs, e.err = nil, bytes.Buffer{}
+	if code := e.integrate("claude-code"); code != exitError {
+		t.Fatalf("with the lock held: exit %d (%s)", code, e.stderr())
+	}
+	if !strings.Contains(e.stderr(), "another precinto integrate is replacing the plugin folder; try again") || !fileExists(p) {
+		t.Fatalf("with the lock held: stderr %q, half-built tree kept %v", e.stderr(), fileExists(p))
+	}
+	checkTree(t, e.h.Layout.Marketplace)
 }

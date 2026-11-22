@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,10 +42,18 @@ func cmdUnlock(a *app, args []string) int {
 	if err := a.sys.harden(); err != nil {
 		return a.fail("unlock", err)
 	}
-	cfg, err := a.config()
+	settings, err := a.config()
 	if err != nil {
 		return a.fail("unlock", err)
 	}
+	l, err := a.layout()
+	if err != nil {
+		return a.fail("unlock", err)
+	}
+	// D146: the folders the agent enforces can be named and unlocked, a
+	// folder whose removal from config.toml waits for its confirmation
+	// too, so the review of that change is reachable from the folder.
+	cfg := a.enforcedConfig(settings, l)
 	req := ipc.UnlockReq{Factor: *factor, TTL: *dur, Extend: *extend, Deadline: wireDeadline(unlockDeadline)}
 	var targets []config.Root
 	pick := false // outside every folder, on a terminal: choose (DC-35)
@@ -149,29 +158,49 @@ func cmdUnlock(a *app, args []string) int {
 	}
 	// D48: weakening config edits wait for an interactive confirmation.
 	// The review comes first, so that C2.ok quotes the policy the
-	// decision put in force (UX-14).
+	// decision put in force (UX-14). A confirmation that fails still
+	// leaves the folders unlocked: C2.ok says so (with the policy in
+	// force) before the error.
 	confirmed := false
 	var confirmErr error
-	if len(resp.Pending) > 0 && t != nil {
-		a.showPending(resp.Pending)
-		if ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false); err == nil && ok {
-			// A confirmation that fails still leaves the folders unlocked:
-			// C2.ok says so (with the policy in force) before the error.
-			if _, confirmErr = c.Policy(ctx, ipc.PolicyReq{Confirm: true}); confirmErr == nil {
-				confirmed = true
+	pending := resp.Pending
+	if t != nil && !req.Global {
+		// D145: confirming adopts config.toml. While the confirmed
+		// settings name no folder (signed by the global vault alone, which
+		// a folder unlock never checks), the folders whose vault is kept
+		// but that config.toml does not protect are named too, so that a
+		// yes never drops one unseen. unlock --global checks that MAC
+		// itself.
+		for _, ch := range droppedFolderChanges(a.unprotectedFolders(settings, l)) {
+			if !slices.Contains(pending, ch) {
+				pending = append(pending, ch)
 			}
 		}
 	}
+	if len(pending) > 0 && t != nil {
+		open := map[string]bool{}
+		if st, err := c.Status(ctx); err == nil {
+			open = unlockedVaults(st)
+		}
+		for _, id := range resp.Unlocked {
+			open[id] = true
+		}
+		confirmed, confirmErr = a.confirmChanges(ctx, c, t, pending, settings, cfg, open, true)
+	}
 	pol := a.policyInForce(cfg)
 	if confirmed {
-		pol = cfg.Policy // confirming makes config.toml the confirmed policy
+		pol = settings.Policy // confirming makes config.toml the confirmed policy
 	}
 	for _, id := range resp.Unlocked {
-		folder := "the global vault"
+		if id == vault.GlobalID {
+			// Nothing is restored after a global unlock: what belongs to
+			// no folder comes back with restore --global (D150).
+			a.line(ui.MsgUnlockOKGlobal, ui.Vars{Idle: pol.IdleSoft.D(), Until: resp.Until.In(a.sys.loc)})
+			continue
+		}
+		folder := id
 		if r, ok := cfg.RootByID(id); ok {
 			folder = a.display(r.Path)
-		} else if id != vault.GlobalID {
-			folder = id
 		}
 		a.line(ui.MsgUnlockOK, ui.Vars{
 			Folder: folder,
@@ -309,6 +338,9 @@ func cmdLock(a *app, args []string) int {
 	// (UX-09); only --root reads it, to find the folder.
 	req := ipc.LockReq{All: true, End: *end || *hard, Force: *force, LetFinish: *letFinish}
 	cfg, cfgErr := a.config()
+	if l, err := a.layout(); err == nil && cfgErr == nil {
+		cfg = a.enforcedConfig(cfg, l) // D142: a folder whose removal waits can be locked by name
+	}
 	if *rootDir != "" {
 		if cfgErr != nil {
 			code := a.fail("lock", cfgErr)

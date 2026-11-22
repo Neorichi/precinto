@@ -104,10 +104,60 @@ func (b *backend) AcquireLease(ctx context.Context, plan harness.LaunchPlan) (wr
 	if err != nil {
 		return nil, err
 	}
+	if held == nil {
+		return nil, nil
+	}
+	ll := &launchLease{Lease: held, b: b, plan: plan}
 	b.mu.Lock()
-	b.lease = held
+	b.lease = ll
 	b.mu.Unlock()
-	return held, nil
+	return ll, nil
+}
+
+// refusedSweepWait bounds how long the release of a refused launch's lease
+// asks the daemon which folders are locked before it spawns their sweep.
+const refusedSweepWait = 5 * time.Second
+
+// launchLease is the lease of one launch (D147). A launch the wrapper
+// refuses after its pre-exec restore placed units — a lock or the loss of
+// the daemon during or right after RestoreSync, a command that cannot
+// start — releases its lease without ever having started a child, so
+// SealAfterExit never runs: its Release spawns the D110 sweep of every
+// folder of the plan that is locked by then, since the lock's own sweep
+// met those units leased and left them. A launch whose child started
+// leaves that to SealAfterExit.
+type launchLease struct {
+	wrapper.Lease
+	b    *backend
+	plan harness.LaunchPlan
+
+	mu      sync.Mutex
+	started bool
+	swept   bool
+}
+
+// SetChild records that the launch started its child.
+func (l *launchLease) SetChild(child platform.ProcID) error {
+	l.mu.Lock()
+	l.started = true
+	l.mu.Unlock()
+	return l.Lease.SetChild(child)
+}
+
+// Release releases the lease; for a launch that never started its child it
+// then sweeps the locked folders it restored into (once).
+func (l *launchLease) Release() error {
+	err := l.Lease.Release()
+	l.mu.Lock()
+	sweep := !l.started && !l.swept
+	l.swept = l.swept || sweep
+	l.mu.Unlock()
+	if sweep {
+		ctx, cancel := context.WithTimeout(context.Background(), refusedSweepWait)
+		defer cancel()
+		l.b.sweepLockedRoots(ctx, l.plan)
+	}
+	return err
 }
 
 // beforePlace adds a unit to the launch lease before its plaintext is

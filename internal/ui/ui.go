@@ -258,6 +258,7 @@ const (
 	MsgUnlockPassphrase   MsgID = "C2.passphrase"      // precinto passphrase for {folder} (Ctrl-C to cancel):
 	MsgUnlockTouch        MsgID = "C2.touch"           // Touch your YubiKey...
 	MsgUnlockOK           MsgID = "C2.ok"              // precinto: {folder} unlocked. Restoring up to {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.
+	MsgUnlockOKGlobal     MsgID = "C2.okglobal"        // precinto: the global vault unlocked. Locks after {idle} idle, at {until} at the latest. Restore what belongs to no folder with: precinto restore --global
 	MsgUnlockCancelled    MsgID = "C2.cancelled"       // precinto: unlock cancelled. {folder} stays locked.
 	MsgUnlockBadSecret    MsgID = "C2.badsecret"       // precinto: that passphrase or recovery key is not right. {folder} stays locked.
 	MsgUnlockNoGUI        MsgID = "C2.nogui"           // precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.
@@ -302,7 +303,7 @@ const (
 	MsgCodexUntrusted     MsgID = "C9.codex"           // precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust "precinto". Start anyway? [Y/n]
 	MsgCodexModified      MsgID = "C9.codexmodified"   // precinto: the trust Codex keeps for precinto's hooks doesn't match the hooks precinto ships: they changed since you trusted them, or this Codex version records trust differently. If /hooks in Codex shows them as changed, Codex skips them and won't pause prompts when this folder locks: trust "precinto" again there. Your history is still sealed when Codex exits. Start anyway? [Y/n]
 	MsgCodexNoPlugin      MsgID = "C9.codexplugin"     // precinto: this folder's Codex doesn't have precinto's plugin enabled, so it won't pause prompts when the folder locks. Your history is still sealed when Codex exits. Run precinto integrate codex (if it is installed already: precinto codex sync-config --root {folder}). Start anyway? [Y/n]
-	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks), so its prompts weren't paused while the folder was locked.
+	MsgClaudeNoHooks      MsgID = "C9.claude"          // precinto: Claude's precinto hooks didn't run in this session (plugin not installed or disabled, --bare or disableAllHooks), so its prompts can't be paused when the folder locks. Check why with: precinto doctor claude-code
 	MsgBareWarning        MsgID = "C9.bare"            // precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]
 	MsgUngatedSession     MsgID = "C9.ungated"         // precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}
 	MsgCodexOutside       MsgID = "C9.codexoutside"    // precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex
@@ -319,6 +320,7 @@ const (
 	MsgPolicyTampered     MsgID = "C13.tampered"       // precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.
 	MsgPolicyConfirm      MsgID = "C13.confirm"        // Confirm these changes? [y/N]
 	MsgPolicyReview       MsgID = "C13.review"         // precinto: these config.toml changes weaken protection and wait for your confirmation ({n}):
+	MsgPolicySigner       MsgID = "C13.signer"         // precinto: confirming needs {folder} unlocked: precinto signs the settings you confirm with its key. Unlock it now? [Y/n]
 	MsgVaultTampered      MsgID = "C14.tampered"       // precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}
 	MsgVaultRepairConfirm MsgID = "C14.confirm"        // precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type "repair" to confirm:
 	MsgVaultRepaired      MsgID = "C14.repaired"       // precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.
@@ -330,7 +332,7 @@ const (
 	MsgPassphraseAgain    MsgID = "B.passphrase.again" // Type the passphrase again:
 	MsgPassphraseWeak     MsgID = "B.passphrase.weak"  // that passphrase is too weak (at least 12 characters and about 80 bits are needed). Try again.
 	MsgPassphraseDiff     MsgID = "B.passphrase.diff"  // the two passphrases differ. Try again.
-	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase:
+	MsgPassphraseGen      MsgID = "B.passphrase.gen"   // Your new precinto passphrase. Type it exactly as shown, hyphens included:
 	MsgRecoveryHeader     MsgID = "B.recovery.header"  // Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.
 	MsgTypeBack           MsgID = "B.typeback"         // Type its last {n} characters to continue:
 	MsgTypeBackWrong      MsgID = "B.typeback.wrong"   // Those are not its last {n} characters. Type them again:
@@ -359,6 +361,7 @@ var catalog = map[MsgID]string{
 	MsgUnlockPassphrase:   "precinto passphrase for {folder} (Ctrl-C to cancel):",
 	MsgUnlockTouch:        "Touch your YubiKey...",
 	MsgUnlockOK:           "precinto: {folder} unlocked. Restoring up to {n} recent sessions in the background. Locks after {idle} idle, at {until} at the latest.",
+	MsgUnlockOKGlobal:     "precinto: the global vault unlocked. Locks after {idle} idle, at {until} at the latest. Restore what belongs to no folder with: precinto restore --global",
 	MsgUnlockCancelled:    "precinto: unlock cancelled. {folder} stays locked.",
 	MsgUnlockBadSecret:    "precinto: that passphrase or recovery key is not right. {folder} stays locked.",
 	MsgUnlockNoGUI:        "precinto: the Mac password dialog can't appear inside tmux or over SSH. Run precinto unlock in a local terminal tab; every terminal unlocks at once.",
@@ -403,7 +406,7 @@ var catalog = map[MsgID]string{
 	MsgCodexUntrusted:     "precinto: Codex hasn't trusted precinto's hooks yet, so it won't pause prompts when this folder locks. Your history is still sealed when Codex exits. In Codex run /hooks and trust \"precinto\". Start anyway? [Y/n]",
 	MsgCodexModified:      "precinto: the trust Codex keeps for precinto's hooks doesn't match the hooks precinto ships: they changed since you trusted them, or this Codex version records trust differently. If /hooks in Codex shows them as changed, Codex skips them and won't pause prompts when this folder locks: trust \"precinto\" again there. Your history is still sealed when Codex exits. Start anyway? [Y/n]",
 	MsgCodexNoPlugin:      "precinto: this folder's Codex doesn't have precinto's plugin enabled, so it won't pause prompts when the folder locks. Your history is still sealed when Codex exits. Run precinto integrate codex (if it is installed already: precinto codex sync-config --root {folder}). Start anyway? [Y/n]",
-	MsgClaudeNoHooks:      "precinto: Claude's precinto hooks didn't run in this session (plugin disabled, --bare or disableAllHooks), so its prompts weren't paused while the folder was locked.",
+	MsgClaudeNoHooks:      "precinto: Claude's precinto hooks didn't run in this session (plugin not installed or disabled, --bare or disableAllHooks), so its prompts can't be paused when the folder locks. Check why with: precinto doctor claude-code",
 	MsgBareWarning:        "precinto: --bare turns off precinto's hooks. This session will be sealed when it ends but won't pause when the folder locks. Continue? [y/N]",
 	MsgUngatedSession:     "precinto: {harness} (pid {pid}) runs in {folder} without precinto's hooks, so it can't be paused when the folder locks. Quit it, or start it with: precinto run {harness}",
 	MsgCodexOutside:       "precinto: {n} Codex conversation(s) from {folder} were saved in your own Codex history, which precinto doesn't seal. Start Codex there with: precinto run codex",
@@ -420,6 +423,7 @@ var catalog = map[MsgID]string{
 	MsgPolicyTampered:     "precinto: the saved copy of the settings you confirmed was changed outside precinto. Until you confirm them again at your next unlock in a terminal, precinto applies the strictest settings.",
 	MsgPolicyConfirm:      "Confirm these changes? [y/N]",
 	MsgPolicyReview:       "precinto: these config.toml changes weaken protection and wait for your confirmation ({n}):",
+	MsgPolicySigner:       "precinto: confirming needs {folder} unlocked: precinto signs the settings you confirm with its key. Unlock it now? [Y/n]",
 	MsgVaultTampered:      "precinto: WARNING: {folder}'s vault file was changed outside precinto, so precinto stopped encrypting there and its files stay readable on disk. Check it, then run: precinto vault repair --root {folder}",
 	MsgVaultRepairConfirm: "precinto: reset {folder}'s vault to the key you just unlocked? Capsules sealed since the change will be listed as exposed. Type \"repair\" to confirm:",
 	MsgVaultRepaired:      "precinto: repaired {folder}'s vault; encryption resumes now. {n} capsule(s) sealed while it was changed may be readable by whoever changed it: see precinto status.",
@@ -431,7 +435,7 @@ var catalog = map[MsgID]string{
 	MsgPassphraseAgain:    "Type the passphrase again:",
 	MsgPassphraseWeak:     "that passphrase is too weak (at least 12 characters and about 80 bits are needed). Try again.",
 	MsgPassphraseDiff:     "the two passphrases differ. Try again.",
-	MsgPassphraseGen:      "Your new precinto passphrase:",
+	MsgPassphraseGen:      "Your new precinto passphrase. Type it exactly as shown, hyphens included:",
 	MsgRecoveryHeader:     "Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.",
 	MsgTypeBack:           "Type its last {n} characters to continue:",
 	MsgTypeBackWrong:      "Those are not its last {n} characters. Type them again:",

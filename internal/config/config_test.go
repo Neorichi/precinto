@@ -323,3 +323,33 @@ func TestMinFreeCanonicalCompatibility(t *testing.T) {
 		t.Errorf("Strictest floor %d", s.Policy.MinFreeBytes())
 	}
 }
+
+// D130: unlock prompts cannot be turned off. config.toml with a rate of 0
+// does not load (with its line, key and reason, like every D121 error),
+// and a rate below 1 never wins a strictest merge or counts as a
+// strengthening: no wait would end it, so precinto could never unlock.
+func TestPromptRateCannotTurnUnlockPromptsOff(t *testing.T) {
+	_, err := config.Load(write(t, "version = 1\n[policy]\nidle_soft = \"15m\"\nprompt_rate_per_minute = 0\n"))
+	if !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("prompt_rate_per_minute = 0 loads: %v", err)
+	}
+	want := "config.toml line 4: policy.prompt_rate_per_minute must be at least 1 (unlock prompts cannot be turned off: precinto could never unlock the folder again)"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not say %q", err, want)
+	}
+	if _, err := config.Load(write(t, "version = 1\n[policy]\nprompt_rate_per_minute = 1\n")); err != nil {
+		t.Errorf("a rate of 1 does not load: %v", err)
+	}
+	off := config.Default()
+	off.Policy.PromptRatePerMinute = 0
+	if got := config.Strictest(config.Default(), off).Policy.PromptRatePerMinute; got != 3 {
+		t.Errorf("Strictest(3, 0) = %d, want 3: a rate of 0 is invalid, never the strictest", got)
+	}
+	if got := config.Strictest(off, config.Default()).Policy.PromptRatePerMinute; got != 3 {
+		t.Errorf("Strictest(0, 3) = %d, want 3", got)
+	}
+	cs := config.Diff(config.Default(), off)
+	if len(cs) != 1 || !cs[0].Weakening {
+		t.Errorf("3 → 0 is %+v, want one weakening change", cs)
+	}
+}

@@ -466,3 +466,94 @@ func TestStandInConfigKeepsSafeFolders(t *testing.T) {
 		t.Fatalf("stand-in folders %v (%s), want %v", ids, what, want)
 	}
 }
+
+// D149 (S6-8): the settings standing in for a config.toml that does not
+// load take their folders from state/policy.pinned and vault.toml, which
+// are never validated: a folder whose path could not be saved (a control
+// character) is left out, and every path the CLI prints is shown with its
+// control and format characters escaped, so a forged path cannot repaint
+// status.
+func TestStandInDropsFolderPathsWithControls(t *testing.T) {
+	forged := "/tmp/a\r\x1b[2K  ~/work/acme  locked\n      unencrypted: none\x1b[8m"
+	var cfg config.Config
+	addStandInRoot(&cfg, "root-x", forged)
+	addStandInRoot(&cfg, "root-y", "/tmp/c1\u0085x")
+	addStandInRoot(&cfg, "root-z", "/tmp/fine")
+	if len(cfg.Roots) != 1 || cfg.Roots[0].ID != "root-z" {
+		t.Fatalf("stand-in roots %+v, want only the clean path", cfg.Roots)
+	}
+	e := newEnv(t)
+	a := e.app()
+	var out bytes.Buffer
+	a.printStatus(&out, statusV1{Folders: []statusFolder{
+		{ID: "root-x", Path: forged, State: "locked"},
+		{ID: "root-b", Path: "/tmp/b\u202eidi", State: "locked"},
+	}})
+	s := out.String()
+	if strings.ContainsAny(s, "\x1b\r\u202e") {
+		t.Fatalf("status prints a path with its controls: %q", s)
+	}
+	if !strings.Contains(s, `\x1b[2K`) || !strings.Contains(s, `\u202e`) {
+		t.Fatalf("status does not show the escaped paths: %q", s)
+	}
+	if got := a.display("/tmp/plain dir/acme"); got != "/tmp/plain dir/acme" {
+		t.Errorf("a plain path is shown as %q", got)
+	}
+}
+
+// D145 (S6-1): settings that name no folder are signed by the global vault
+// alone, which only unlock --global checks. While they are confirmed,
+// status names the folders whose vault is kept but that nothing protects
+// (every folder dropped from config.toml with such a pin, or folders the
+// user stopped protecting), with the command that checks those settings;
+// the item never fails --check. A pin that names a folder is checked by
+// that folder's unlock: nothing is shown.
+func TestStatusNamesUnprotectedFolders(t *testing.T) {
+	setup := func(t *testing.T, pinRoots bool) *env {
+		e := newEnv(t)
+		e.dialErr = ipc.ErrNoDaemon
+		beta := e.h.HomeDir + "/work/beta"
+		if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		e.vaults.metas["root-acme"] = vault.Meta{ID: "root-acme", RootPath: e.h.Root}
+		e.vaults.metas["root-beta"] = vault.Meta{ID: "root-beta", RootPath: beta}
+		c := e.loadConfig()
+		macs := map[string]string{"root-acme": strings.Repeat("ab", 32)}
+		if !pinRoots {
+			c.Roots = nil
+			macs = map[string]string{vault.GlobalID: strings.Repeat("ab", 32)}
+		}
+		e.saveConfig(c)
+		if err := os.MkdirAll(e.h.Layout.StateDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := config.SavePinned(e.h.Layout.PolicyPinned, config.Pinned{Config: c, MACs: macs}); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	e := setup(t, false)
+	if code := e.run("status", "--json", "--check"); code != exitOK {
+		t.Fatalf("status --check: exit %d (%s)", code, e.stderr())
+	}
+	var s statusV1
+	if err := json.Unmarshal(e.out.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	var got *ipc.Attention
+	for i, at := range s.Attention {
+		if at.Code == doctor.CheckUnprotectedFolders {
+			got = &s.Attention[i]
+		}
+	}
+	if got == nil || got.Count != 2 || got.Fix != "precinto unlock --global" ||
+		!strings.Contains(got.Detail, "~/work/acme, ~/work/beta: their vaults are kept, but no setting protects them") {
+		t.Fatalf("attention %+v", s.Attention)
+	}
+	e = setup(t, true)
+	e.run("status", "--json")
+	if strings.Contains(e.stdout(), doctor.CheckUnprotectedFolders) {
+		t.Fatalf("a pin that names a folder: %s", e.stdout())
+	}
+}

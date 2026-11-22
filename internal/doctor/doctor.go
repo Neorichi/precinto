@@ -58,11 +58,16 @@ const (
 	CheckResidue           = "residue" // shell-snapshots, usage-data, bash-edit-diff, hook_outputs (IM14)
 	CheckPendingPolicy     = ipc.AttnPendingPolicy
 	CheckPolicyTampered    = ipc.AttnPolicyTampered
-	CheckHistoryPending    = ipc.AttnHistoryPending
-	CheckVaultTampered     = ipc.AttnVaultTampered
-	CheckExposed           = ipc.AttnExposed
-	CheckUngatedSession    = ipc.AttnUngatedSession
-	CheckConflict          = ipc.AttnConflict
+	// CheckUnprotectedFolders: the confirmed settings name no folder, and
+	// folders whose vault is kept are protected by nothing (D145). Such
+	// settings are checked only by `precinto unlock --global`; also a
+	// status item.
+	CheckUnprotectedFolders = "unprotected-folders"
+	CheckHistoryPending     = ipc.AttnHistoryPending
+	CheckVaultTampered      = ipc.AttnVaultTampered
+	CheckExposed            = ipc.AttnExposed
+	CheckUngatedSession     = ipc.AttnUngatedSession
+	CheckConflict           = ipc.AttnConflict
 	// CheckPermissions: precinto's own directories and Claude's temp folder
 	// are not private (owner, mode, symlinks; S7, D6).
 	CheckPermissions = "permissions"

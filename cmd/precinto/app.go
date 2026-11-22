@@ -204,53 +204,70 @@ func (a *app) setConfig(c config.Config) {
 	a.eng, a.engErr, a.engDone = nil, nil, false
 }
 
-// saveConfig validates and writes config.toml and roots.list (D22), under
-// the config lock (D114).
-func (a *app) saveConfig(c config.Config) error {
-	return a.editConfig(func(paths.Layout) (config.Config, error) { return c, nil })
-}
-
 // configLockWait bounds how long a config.toml edit waits for another
 // process's edit to end (each holds the lock for a read and two small
 // atomic writes).
 var configLockWait = 10 * time.Second
 
-// editConfig holds state/locks/config.lock — an exclusive flock that every
-// edit of config.toml and roots.list takes (D114) — while next computes
-// the configuration to save, and saves it. An edit that reads config.toml
-// inside next (registerHomes) never overwrites what another process (a
-// protect, an integrate, a background seal registering a home) saved
-// between its read and its write.
-func (a *app) editConfig(next func(l paths.Layout) (config.Config, error)) error {
+// errNoEdit is returned by an editConfig edit that finds config.toml
+// already as it wants it: nothing is written.
+var errNoEdit = errors.New("config.toml needs no change")
+
+// editConfig changes config.toml as it is on disk (D114, D144): it holds
+// state/locks/config.lock — an exclusive flock that every edit of
+// config.toml and roots.list takes — while edit computes, from config.toml
+// read again under the lock (never this process's cached copy), the
+// configuration to save, and saves it with roots.list. So an edit made by
+// another process between this command's start and its save (a protect,
+// an unprotect, an integrate, a background seal registering a home) is
+// never undone: each command applies its own change, as a delta, to what
+// is on disk. An edit that returns errNoEdit saves nothing; editConfig then
+// returns the configuration on disk and errNoEdit. roots.list lists the
+// folders the agent enforces (D143): config.toml's and those of the
+// confirmed settings, so a removal waiting for its confirmation keeps its
+// folder in the shim's list.
+func (a *app) editConfig(edit func(disk config.Config) (config.Config, error)) (config.Config, error) {
 	l, err := a.layout()
 	if err != nil {
-		return err
+		return config.Config{}, err
 	}
 	if err := l.EnsureDirs(); err != nil {
-		return err
+		return config.Config{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), configLockWait)
 	defer cancel()
 	lk, err := fsx.WaitLock(ctx, l.LockFile("config"), false)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return errors.New("config.toml stayed locked by another precinto process; try again")
+		return config.Config{}, errors.New("config.toml stayed locked by another precinto process; try again")
 	}
 	if err != nil {
-		return err
+		return config.Config{}, err
 	}
 	defer lk.Unlock()
-	c, err := next(l)
+	disk, err := config.Load(l.ConfigFile)
 	if err != nil {
-		return err
+		return config.Config{}, err
+	}
+	c, err := edit(disk)
+	if errors.Is(err, errNoEdit) {
+		a.setConfig(disk)
+		return disk, errNoEdit
+	}
+	if err != nil {
+		return config.Config{}, err
 	}
 	if err := config.Save(l.ConfigFile, c); err != nil {
-		return err
+		return config.Config{}, err
 	}
-	if err := config.WriteRootsList(l.RootsList, c); err != nil {
-		return err
+	if err := config.WriteRootsList(l.RootsList, a.enforcedConfig(c, l)); err != nil {
+		// Never fail an edit over what the confirmed settings hold:
+		// config.toml's own folders at least.
+		if err := config.WriteRootsList(l.RootsList, c); err != nil {
+			return config.Config{}, err
+		}
 	}
 	a.setConfig(c)
-	return nil
+	return c, nil
 }
 
 // engine returns the orchestration facade (built once per invocation).
@@ -298,8 +315,11 @@ func (a *app) home() string {
 	return h
 }
 
-// display shortens p for messages (~/work/acme).
-func (a *app) display(p string) string { return paths.Tilde(a.home(), p) }
+// display shortens p for messages (~/work/acme). A path holding a control
+// or Unicode format character, or that is not valid UTF-8, is shown
+// Go-quoted (D149, as factor repin's values): a folder name — one a forged
+// pin or vault.toml supplies included — never repaints the terminal.
+func (a *app) display(p string) string { return shownValue(paths.Tilde(a.home(), p)) }
 
 // absPath makes p absolute against the working directory and cleans it.
 func (a *app) absPath(p string) (string, error) {

@@ -299,6 +299,13 @@ var DefaultMDExclude = []string{
 // MaxUnlockCap is the hard cap on policy.max_unlock and on any unlock TTL.
 const MaxUnlockCap = 24 * time.Hour
 
+// minPromptRate is the lowest policy.prompt_rate_per_minute Validate
+// accepts (D130): unlock prompts cannot be turned off, since no wait would
+// end a rate of 0 and precinto could never unlock a folder again. A pinned
+// policy holding less is forged (Pinned.CheckShape), and Strictest never
+// picks a value below it over a valid one.
+const minPromptRate = 1
+
 // quiet_window bounds (D63): 0 means the default; anything else below the
 // minimum is refused by Validate.
 const (
@@ -462,6 +469,12 @@ func (c Config) Validate() error {
 		if n < 0 {
 			return badKey("policy."+k, -1, "policy counters must not be negative")
 		}
+	}
+	// D130: every unlock is a prompt, so a rate of 0 would lock the
+	// folders for good (no wait ends it, and confirming a fix needs an
+	// unlock in a terminal).
+	if p.PromptRatePerMinute < minPromptRate {
+		return badKey("policy.prompt_rate_per_minute", -1, "policy.prompt_rate_per_minute must be at least %d (unlock prompts cannot be turned off: precinto could never unlock the folder again)", minPromptRate)
 	}
 	// D76: the floor keeps precinto from filling the volume; 0 keeps the
 	// 2 GiB default.
@@ -682,6 +695,41 @@ func Diff(old, new Config) []Change { return diff(old, new) }
 // by hooks with the daemon's pinned policy (D48).
 func Strictest(a, b Config) Config { return strictest(a, b) }
 
+// WithRoots returns c with every root of add whose id and path c does not
+// have yet, in order, when the root has an id and a path Validate accepts
+// (absolute, clean, not "/") without a control character (C0, DEL or C1):
+// folders that another source records — the confirmed settings of
+// state/policy.pinned, a vault's vault.toml root_path — added to settings
+// that lack them (D121, D142, D145). Those sources are never validated as
+// a configuration, so a root they hold that could not be saved is left
+// out. Nothing in the result aliases c or add.
+func WithRoots(c Config, add ...Root) Config {
+	out := c
+	out.Roots = append([]Root(nil), c.Roots...)
+	for _, r := range add {
+		p, ok := paths.Clean(r.Path)
+		if r.ID == "" || !ok || p != r.Path || p == "/" || strings.ContainsFunc(p, isControl) {
+			continue
+		}
+		known := false
+		for _, x := range out.Roots {
+			if x.ID == r.ID || x.Path == r.Path {
+				known = true
+				break
+			}
+		}
+		if !known {
+			r.MDExclude = append([]string(nil), r.MDExclude...)
+			r.Harnesses = append([]string(nil), r.Harnesses...)
+			out.Roots = append(out.Roots, r)
+		}
+	}
+	return out
+}
+
+// isControl reports a C0, DEL or C1 control character.
+func isControl(c rune) bool { return c < 0x20 || c == 0x7f || (c >= 0x80 && c <= 0x9f) }
+
 // WriteRootsList writes the absolute root paths of c, one per line, to path
 // atomically with mode 0600 (D22; read by the POSIX shim). Implemented in
 // the scaffold.
@@ -840,6 +888,13 @@ var ErrForgedPin = errors.New("config: policy.pinned has a forged shape")
 // naming a vault that exists (vaultExists: vaults/<id>/vault.toml). The
 // daemon and doctor apply the same rule; MAC values are checked by the
 // daemon with the vault keys at unlock.
+//
+// A pin whose settings name folders also carries a MAC keyed by one of
+// those folders (D145): a "global" MAC is checked only by `unlock
+// --global` and `recover`, so it alone never authenticates settings that
+// name folders (the daemon's writePin refuses to write such a pin). And
+// the pinned policy keeps unlock prompts on (prompt_rate_per_minute at
+// least 1, D130), as every configuration precinto saves does.
 func (p Pinned) CheckShape(vaultExists func(id string) bool) error {
 	if len(p.MACs) == 0 {
 		return fmt.Errorf("%w: carries no vault MAC", ErrForgedPin)
@@ -849,16 +904,25 @@ func (p Pinned) CheckShape(vaultExists func(id string) bool) error {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	rootMAC := false
 	for _, id := range ids {
 		if !hexMAC(p.MACs[id]) {
 			return fmt.Errorf("%w: has a malformed MAC", ErrForgedPin)
 		}
-		if _, ok := p.Config.RootByID(id); !ok && id != PinnedGlobalVault {
+		_, isRoot := p.Config.RootByID(id)
+		if !isRoot && id != PinnedGlobalVault {
 			return fmt.Errorf("%w: has a MAC for a vault outside its settings", ErrForgedPin)
 		}
 		if vaultExists != nil && !vaultExists(id) {
 			return fmt.Errorf("%w: has a MAC for a vault that does not exist", ErrForgedPin)
 		}
+		rootMAC = rootMAC || isRoot
+	}
+	if len(p.Config.Roots) > 0 && !rootMAC {
+		return fmt.Errorf("%w: names folders but carries no MAC of theirs", ErrForgedPin)
+	}
+	if p.Config.Policy.PromptRatePerMinute < minPromptRate {
+		return fmt.Errorf("%w: turns unlock prompts off", ErrForgedPin)
 	}
 	return nil
 }

@@ -41,6 +41,7 @@ func (d *daemon) loadPolicy() {
 	}
 	pinned, ok, perr := config.LoadPinned(d.l.PolicyPinned)
 	rootVault := d.rootVaultExists()
+	recorded := d.recordedRoots()
 	// D91: a pin that decodes but has a shape precinto never writes (no
 	// MAC, a malformed one, one for a vault outside its settings or for a
 	// vault that does not exist) is forged as well.
@@ -50,7 +51,7 @@ func (d *daemon) loadPolicy() {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.pol = policyState{cfg: cfg, cfgStamp: fileStamp(d.l.ConfigFile), pinned: pinned, hasPinned: ok && perr == nil}
+	d.pol = policyState{cfg: cfg, cfgStamp: fileStamp(d.l.ConfigFile), pinned: pinned, hasPinned: ok && perr == nil, recorded: recorded}
 	d.pol.forged = perr != nil || serr != nil
 	d.pol.tampered = d.pol.forged || (!ok && perr == nil && rootVault)
 	if serr != nil {
@@ -85,6 +86,13 @@ func (d *daemon) recomputeLocked() {
 		pol := eff.Policy
 		eff = config.Strictest(eff, config.Default())
 		eff.Policy.UnlockOnPrompt, eff.Policy.PerRootAuth = pol.UnlockOnPrompt, pol.PerRootAuth
+	}
+
+	if p.tampered {
+		// D145: the defaults hold no folder, so a folder both a forged pin
+		// and config.toml leave out would leave enforcement unseen; every
+		// folder a vault records stays protected until a confirmation.
+		eff = config.WithRoots(eff, p.recorded...)
 	}
 	p.eff = eff
 	// Pending = what adopting config.toml would weaken relative to what is
@@ -325,6 +333,12 @@ func (d *daemon) writePin(ctx context.Context, cfg config.Config) error {
 		}
 	}
 	p := config.Pinned{Version: config.PinnedVersion, ConfirmedAt: d.clock.Now().UTC(), Config: cfg, MACs: macs}
+	// D145: never a pin the shape check calls forged; settings that name
+	// folders carry a MAC of one of them ("global" alone is checked only
+	// by unlock --global).
+	if err := p.CheckShape(nil); err != nil {
+		return errNoPinVault
+	}
 	if err := config.SavePinned(d.l.PolicyPinned, p); err != nil {
 		return err
 	}
@@ -345,6 +359,9 @@ var errPending = errors.New("agent: weakening configuration changes need confirm
 // same-executable peer that unlocked on a terminal over this connection,
 // never from an agent context.
 func (d *daemon) policyOp(cs *connState, r ipc.PolicyReq) ipc.Response {
+	// D146: a command that saved config.toml right before (unprotect)
+	// reviews its own change, not the one the last tick read.
+	d.reloadPolicy(context.Background())
 	d.mu.Lock()
 	pending := pendingText(d.pol.pending)
 	d.mu.Unlock()

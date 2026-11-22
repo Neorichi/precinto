@@ -164,10 +164,33 @@ func displayableSecret(b []byte) bool {
 	return visible
 }
 
-// secretTokens returns the byte ranges of the groups to display: the
-// secret's own groups when it already contains separators (a key formatted
-// for display), otherwise runs of groupSize characters.
-func secretTokens(b []byte) [][2]int {
+// isWordsPassphrase reports a generated passphrase (vault.Diceware):
+// lowercase ASCII words joined by single hyphens, nothing else.
+func isWordsPassphrase(b []byte) bool {
+	words, n := 0, 0
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+			n++
+		case c == '-' && n > 0 && i < len(b)-1:
+			words++
+			n = 0
+		default:
+			return false
+		}
+	}
+	return n > 0 && words > 0
+}
+
+// secretTokens returns the byte ranges of the groups to display and
+// whether they are shown apart (joined by a space): the secret's own
+// groups when it already contains separators (a key formatted for
+// display); a generated passphrase's words, each with its hyphen, shown
+// together, exactly as it must be typed (D150: unlike a recovery key, a
+// passphrase is never read with its spaces removed, so the screen adds
+// none and breaks a line only after a hyphen); otherwise runs of
+// groupSize characters.
+func secretTokens(b []byte) (tokens [][2]int, apart bool) {
 	var out [][2]int
 	grouped := false
 	for _, c := range b {
@@ -175,6 +198,16 @@ func secretTokens(b []byte) [][2]int {
 			grouped = true
 			break
 		}
+	}
+	if !grouped && isWordsPassphrase(b) {
+		start := 0
+		for i, c := range b {
+			if c == '-' {
+				out = append(out, [2]int{start, i + 1})
+				start = i + 1
+			}
+		}
+		return append(out, [2]int{start, len(b)}), false
 	}
 	if grouped {
 		start := -1
@@ -190,7 +223,7 @@ func secretTokens(b []byte) [][2]int {
 		if start >= 0 {
 			out = append(out, [2]int{start, len(b)})
 		}
-		return out
+		return out, true
 	}
 	start, runes := 0, 0
 	for i := 0; i < len(b); {
@@ -204,25 +237,31 @@ func secretTokens(b []byte) [][2]int {
 	if start < len(b) {
 		out = append(out, [2]int{start, len(b)})
 	}
-	return out
+	return out, true
 }
 
 // groupedSecret lays the groups of b out in lines no wider than width,
 // indented, in a new locked buffer.
 func groupedSecret(b []byte, width int) (*memguard.LockedBuffer, error) {
-	tokens := secretTokens(b)
+	tokens, apart := secretTokens(b)
+	gap := 0
+	if apart {
+		gap = 1
+	}
 	limit := width - 1
 	layout := func(emit func([]byte)) {
 		col, onLine := 0, false
 		for _, tk := range tokens {
 			w := utf8.RuneCount(b[tk[0]:tk[1]])
-			if onLine && col+1+w > limit {
+			if onLine && col+gap+w > limit {
 				emit([]byte{'\n'})
 				col, onLine = 0, false
 			}
 			if onLine {
-				emit([]byte{' '})
-				col++
+				if apart {
+					emit([]byte{' '})
+					col++
+				}
 			} else {
 				emit([]byte(secretIndent))
 				col = len(secretIndent)
