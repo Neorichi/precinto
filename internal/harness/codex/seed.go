@@ -120,7 +120,7 @@ func prepareHome(ctx context.Context, s Seed) error {
 	// ~/.codex) says nothing about a logout: auth.json is synchronized only
 	// with one that exists, as SyncAuthBack does.
 	if isDir(user) {
-		if err := syncAuth(filepath.Join(user, authName), filepath.Join(home, authName), filepath.Join(home, authRecordName), user); err != nil {
+		if err := syncAuth(filepath.Join(user, authName), filepath.Join(home, authName), filepath.Join(home, authRecordName), user, true); err != nil {
 			return err
 		}
 	}
@@ -377,7 +377,10 @@ type authRecord struct {
 //     content both hold;
 //   - only one present and no entry: the first synchronization of the pair
 //     (or a login on that side): copied to the missing side when that is
-//     dst;
+//     dst and create allows it — always into the per-root home, into a
+//     user home only when it is the default ~/.codex (D140): precinto
+//     writes the credentials into no other CODEX_HOME, which keeps no
+//     entry then, so no later loss there can count as a logout;
 //   - only one present and an entry: the missing side held these
 //     credentials and lost them — a logout (`codex logout`, Codex's
 //     /logout). Nothing is ever copied into it, and the other side's copy
@@ -387,7 +390,7 @@ type authRecord struct {
 //
 // It never removes anything else, and an unreadable record blocks copies
 // into a missing side without removing anything.
-func syncAuth(src, dst, record, user string) error {
+func syncAuth(src, dst, record, user string, create bool) error {
 	sdata, sst, err := readAuth(src)
 	if err != nil {
 		return err
@@ -416,6 +419,9 @@ func syncAuth(src, dst, record, user string) error {
 	case !hasEntry:
 		if sdata == nil {
 			return nil // nothing to copy: dst has its own login
+		}
+		if !create {
+			return nil // D140: no copy into another CODEX_HOME that has none
 		}
 		if err := copyAuth(dst, sdata, sst); err != nil {
 			return err
@@ -637,7 +643,8 @@ func displaceAndLink(home, link, target string) error {
 
 // syncAuthBack implements SyncAuthBack: a refreshed token in the per-root
 // home goes back to the user's home (only if that home exists), and a
-// logout on either side is never undone (D100).
+// logout on either side is never undone (D100). A user home without an
+// auth.json gets one only when it is the default ~/.codex (D140).
 func syncAuthBack(ctx context.Context, s Seed) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -650,7 +657,7 @@ func syncAuthBack(ctx context.Context, s Seed) error {
 		return nil
 	}
 	home := filepath.Clean(s.RootHome)
-	return syncAuth(filepath.Join(home, authName), filepath.Join(user, authName), filepath.Join(home, authRecordName), user)
+	return syncAuth(filepath.Join(home, authName), filepath.Join(user, authName), filepath.Join(home, authRecordName), user, s.UserDefault)
 }
 
 // isDir reports whether p is a directory (not a symlink to one).
@@ -682,6 +689,19 @@ func userHome(e paths.Env) (string, error) {
 		return "", err
 	}
 	return resolve(filepath.Join(h, ".codex")), nil
+}
+
+// isDefaultHome reports whether user (a UserHome) is the default ~/.codex
+// of e: CODEX_HOME unset, or naming that directory (D140).
+func isDefaultHome(e paths.Env, user string) bool {
+	if user == "" {
+		return false
+	}
+	h, err := paths.UserHome(e)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(user) == resolve(filepath.Join(h, ".codex"))
 }
 
 // resolve returns the realpath of an existing path (Codex canonicalizes

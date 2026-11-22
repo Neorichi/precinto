@@ -192,12 +192,15 @@ func spawnWorker(args []string, env paths.Env) error {
 // workerEnvKeys are the variables a worker or an autostarted daemon gets
 // from the hook's environment (SPEC §4.6: autostart passes an allowlisted
 // environment). No PRECINTO_* override, no agent marker, no loader
-// variable and nothing the harness put there for itself.
+// variable and nothing the harness put there for itself. No dialog
+// endpoint either (DISPLAY, WAYLAND_DISPLAY, DBUS_SESSION_BUS_ADDRESS): a
+// daemon hands them to the pinentry that receives the passphrase, and a
+// hook always runs in an agent context whose environment Claude's
+// settings `env` can set (D56, D139).
 var workerEnvKeys = []string{
 	"HOME", "USER", "LOGNAME", "PATH", "SHELL", "TMPDIR", "TZ",
 	"LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
 	"XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-	"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
 }
 
 // workerEnv returns the allowlisted KEY=VALUE pairs of env.

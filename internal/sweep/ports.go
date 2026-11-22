@@ -532,7 +532,7 @@ func (registryBusy) RootBusy(ctx context.Context, e Env, root string) (bool, err
 			if !re.Valid {
 				return true, fmt.Errorf("sweep: unreadable registry entry for pid %d", re.PID)
 			}
-			if re.Busy() && (re.Cwd == "" || paths.Within(root, re.Cwd)) {
+			if re.Busy() && (re.Cwd == "" || harness.InFolder(root, re.Cwd)) {
 				return true, nil
 			}
 		}

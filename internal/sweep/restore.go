@@ -42,6 +42,8 @@ type restoreUnitPlan struct {
 	last     time.Time
 	mtimeNow bool
 	explicit bool
+	// optional: from a harness.Selector with Optional (D132).
+	optional bool
 	// mans are the decrypted manifests of entries (restoreUnit), for the
 	// per-volume free-space check.
 	mans []capsule.Manifest
@@ -402,6 +404,7 @@ func (r *run) planRestore(ctx context.Context, keys KeySource, kg *keyGuard, req
 			// `claude -c` restores beside its clamped newest one keep
 			// their own times, which Claude's --continue orders by (D102).
 			p.mtimeNow = sel.MtimeNow
+			p.optional = sel.Optional
 			plans = append(plans, p)
 		}
 	}
@@ -764,10 +767,11 @@ func checkEntries(rules harness.TargetRules, skips bool) func(capsule.Entry) err
 
 // restoreLive reports process-based liveness of a unit about to be
 // restored or merged into (I13: never merge into a live unit). Leases are
-// not evidence here: the restoring wrapper holds them itself.
-func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.UnitRef, unitID string, rules harness.TargetRules) (bool, []live.Evidence) {
+// not evidence here: the restoring wrapper holds them itself. A probe that
+// fails counts as live (fail closed); its error is returned too.
+func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.UnitRef, unitID string, rules harness.TargetRules) (bool, []live.Evidence, error) {
 	if ad == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	// unitID is the authenticated manifest's (the sid of a session): the
 	// adapter's probe looks the session up by it; "" when unknown.
@@ -775,7 +779,7 @@ func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.U
 		Home: harness.Home{Harness: ref.Harness, ID: ref.HomeID, Bases: rules.Bases}}
 	ev, err := ad.Probe(ctx, r.e.Harness, u)
 	if err != nil {
-		return true, ev
+		return true, ev, err
 	}
 	var held []live.Evidence
 	for _, e := range ev {
@@ -783,7 +787,37 @@ func (r *run) restoreLive(ctx context.Context, ad harness.Adapter, ref harness.U
 			held = append(held, e)
 		}
 	}
-	return len(held) > 0, held
+	return len(held) > 0, held, nil
+}
+
+// plaintextOnDisk reports whether a file of manifest m is at its place now
+// (lstat through the unit's bases, symlinks not followed; anything that
+// cannot be looked at counts as not there).
+func (r *run) plaintextOnDisk(m capsule.Manifest, bases map[capsule.BaseID]string) bool {
+	open := map[capsule.BaseID]dirHandle{}
+	defer closeAll(open)
+	tried := map[capsule.BaseID]bool{}
+	for _, f := range m.Files {
+		if f.Dir {
+			continue
+		}
+		d, ok := open[f.Base]
+		if !ok {
+			if tried[f.Base] || bases[f.Base] == "" {
+				continue
+			}
+			tried[f.Base] = true
+			h, err := r.p.fs.OpenBase(bases[f.Base])
+			if err != nil {
+				continue
+			}
+			d, open[f.Base] = h, h
+		}
+		if st, err := d.Lstat(f.Rel); err == nil && st.IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 // checkRestoreSpace requires free space on every volume a restore writes
@@ -877,6 +911,16 @@ func firstBase(bases map[capsule.BaseID]string) string {
 // errRolledBack marks a unit rolled back by an abort before staging.
 var errRolledBack = errors.New("sweep: restore rolled back before staging")
 
+// Results of an optional unit that is live at restore (D132): in use
+// elsewhere with its plaintext on disk (left as it is), in use elsewhere
+// while sealed (not restored: the launch goes on without it), or whose
+// liveness probe failed (not restored either; the detail names the error).
+const (
+	detailInUse         = "in use elsewhere: left as it is"
+	detailInUseSealed   = "in use elsewhere: not restored"
+	detailProbeFailedAt = "not restored: its liveness check failed: "
+)
+
 // restoreUnit restores one unit (SPEC §11.5).
 func (r *run) restoreUnit(ctx, actx context.Context, p *restoreUnitPlan, kg *keyGuard, keys KeySource, req RestoreRequest, purpose string, aborted func() bool) UnitResult {
 	res := planResult(p)
@@ -912,7 +956,21 @@ func (r *run) restoreUnit(ctx, actx context.Context, p *restoreUnitPlan, kg *key
 	if p.ref.Kind == capsule.KindMarkdown {
 		return r.restoreNote(ctx, actx, p, auth, mans[0], kg, req, aborted)
 	}
-	if isLive, ev := r.restoreLive(ctx, auth.ad, auth.ref, mans[0].UnitID, auth.rules); isLive {
+	if isLive, ev, perr := r.restoreLive(ctx, auth.ad, auth.ref, mans[0].UnitID, auth.rules); isLive {
+		if p.optional {
+			// D132: a unit restored beside the launch's target that is in
+			// use elsewhere is left as it is; the launch goes on.
+			res.Outcome, res.Evidence = OutSkipped, ev
+			switch {
+			case perr != nil:
+				res.Detail = detailProbeFailedAt + safeMsg(perr)
+			case r.plaintextOnDisk(mans[0], auth.rules.Bases):
+				res.Detail = detailInUse
+			default:
+				res.Detail = detailInUseSealed
+			}
+			return res
+		}
 		res = liveResult(res, live.Verdict{Live: true, Evidence: ev}, true, "unit live at restore")
 		return res
 	}

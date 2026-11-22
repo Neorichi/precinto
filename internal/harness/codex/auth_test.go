@@ -144,12 +144,13 @@ func TestAuthSyncKeepsAFolderLogout(t *testing.T) {
 
 // D100: without a record (a home seeded by an earlier precinto, or a first
 // login inside the folder) auth.json is copied to the side that has none,
-// as before; the record is never-touch, 0600, and never sealed.
+// as before — into a user home only when it is the default ~/.codex
+// (D140); the record is never-touch, 0600, and never sealed.
 func TestAuthSyncFirstLoginAndRecord(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
-	seed := codex.Seed{UserHome: filepath.Join(dir, "u"), RootHome: filepath.Join(dir, "h")}
+	seed := codex.Seed{UserHome: filepath.Join(dir, "u"), UserDefault: true, RootHome: filepath.Join(dir, "h")}
 	os.MkdirAll(seed.UserHome, 0o700)
 	if err := codex.PrepareHome(ctx, seed); err != nil {
 		t.Fatal(err)
@@ -205,10 +206,10 @@ func TestAuthSyncAnotherUserHomeIsNoLogout(t *testing.T) {
 }
 
 // D100 (M6): the record keeps one entry per user home. A folder session
-// with another CODEX_HOME (U2, which then gets a copy as its first login)
-// does not erase the first home's entry, so `codex logout` in the user's
-// own home (U1) is still recognised afterwards: neither SyncAuthBack nor
-// PrepareHome writes the credentials back into U1.
+// with another CODEX_HOME (U2, which gets no copy: D140) does not erase
+// the first home's entry, so `codex logout` in the user's own home (U1) is
+// still recognised afterwards: neither SyncAuthBack nor PrepareHome writes
+// the credentials back into U1.
 func TestAuthSyncKeepsALogoutAfterAnotherUserHome(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -225,8 +226,8 @@ func TestAuthSyncKeepsALogoutAfterAnotherUserHome(t *testing.T) {
 			t.Fatal(err)
 		}
 		otherAuth := filepath.Join(other.UserHome, "auth.json")
-		if got := readAuth(t, otherAuth); got != `{"tokens":"codextest-login-1"}` {
-			t.Fatalf("the other user home's first sync: %q", got)
+		if got := readAuth(t, otherAuth); got != "" {
+			t.Fatalf("the folder's credentials were written into another CODEX_HOME: %q", got)
 		}
 		if err := os.Remove(userAuth); err != nil { // codex logout in U1
 			t.Fatal(err)

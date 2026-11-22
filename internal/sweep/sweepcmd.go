@@ -38,6 +38,7 @@ func (r *run) sweep(ctx context.Context, o Options) (*Report, error) {
 		return r.finish(), err
 	}
 	defer lk.Unlock()
+	r.locked = true
 	for pass := 0; pass < 2; pass++ {
 		po := o
 		if pass == 1 {
@@ -46,14 +47,19 @@ func (r *run) sweep(ctx context.Context, o Options) (*Report, error) {
 			}
 			po = rescanOptions(o)
 		}
-		r.clear(r.l.SweepRequested)
+		if !o.DryRun {
+			// A dry run seals nothing, so it answers no request (D138).
+			r.clear(r.l.SweepRequested)
+		}
 		if err := ctx.Err(); err != nil {
 			return r.finish(), err
 		}
 		r.resetQuiet()
 		r.sweepOnce(ctx, po)
 	}
-	_ = r.touch(r.l.SweepLast)
+	if !o.DryRun {
+		_ = r.touch(r.l.SweepLast)
+	}
 	return r.finish(), nil
 }
 
@@ -91,7 +97,9 @@ func (r *run) sweepOnce(ctx context.Context, o Options) {
 	}
 	// Queued sessions are sealed whatever their folder's state, together
 	// with the sweep's own units, so that one quiet-window wait covers
-	// both (D63).
+	// both (D63); a queued job also seals a session a restore placed after
+	// the request unless its folder is open when it is sealed (D133), so a
+	// unit queued here needs no job of the sweep's own.
 	qs, jobs := r.queueJobs(ctx, o)
 	queued := map[string]bool{}
 	for _, j := range jobs {
@@ -123,7 +131,10 @@ func (r *run) sweepOnce(ctx context.Context, o Options) {
 				Files: len(u.Files), Bytes: unitBytes(u), Detail: "adopted: seal --adopt"})
 			continue
 		}
-		jobs = append(jobs, sealJob{u: u, o: o})
+		// Locked now; checked again when it is sealed (folders.go).
+		jo := o
+		jo.lockedOnly = true
+		jobs = append(jobs, sealJob{u: u, o: jo})
 	}
 	// D63: every subject of this run gets its first look before the
 	// single quiet-window wait: sessions in sealJobs' first pass, notes,
@@ -142,14 +153,22 @@ func (r *run) sweepOnce(ctx context.Context, o Options) {
 	if rotate && r.primeHistory(ctx) {
 		primed = true
 	}
+	disarm := r.armDrain(o, qs)
 	results := r.sealJobs(ctx, jobs, o.Deadline, false, primed)
-	r.finishQueue(qs, results)
-	if rotate {
+	disarm()
+	r.finishQueue(o, qs, results)
+	// The history and the notes are decided after the quiet wait: by the
+	// folders' state then (the global vault, their folder), not at the
+	// run's start (folders.go).
+	r.staleView()
+	if rotate && !r.folders(ctx, false).unlocked[globalVault] {
 		r.rotateHistory(ctx)
 	}
+	no := o
+	no.lockedOnly = true
 	for _, root := range r.e.Cfg.Roots {
 		if c, ok := notes[root.ID]; ok {
-			r.sealMarkdown(ctx, root, o, c)
+			r.sealMarkdown(ctx, root, no, c)
 		}
 	}
 }
@@ -302,11 +321,13 @@ func (r *run) drainCommand(ctx context.Context, o Options) (*Report, error) {
 		return r.finish(), err
 	}
 	defer lk.Unlock()
+	r.locked = true
 	r.recoverAll(ctx)
 	r.drainQueue(ctx, o)
-	if r.exists(r.l.SweepRequested) && ctx.Err() == nil {
+	if r.exists(r.l.SweepRequested) && ctx.Err() == nil && !o.DryRun {
 		// A sweep (or another queue worker) was turned away while this
-		// worker held the lock: run it, the queue drain included.
+		// worker held the lock: run it, the queue drain included. A dry
+		// run leaves the request to a real sweep, as sweep does (D138).
 		r.clear(r.l.SweepRequested)
 		r.resetQuiet()
 		r.sweepOnce(ctx, rescanOptions(o))
@@ -331,13 +352,17 @@ func backoff(n int, noSpace bool) time.Duration {
 
 // drainQueue seals the queued sessions whose writer is gone (SPEC §10.6),
 // all requests in one pair of decision passes around the run's single
-// quiet-window wait (D63).
+// quiet-window wait (D63); requests whose writer exits during that wait
+// are sealed in it (D131).
 func (r *run) drainQueue(ctx context.Context, o Options) {
 	qs, jobs := r.queueJobs(ctx, o)
 	if len(jobs) == 0 {
 		return
 	}
-	r.finishQueue(qs, r.sealJobs(ctx, jobs, o.Deadline, false, false))
+	disarm := r.armDrain(o, qs)
+	results := r.sealJobs(ctx, jobs, o.Deadline, false, false)
+	disarm()
+	r.finishQueue(o, qs, results)
 }
 
 // queuedReq is a queue request being drained and the jobs that seal it.
@@ -348,8 +373,15 @@ type queuedReq struct {
 
 // queueJobs turns the requests whose wait conditions hold into seal jobs,
 // reporting (and removing) the requests that need nothing more. A unit
-// named by several requests is sealed once.
+// named by several requests is sealed once; its job carries the newest
+// request time (Options.queuedAt), so a unit restored after every request
+// that names it is left in place (U6-3, D133).
 func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob) {
+	return r.queueJobsIf(ctx, o, nil)
+}
+
+// queueJobsIf is queueJobs over the requests keep accepts (nil: all).
+func (r *run) queueJobsIf(ctx context.Context, o Options, keep func(queue.Request, time.Time) bool) ([]queuedReq, []sealJob) {
 	reqs, err := queue.List(r.l.QueueDir)
 	if err != nil {
 		r.add(failed(UnitResult{}, err))
@@ -359,9 +391,18 @@ func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob)
 	var qs []queuedReq
 	var jobs []sealJob
 	at := map[string]int{} // unit key → job index
+	// A dry run reports and changes nothing, the queue included.
+	remove := func(id string) {
+		if !o.DryRun {
+			_ = queue.Remove(r.l.QueueDir, id)
+		}
+	}
 	for _, q := range reqs {
 		if ctx.Err() != nil {
 			break
+		}
+		if keep != nil && !keep(q, now) {
+			continue
 		}
 		if !q.NotBefore.IsZero() && now.Before(q.NotBefore) {
 			continue
@@ -369,7 +410,7 @@ func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob)
 		if !q.Deadline.IsZero() && now.After(q.Deadline) {
 			r.add(UnitResult{Harness: q.Harness, Unit: q.UnitKey, Outcome: OutSkipped,
 				Detail: "gave up waiting for the writer; a later sweep seals it"})
-			_ = queue.Remove(r.l.QueueDir, q.ID)
+			remove(q.ID)
 			continue
 		}
 		if !q.WaitFor.IsZero() && (r.e.Procs == nil || r.e.Procs.Alive(q.WaitFor)) {
@@ -378,7 +419,7 @@ func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob)
 		ad := adapterFor(r.e, harness.ID(q.Harness))
 		if ad == nil {
 			r.add(UnitResult{Harness: q.Harness, Unit: q.UnitKey, Outcome: OutFailed, Detail: codeFailed + ": unknown harness in a queued request"})
-			_ = queue.Remove(r.l.QueueDir, q.ID)
+			remove(q.ID)
 			continue
 		}
 		scope := harness.Scope{Adopt: true}
@@ -388,11 +429,14 @@ func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob)
 		units, err := ad.Scan(ctx, r.e.Harness, scope)
 		if err != nil {
 			r.add(failed(UnitResult{Harness: q.Harness, Unit: q.UnitKey}, err))
-			r.retry(q, false)
+			if !o.DryRun {
+				r.retry(q, false)
+			}
 			continue
 		}
 		qo := o
 		qo.Reason = q.Reason
+		qo.queuedAt, qo.queued = q.At, true
 		if !q.WaitFor.IsZero() {
 			// The writer is gone (checked above): R20 lets the seal skip
 			// the stability window when nothing else holds the unit.
@@ -409,11 +453,13 @@ func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob)
 				k = len(jobs)
 				at[u.Key] = k
 				jobs = append(jobs, sealJob{u: u, o: qo})
+			} else if cur := jobs[k].o.queuedAt; !cur.IsZero() && (q.At.IsZero() || q.At.After(cur)) {
+				jobs[k].o.queuedAt = q.At // the newest request counts; one without a time disables the check
 			}
 			qr.jobs = append(qr.jobs, k)
 		}
 		if len(qr.jobs) == 0 {
-			_ = queue.Remove(r.l.QueueDir, q.ID) // nothing left in plaintext
+			remove(q.ID) // nothing left in plaintext
 			continue
 		}
 		qs = append(qs, qr)
@@ -422,8 +468,12 @@ func (r *run) queueJobs(ctx context.Context, o Options) ([]queuedReq, []sealJob)
 }
 
 // finishQueue removes the requests whose units are done and backs off the
-// others (at least 60 s after a full disk, SPEC §17).
-func (r *run) finishQueue(qs []queuedReq, results []UnitResult) {
+// others (at least 60 s after a full disk, SPEC §17). A dry run changes
+// nothing: its "sealed" results sealed nothing (D138).
+func (r *run) finishQueue(o Options, qs []queuedReq, results []UnitResult) {
+	if o.DryRun {
+		return
+	}
 	for _, q := range qs {
 		done, noSpaceSeen := true, false
 		for _, k := range q.jobs {

@@ -3,6 +3,7 @@ package sweep
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,7 +21,10 @@ import (
 // Options.Deadline; the sweep lock stays held) and decides those units
 // again: files that kept their identity across both looks are stable. No
 // wait when the only known writer was reaped (R20: --wait-pid, wrapper
-// exit), because the engine then skips the stability evidence.
+// exit), because the engine then skips the stability evidence. A run that
+// holds the sweep lock seals, during that wait, the queued requests whose
+// writer has exited (D131, reaped.go), then waits out the rest of the
+// window.
 
 // defaultQuiet is the quiet window when the engine has none: ≤ 0 means
 // 120 s, never immediate (live.Engine.Quiet).
@@ -138,7 +142,9 @@ func jobsOf(units []harness.Unit, o Options) []sealJob {
 // the run cannot wait (deadline or cancellation first) the waitable jobs
 // are reported live with the Detail "unobserved". primed means other
 // subjects of the run (notes, history) were observed for the first time
-// and need the wait too.
+// and need the wait too. A queued request drained during the wait (D131)
+// that seals one of the jobs gives it its result; that job is not decided
+// again.
 func (r *run) sealJobs(ctx context.Context, jobs []sealJob, deadline time.Time, explicit, primed bool) []UnitResult {
 	results := r.sealPass(ctx, jobs, explicit)
 	var again []int
@@ -149,7 +155,14 @@ func (r *run) sealJobs(ctx context.Context, jobs []sealJob, deadline time.Time, 
 			again = append(again, i)
 		}
 	}
-	waited := need && r.waitQuiet(ctx, deadline)
+	waited := false
+	if need {
+		pass := newWaitPass(jobs, results)
+		r.pass = pass
+		waited = r.waitQuiet(ctx, deadline)
+		r.pass = nil
+		again = slices.DeleteFunc(again, func(i int) bool { return pass.final[i] })
+	}
 	if waited && len(again) > 0 {
 		sub := make([]sealJob, len(again))
 		for k, i := range again {
@@ -209,7 +222,7 @@ func (r *run) waitQuiet(ctx context.Context, deadline time.Time) bool {
 	if notify != nil {
 		notify(q)
 	}
-	if err := r.p.sleep(ctx, q); err != nil {
+	if err := r.sleepQuiet(ctx, q); err != nil {
 		return false
 	}
 	r.quietMu.Lock()
@@ -263,14 +276,7 @@ func (r *run) sealedNow(key string) bool {
 	r.dec.mu.Lock()
 	defer r.dec.mu.Unlock()
 	res, ok := r.dec.m[key]
-	if !ok {
-		return false
-	}
-	switch res.Outcome {
-	case OutSealed, OutUnchanged, OutRemoveFailed:
-		return true
-	}
-	return false
+	return ok && sealedOutcome(res.Outcome)
 }
 
 // primeNotes takes the first observation of every note candidate of root

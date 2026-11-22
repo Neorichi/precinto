@@ -433,7 +433,7 @@ func (r *run) placeAndFinish(ctx context.Context, st stagingHandle, plan *restor
 	pc := &placeCtx{r: r, plan: plan, rec: rec, stagings: stagings, bases: bases}
 	ref := harness.UnitRef{Harness: harness.ID(plan.Harness), Kind: plan.Kind, Key: plan.Unit, HomeID: plan.HomeID, VaultID: plan.VaultID, RootIDs: plan.RootIDs}
 	rules := harness.TargetRules{Bases: plan.Bases}
-	pc.live = func() bool { isLive, _ := r.restoreLive(ctx, ad, ref, plan.UnitID, rules); return isLive }
+	pc.live = func() bool { isLive, _, _ := r.restoreLive(ctx, ad, ref, plan.UnitID, rules); return isLive }
 	// D84: whenever a target already exists (a placement may replace,
 	// merge or union into it), liveness is decided before the first file
 	// is placed; a live unit is rolled back with nothing placed.

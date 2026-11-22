@@ -49,8 +49,10 @@ func cmdAgent(a *app, args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = a.sys.agentRun(ctx, agent.Options{
-		Layout:     l,
-		Env:        a.env,
+		Layout: l,
+		// Started from an agent's shell, the daemon gets no dialog
+		// endpoint for its pinentry (D139; CROSS from group a).
+		Env:        agent.StartEnv(a.env, a.procs(), a.sys.self().PID),
 		Exe:        exe,
 		Version:    buildVersion(),
 		Foreground: *foreground,

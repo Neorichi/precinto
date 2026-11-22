@@ -13,10 +13,15 @@ mode = "capsule"
 # Claude Code runs its daemon subcommand only when `daemon` comes first or
 # follows nothing but --dangerously-skip-permissions and
 # --allow-dangerously-skip-permissions: a --settings injected ahead of it
-# would start a session instead (D101).
+# would start a session instead (D101). Remote Control (`remote-control`,
+# alias `rc`; `remote`, `sync` and `bridge` take the same path) runs only
+# from the first position and refuses a --settings ahead of it; Claude has
+# no top-level `config` command (`claude config` is a prompt), and
+# `plugins` and `upgrade` are aliases of `plugin` and `update` (D135).
 passthrough = [
-  ["update"], ["doctor"], ["mcp"], ["plugin"], ["config"], ["install"],
+  ["update"], ["upgrade"], ["doctor"], ["mcp"], ["plugin"], ["plugins"], ["install"],
   ["setup-token"], ["--version"], ["-v"], ["--help"], ["-h"],
+  ["remote-control"], ["rc"], ["remote"], ["sync"], ["bridge"],
   ["daemon"],
   ["--dangerously-skip-permissions", "daemon"],
   ["--allow-dangerously-skip-permissions", "daemon"],

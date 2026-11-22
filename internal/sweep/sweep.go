@@ -92,6 +92,33 @@ type Options struct {
 	// from a terminal can say why it pauses (D113). It never runs for a
 	// run that does not wait.
 	OnQuietWait func(d time.Duration)
+
+	// queuedAt is set on the jobs of queued requests: the newest request
+	// time of the unit. A unit a restore placed after it (a restore's
+	// receipt, not a kept one) is left in place when its folder is
+	// unlocked or no longer protected, because the session the request
+	// names ended before that restore (U6-3, D133); in a locked folder it
+	// is sealed, as a sweep would.
+	queuedAt time.Time
+	// lockedOnly is set on a sweep's own jobs (its units and notes): they
+	// are sealed only while their folders are locked and still protected,
+	// checked again under the unit lock (R4, folders.go).
+	lockedOnly bool
+	// queued is set on the jobs of queued requests: nothing is sealed for
+	// them in a folder no longer protected (folders.go).
+	queued bool
+}
+
+// detailRestoredSince is the result of a queued seal whose unit a later
+// restore placed in a folder that is open now (D133): the request is
+// done, the plaintext stays.
+const detailRestoredSince = "restored after the request: left in place"
+
+// restoredSince reports whether a queued job's unit was restored after the
+// request it serves (D133): its receipt is a restore's (not kept by a
+// seal) and newer than the request.
+func restoredSince(o Options, rd receiptDisk, hasRc bool) bool {
+	return !o.queuedAt.IsZero() && hasRc && !rd.Kept && rd.RestoredAt.After(o.queuedAt)
 }
 
 // Outcome of one unit.
