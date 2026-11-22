@@ -10,17 +10,24 @@ import (
 	"testing"
 
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/testkit"
+	"github.com/precinto/precinto/internal/ui"
 )
 
 // protectedWithNote is a fake home with the fixture folder protected (md =
-// all, a genuine pin holding it), its agent stopped, and an unencrypted
-// note in the folder, which is locked.
+// all, a genuine pin holding it, min_free lowered to the main flow's
+// floor and confirmed), its agent stopped and every process it started
+// ended, and an unencrypted note in the folder, which is locked.
 func protectedWithNote(t *testing.T) (exe string, h *testkit.Home, note string) {
 	t.Helper()
 	exe = needBinary(t)
 	h = newHome(t)
 	h.Cfg.Roots[0].MD = config.MDAll
+	h.Cfg.Policy.MinFree = flowFloor // D76: like the main flow, the seals work on a nearly full disk too
+	if err := fsx.CheckSpace(h.Dir, 1<<20, fsx.Floor{MinBytes: int64(flowFloor)}); err != nil {
+		t.Fatalf("this volume cannot take a seal while keeping policy.min_free (%d bytes) free; run with GOTMPDIR or TMPDIR on a volume with more free space: %v", int64(flowFloor), err)
+	}
 	fastPolicy(t, h)
 	initVaults(t, exe, h)
 	stop := startDaemon(t, exe, childEnv(h, nil).Environ(), h.Layout.Socket)
@@ -30,6 +37,18 @@ func protectedWithNote(t *testing.T) (exe string, h *testkit.Home, note string) 
 	if code := p.wait(); code != 0 {
 		t.Fatalf("protect exit %d: %q", code, p.output())
 	}
+	// D48: the first pin kept the 2 GiB default; an unlock at a terminal
+	// confirms the lowered floor (the folder is unlocked already: no
+	// prompt).
+	p = startPTY(t, exe, h, h.Root, nil, "unlock", "--root", h.Root)
+	p.expect(ui.Format(ui.MsgPolicyReview, ui.Vars{N: 1}))
+	p.expect("policy.min_free")
+	p.send("y\r")
+	if code := p.wait(); code != 0 {
+		t.Fatalf("unlock confirming the policy: exit %d: %q", code, p.output())
+	}
+	// stop waits for the agent's workers too (its start-up sweep): the
+	// note below is then sealed by the process each test runs, no other.
 	stop()
 	pin, ok, err := config.LoadPinned(h.Layout.PolicyPinned)
 	if err != nil || !ok {
@@ -37,6 +56,9 @@ func protectedWithNote(t *testing.T) (exe string, h *testkit.Home, note string) 
 	}
 	if _, in := pin.Config.RootByID(h.Cfg.Roots[0].ID); !in {
 		t.Fatal("the pin does not hold the folder")
+	}
+	if pin.Config.Policy.MinFree != flowFloor {
+		t.Fatalf("the pin keeps min_free %v, want the confirmed %v", pin.Config.Policy.MinFree, flowFloor)
 	}
 	note = filepath.Join(h.Root, "notes.md")
 	if err := os.WriteFile(note, []byte("# a note "+testkit.Marker(t)+"\n"), 0o600); err != nil {

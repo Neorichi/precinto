@@ -339,7 +339,9 @@ func (e *env) sweepFindings() []Finding {
 
 // lockFindings reports a sweep lock held for too long: every background
 // seal waits for it (SPEC §10.2). Holders come from the process table's
-// open-file view (lsof); the lock itself is never probed.
+// open-file view (lsof); the lock itself is never probed. On Linux that
+// view leaves out a hardened precinto, whose fd/ is refused (D65), so a
+// sweep holding the lock is not seen and nothing is reported.
 func (e *env) lockFindings() []Finding {
 	if e.o.Procs == nil {
 		return nil

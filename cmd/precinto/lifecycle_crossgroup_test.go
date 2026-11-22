@@ -21,6 +21,7 @@ import (
 	"github.com/precinto/precinto/internal/agent/agenttest"
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/harness/claude/claudetest"
 	"github.com/precinto/precinto/internal/ledger"
@@ -73,6 +74,18 @@ func gone(p string) bool {
 	return os.IsNotExist(err)
 }
 
+// needSealRoom fails the test at once when the volume of h (below
+// GOTMPDIR, or TMPDIR) cannot take a seal while keeping the home's
+// free-space floor free (policy.min_free, 2 GiB by default, D76): the
+// production engine refuses such a seal as specified, and the test would
+// fail as "disk full" instead of naming its environment.
+func needSealRoom(t *testing.T, h *testkit.Home) {
+	t.Helper()
+	if err := fsx.CheckSpace(h.Dir, 1<<20, floorPolicy(h.Cfg, h.Layout).Floor()); err != nil {
+		t.Fatalf("the test's temporary directory cannot take a seal while keeping policy.min_free free; run with GOTMPDIR or TMPDIR on a volume with more free space: %v", err)
+	}
+}
+
 // UX-01, D106: `precinto seal --adopt` seals a session that only its
 // transcript ties to the folder (from before protection, or without
 // hooks): the dry run lists it, the seal removes the plaintext and logs a
@@ -80,6 +93,7 @@ func gone(p string) bool {
 // both said "nothing to seal".
 func TestCrossgroupSealAdoptSealsAnAdoptedSession(t *testing.T) {
 	h := realHome(t)
+	needSealRoom(t, h)
 	vaulttest.New(t, h.Layout.Base, lifecycleRoot)
 	l := claudetest.New(t, h.Dir)
 	paths := l.WriteSession(t, claudetest.Session{SID: "00000000-0000-4000-8000-0000000000a1", Cwd: h.Root,
@@ -120,6 +134,7 @@ func TestCrossgroupSealAdoptSealsAnAdoptedSession(t *testing.T) {
 // refused it with exit 5, the tamper class).
 func TestCrossgroupSealRegistersTheHomeItSealsFrom(t *testing.T) {
 	h := realHome(t)
+	needSealRoom(t, h)
 	cc := h.Cfg.Harness["claude-code"]
 	cc.Homes = nil
 	h.Cfg.Harness["claude-code"] = cc
@@ -179,6 +194,7 @@ func TestCrossgroupSealRegistersTheHomeItSealsFrom(t *testing.T) {
 // the internal error chain.
 func TestCrossgroupRestoreFromAnUnregisteredHomeExitsOne(t *testing.T) {
 	h := realHome(t)
+	needSealRoom(t, h)
 	fx := vaulttest.New(t, h.Layout.Base, lifecycleRoot)
 	const sid = "00000000-0000-4000-8000-0000000000a3"
 	l := claudetest.New(t, h.Dir)
@@ -270,6 +286,7 @@ exit 3
 // now".
 func TestCrossgroupHooklessWrappedSessionIsSealed(t *testing.T) {
 	h := realHome(t)
+	needSealRoom(t, h)
 	fx := vaulttest.New(t, h.Layout.Base, lifecycleRoot)
 	ag := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
 	defer ag.Stop()
@@ -343,6 +360,7 @@ func TestCrossgroupHooklessClearedSessionIsSealed(t *testing.T) {
 	watchEvery = 50 * time.Millisecond
 	t.Cleanup(func() { watchEvery = old })
 	h := realHome(t)
+	needSealRoom(t, h)
 	fx := vaulttest.New(t, h.Layout.Base, lifecycleRoot)
 	ag := agenttest.Start(t, h.Layout, h.Clock, h.Procs)
 	defer ag.Stop()
@@ -387,6 +405,7 @@ func TestCrossgroupHooklessClearedSessionIsSealed(t *testing.T) {
 // plaintext.
 func TestCrossgroupSealAfterExitTakesEverySessionOfTheChild(t *testing.T) {
 	h := realHome(t)
+	needSealRoom(t, h)
 	vaulttest.New(t, h.Layout.Base, lifecycleRoot)
 	exe := fakeClaude(t, h.Dir)
 	a, e, _ := lifecycleApp(t, h)

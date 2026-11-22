@@ -105,10 +105,11 @@ func awaitGone(bin string, d time.Duration) []platform.ProcInfo {
 
 // signalAll sends sig to every live process that runs bin (ProcID-checked:
 // never a process that took a pid since the scan). They run a binary the
-// test built: the only processes testkit ever signals.
+// test built: the only processes testkit ever signals. On Linux a hardened
+// one is known by its argv[0] and command name (exeOf, D154).
 func signalAll(bin string, sig syscall.Signal) {
 	for _, p := range leftovers(bin, nil) {
-		if runsOneOf(p.Exe, []string{bin}) {
+		if runsBinary(p, []string{bin}) {
 			_ = platform.Signal(p.ID, sig)
 		}
 	}
@@ -137,7 +138,7 @@ func leftovers(bin string, dirs []string) []platform.ProcInfo {
 		if p.ID.PID == self || p.State == platform.StateZombie {
 			continue
 		}
-		if runsOneOf(p.Exe, []string{bin}) || namesOneOf(p.Argv, roots) {
+		if runsBinary(p, []string{bin}) || namesOneOf(p.Argv, roots) {
 			out = append(out, p)
 		}
 	}
@@ -164,7 +165,7 @@ func namesOneOf(argv, roots []string) bool {
 func describe(ps []platform.ProcInfo) []string {
 	out := make([]string, 0, len(ps))
 	for _, p := range ps {
-		name := filepath.Base(p.Exe)
+		name := filepath.Base(exeOf(p))
 		if name == "." || name == "" {
 			name = p.Comm
 		}

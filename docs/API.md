@@ -556,7 +556,12 @@ func OpenStaging(path string) (*Staging, error)
 func (s *Staging) Remove() error
 
 // Stat identifies one version of a file. ctime cannot be set from user space,
-// so Unchanged means "not written or replaced since the snapshot".
+// so Unchanged means "not written or replaced since the snapshot", as finely
+// as the file system's timestamps tell: on Linux without multigrain
+// timestamps (before 6.13, or a file system without them) a write in the
+// clock tick of the file's last change keeps mtime and ctime, so a
+// same-size rewrite in that tick shows only in the bytes (a seal's second
+// pass re-hashes them, D13).
 type Stat struct {
 	Dev     uint64
 	Ino     uint64
@@ -6369,6 +6374,13 @@ var Epoch = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
 // package's TestMain removes it with RemoveBinaries.
 func BuildBinary(t testing.TB, tags ...string) string
 
+// ExeOf returns the executable p runs: p.Exe, or, when the kernel hides it
+// (on Linux a hardened precinto is not dumpable, so its /proc/<pid>/exe is
+// refused, D65), its absolute argv[0] when the command name agrees,
+// resolved like the kernel resolves it. That is best effort (D154); ""
+// when neither is known.
+func ExeOf(p platform.ProcInfo) string
+
 // Golden compares got with testdata/<name> (rewritten with -update).
 func Golden(t testing.TB, name string, got []byte)
 
@@ -6399,10 +6411,12 @@ func RemoveBinaries()
 // holds a file open below dirs: the daemons and binaries a test started,
 // and the workers a daemon spawned (their log descriptor stays open while
 // they live), write into the fake home until they exit, so a fake home is
-// removed only after them (TESTPLAN §1.8). A process still writing then
-// is a leak: Settle reports it with t.Errorf and kills it when it runs one
-// of exes (binaries the test built, the only processes Settle ever
-// signals). Call it after stopping a daemon the test started.
+// removed only after them (TESTPLAN §1.8). A process that runs one of exes
+// while its open files cannot be read (on Linux a hardened precinto, D65)
+// counts as writing there until it ends (D154). A process still writing
+// then is a leak: Settle reports it with t.Errorf and kills it when it
+// runs one of exes (binaries the test built, the only processes Settle
+// ever signals). Call it after stopping a daemon the test started.
 func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string)
 
 // ShortTempDir returns a fresh directory with a short absolute path (macOS
@@ -6421,9 +6435,11 @@ func ShortTempDir(t testing.TB) string
 // gets a moment to end by itself, then SIGTERM; one that needs SIGKILL
 // fails the test, and so does any process still running bin or naming a
 // path below dirs in its arguments afterwards. Only processes running bin
-// (a binary the test built) are ever signalled. Register it with t.Cleanup
-// right after creating the fake home, so it runs after the cleanups of the
-// sessions the test started and before the home is removed.
+// (a binary the test built) are ever signalled; on Linux a hardened one is
+// known by its argv[0] and command name (ExeOf, D154). Register it with
+// t.Cleanup right after creating the fake home, so it runs after the
+// cleanups of the sessions the test started and before the home is
+// removed.
 func StopInstallation(t testing.TB, bin string, env []string, dirs ...string)
 
 // Home is a throwaway environment.

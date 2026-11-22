@@ -36,7 +36,7 @@ Verified on Claude Code 2.1.329. precinto needs 2.1.295 or later, the first vers
 | Name | Location |
 |---|---|
 | config directory (`$CC`) | `CLAUDE_CONFIG_DIR`, or `~/.claude` |
-| temp directory (`$TMP`) | the base of the session's scratchpad directory, else `CLAUDE_CODE_TMPDIR`, else `/private/tmp/claude-<uid>` (macOS) or `/tmp/claude-<uid>` (Linux). It must belong to you with mode 0700, or precinto refuses to restore there and `doctor` warns. |
+| temp directory (`$TMP`) | the base of the session's scratchpad directory, else `CLAUDE_CODE_TMPDIR`, else `/private/tmp/claude-<uid>` (macOS) or `/tmp/claude-<uid>` (Linux). It must belong to you with mode 0700, or precinto refuses to restore there and `doctor` warns. A restore leaves `policy.min_free` free on every volume it writes, this one included: where `/tmp` is a small RAM-backed tmpfs (Fedora, Arch and Debian 13 size it at half the memory), a session with files here is restored only once `min_free` is lowered (at least 512 MiB, confirmed at a terminal) or `CLAUDE_CODE_TMPDIR` names a directory on a disk. |
 | cache directory | `~/Library/Caches/claude-cli-nodejs` (macOS), `${XDG_CACHE_HOME:-~/.cache}/claude-cli-nodejs` (Linux) |
 
 precinto learns these locations in Claude Code's own environment, from the hooks and the wrapper, and adds every new one it sees to its list of homes; a second config directory (another `CLAUDE_CONFIG_DIR`) is covered as soon as it is seen. Below, `<P>` is Claude Code's project directory name for a folder and `<sid>` is a session id.

@@ -34,7 +34,12 @@ var (
 )
 
 // Stat identifies one version of a file. ctime cannot be set from user space,
-// so Unchanged means "not written or replaced since the snapshot".
+// so Unchanged means "not written or replaced since the snapshot", as finely
+// as the file system's timestamps tell: on Linux without multigrain
+// timestamps (before 6.13, or a file system without them) a write in the
+// clock tick of the file's last change keeps mtime and ctime, so a
+// same-size rewrite in that tick shows only in the bytes (a seal's second
+// pass re-hashes them, D13).
 type Stat struct {
 	Dev     uint64
 	Ino     uint64

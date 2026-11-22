@@ -32,6 +32,7 @@ func TestCrossgroupBrokenConfigLeavesARetiredFolderAlone(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := realHome(t)
+			needSealRoom(t, h) // else "nothing was sealed" would hold vacuously
 			fx := vaulttest.New(t, h.Layout.Base, lifecycleRoot)
 			old := filepath.Join(h.HomeDir, "work", "old")
 			if err := os.MkdirAll(old, 0o700); err != nil {

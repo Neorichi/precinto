@@ -8,7 +8,8 @@
 //	K   push kitty keyboard flags     H   hide the cursor
 //	Q   send terminal queries         g   spawn a grandchild (same group)
 //	G   spawn a grandchild in a new process group of the same session
-//	z   stop itself with SIGSTOP      q   exit 0      x   exit 7
+//	z   stop itself with SIGSTOP (RESUMED once continued)
+//	q   exit 0      x   exit 7
 //	Ctrl-C twice                      exit 0 (Codex-style quit keys)
 //
 // "tuichild sleep" just sleeps (the grandchild and sibling processes).
@@ -46,6 +47,12 @@ import (
 const exitLifeline = 70
 
 var mu sync.Mutex
+
+// continued is signalled on each SIGCONT. On Linux kill(2) of the own
+// process can return before the stop takes effect, when another thread of
+// the process takes the signal (Go programs have several), so 'z' waits
+// for the SIGCONT before it says RESUMED.
+var continued = make(chan struct{}, 1)
 
 // keylog is the -keylog file, nil without the flag.
 var keylog *os.File
@@ -203,6 +210,10 @@ func main() {
 				os.Exit(130)
 			case syscall.SIGCONT:
 				say("CONT")
+				select {
+				case continued <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}()
@@ -257,8 +268,16 @@ func main() {
 				case 'g', 'G':
 					spawnGrandchild(o, b == 'G')
 				case 'z':
+					select { // a SIGCONT from before this stop
+					case <-continued:
+					default:
+					}
 					say("STOPPING")
 					_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+					select {
+					case <-continued:
+					case <-time.After(o.maxLife):
+					}
 					say("RESUMED")
 				case 'q':
 					say("BYE")

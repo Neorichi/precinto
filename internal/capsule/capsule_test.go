@@ -215,6 +215,19 @@ func TestSealInputValidation(t *testing.T) {
 // in-place rewrite, an inode swap and a deletion all abort with ErrChanged,
 // leave no temporary and keep the plaintext.
 func TestSealChangedBetweenPasses(t *testing.T) {
+	rewriteAt := func(t *testing.T, path string, b []byte) {
+		t.Helper()
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteAt(b, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for name, change := range map[string]func(t *testing.T, path string){
 		"append": func(t *testing.T, path string) {
 			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
@@ -234,11 +247,34 @@ func TestSealChangedBetweenPasses(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
-		"rewrite in place": func(t *testing.T, path string) {
-			b, _ := os.ReadFile(path)
-			f, _ := os.OpenFile(path, os.O_WRONLY, 0)
-			f.WriteAt(bytes.ToUpper(b[:1]), 0)
-			f.Close()
+		"rewrite in place, same size": func(t *testing.T, path string) {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nb := bytes.ToUpper(b)
+			if bytes.Equal(nb, b) {
+				t.Fatalf("the rewrite of %q changes no byte", b)
+			}
+			rewriteAt(t, path, nb)
+		},
+		// The same bytes written back under a new mtime: only the identity
+		// (dev, inode, size, mtime, ctime) shows the write. On Linux before
+		// multigrain timestamps (6.13) a write in the clock tick of the last
+		// change keeps both times, so the mtime is moved explicitly.
+		"same bytes, new mtime": func(t *testing.T, path string) {
+			fi, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rewriteAt(t, path, b)
+			if err := os.Chtimes(path, fi.ModTime(), fi.ModTime().Add(-time.Second)); err != nil {
+				t.Fatal(err)
+			}
 		},
 		"deleted": func(t *testing.T, path string) {
 			if err := os.Remove(path); err != nil {

@@ -149,11 +149,14 @@ func waitOwnProcesses(d time.Duration) []string {
 		}
 		var out []platform.ProcInfo
 		for _, p := range all {
-			if p.ID.PID == self || p.State == platform.StateZombie || p.Exe == "" {
+			// On Linux a hardened precinto hides its executable (D65):
+			// ExeOf names it from argv[0] and the command name (D154).
+			exe := testkit.ExeOf(p)
+			if p.ID.PID == self || p.State == platform.StateZombie || exe == "" {
 				continue
 			}
 			for _, dir := range dirs {
-				if strings.HasPrefix(p.Exe, dir) {
+				if strings.HasPrefix(exe, dir) {
 					out = append(out, p)
 					break
 				}
@@ -173,7 +176,7 @@ func waitOwnProcesses(d time.Duration) []string {
 				if procs.Alive(p.ID) {
 					_ = syscall.Kill(p.ID.PID, syscall.SIGKILL) // runs a binary these tests built
 				}
-				names = append(names, fmt.Sprintf("%d %s", p.ID.PID, filepath.Base(p.Exe)))
+				names = append(names, fmt.Sprintf("%d %s", p.ID.PID, filepath.Base(testkit.ExeOf(p))))
 			}
 			return names
 		}

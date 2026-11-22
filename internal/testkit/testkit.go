@@ -6,6 +6,7 @@ import (
 
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/platform/fakeplatform"
 )
 
@@ -60,10 +61,12 @@ func ShortTempDir(t testing.TB) string {
 // holds a file open below dirs: the daemons and binaries a test started,
 // and the workers a daemon spawned (their log descriptor stays open while
 // they live), write into the fake home until they exit, so a fake home is
-// removed only after them (TESTPLAN §1.8). A process still writing then
-// is a leak: Settle reports it with t.Errorf and kills it when it runs one
-// of exes (binaries the test built, the only processes Settle ever
-// signals). Call it after stopping a daemon the test started.
+// removed only after them (TESTPLAN §1.8). A process that runs one of exes
+// while its open files cannot be read (on Linux a hardened precinto, D65)
+// counts as writing there until it ends (D154). A process still writing
+// then is a leak: Settle reports it with t.Errorf and kills it when it
+// runs one of exes (binaries the test built, the only processes Settle
+// ever signals). Call it after stopping a daemon the test started.
 func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string) {
 	t.Helper()
 	settle(t, timeout, exes, dirs)
@@ -79,9 +82,11 @@ func Settle(t testing.TB, timeout time.Duration, exes []string, dirs ...string) 
 // gets a moment to end by itself, then SIGTERM; one that needs SIGKILL
 // fails the test, and so does any process still running bin or naming a
 // path below dirs in its arguments afterwards. Only processes running bin
-// (a binary the test built) are ever signalled. Register it with t.Cleanup
-// right after creating the fake home, so it runs after the cleanups of the
-// sessions the test started and before the home is removed.
+// (a binary the test built) are ever signalled; on Linux a hardened one is
+// known by its argv[0] and command name (ExeOf, D154). Register it with
+// t.Cleanup right after creating the fake home, so it runs after the
+// cleanups of the sessions the test started and before the home is
+// removed.
 func StopInstallation(t testing.TB, bin string, env []string, dirs ...string) {
 	t.Helper()
 	stopInstallation(t, bin, env, dirs)
@@ -91,6 +96,13 @@ func StopInstallation(t testing.TB, bin string, env []string, dirs ...string) {
 // this one, that run bin or name a path below dirs in their arguments: what
 // a test's installation left running.
 func Leftovers(bin string, dirs ...string) []string { return describe(leftovers(bin, dirs)) }
+
+// ExeOf returns the executable p runs: p.Exe, or, when the kernel hides it
+// (on Linux a hardened precinto is not dumpable, so its /proc/<pid>/exe is
+// refused, D65), its absolute argv[0] when the command name agrees,
+// resolved like the kernel resolves it. That is best effort (D154); ""
+// when neither is known.
+func ExeOf(p platform.ProcInfo) string { return exeOf(p) }
 
 // Epoch is the fixed wall time frozen fake clocks start at. Fixture times
 // derive from the clock of the code under test (Epoch for h.Clock), never
