@@ -66,16 +66,33 @@ func (d *daemon) recomputeLocked() {
 	if p.hasPinned {
 		eff = config.Strictest(p.cfg, p.pinned.Config)
 	}
-	if p.tampered || !p.hasPinned {
+	confirmed := eff
+	switch {
+	case p.tampered || !p.hasPinned:
 		// Without a trusted pin the defaults are the floor: first run
 		// (D68) and policy-tampered (D55) alike.
 		eff = config.Strictest(eff, config.Default())
+		confirmed = eff
+	case !p.verified:
+		// D137: a pin no vault key has authenticated in this daemon's
+		// lifetime can only strengthen: the defaults join the merge until
+		// a listed folder's MAC verifies it at that folder's unlock, or
+		// the user confirms the settings at a terminal unlock (the review
+		// lists them, unverifiedPending). unlock_on_prompt and
+		// per_root_auth keep their value: they decide how that unlock
+		// happens (a hook-raised one, how many folders one terminal unlock
+		// opens), and each folder still needs the user's presence.
+		pol := eff.Policy
+		eff = config.Strictest(eff, config.Default())
+		eff.Policy.UnlockOnPrompt, eff.Policy.PerRootAuth = pol.UnlockOnPrompt, pol.PerRootAuth
 	}
 	p.eff = eff
 	// Pending = what adopting config.toml would weaken relative to what is
-	// enforced now (the pin, and the defaults while tampered).
+	// confirmed (the pin, and the defaults while tampered or unpinned).
+	// What an unverified pin waits for is not a pending edit: a terminal
+	// unlock reviews it (D91, D137).
 	p.pending = nil
-	for _, c := range config.Diff(eff, p.cfg) {
+	for _, c := range config.Diff(confirmed, p.cfg) {
 		if c.Weakening {
 			p.pending = append(p.pending, c)
 		}
@@ -172,8 +189,14 @@ func (d *daemon) verifyPinnedMAC(ctx context.Context, id string) {
 	got, err := d.deps.keyring.MAC(id, vault.InfoPolicy, data)
 	if err == nil && want != "" && got == want {
 		d.mu.Lock()
+		before, already := d.pol.eff, d.pol.verified
 		d.pol.verified = true // D91: authenticated by a vault key
+		d.recomputeLocked()   // D137: the pinned settings apply without the defaults now
+		eff := d.pol.eff
 		d.mu.Unlock()
+		if !already {
+			d.applyEffective(ctx, before, eff)
+		}
 		return
 	}
 	d.mu.Lock()

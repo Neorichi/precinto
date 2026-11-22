@@ -31,7 +31,11 @@ func GroupOf(rel string) string { return groupOf(rel) }
 // Seed describes how a per-root home is created and refreshed (D31, D44).
 type Seed struct {
 	UserHome string // ~/.codex (or the user's CODEX_HOME outside roots)
-	RootHome string // <base>/homes/codex/<root-id>
+	// UserDefault reports that UserHome is the default ~/.codex (CODEX_HOME
+	// unset or naming it): only there does SyncAuthBack create an auth.json
+	// the user home lacks (D140).
+	UserDefault bool
+	RootHome    string // <base>/homes/codex/<root-id>
 	// ForceConfig re-copies config.toml even when the home already has one
 	// (`precinto codex sync-config`); hooks trust entries of the per-root
 	// home are kept.
@@ -52,7 +56,8 @@ func PrepareHome(ctx context.Context, s Seed) error { return prepareHome(ctx, s)
 
 // SyncAuthBack copies RootHome/auth.json to UserHome/auth.json atomically
 // when it is newer and differs (token refresh), after the child exited; a
-// logout on either side is never undone (D100).
+// logout on either side is never undone (D100). Into a user home that has
+// no auth.json it copies only when UserDefault (D140).
 func SyncAuthBack(ctx context.Context, s Seed) error { return syncAuthBack(ctx, s) }
 
 // LaunchEnv returns the environment additions for a managed launch:

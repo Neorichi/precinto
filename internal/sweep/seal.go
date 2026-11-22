@@ -61,8 +61,11 @@ func (r *run) sealAll(ctx context.Context, units []harness.Unit, o Options, expl
 // Env.Parallel (default 2) seals at once, a unit above 1 GiB alone (R19).
 // Only this goroutine takes tokens, so a big unit waits for the running
 // seals to return theirs; every wait ends with ctx, and the jobs not
-// started then are reported skipped.
+// started then are reported skipped. The pass takes the folders' state
+// again (folders.go): a pass after the quiet wait judges by the state
+// after it.
 func (r *run) sealPass(ctx context.Context, jobs []sealJob, explicit bool) []UnitResult {
+	r.staleView()
 	par := r.e.Parallel
 	if par <= 0 {
 		par = 2
@@ -398,6 +401,10 @@ func (r *run) sealLayeredUnit(ctx context.Context, u harness.Unit, o Options, ex
 	rd, hasRc, err := r.loadReceipt(u.Key)
 	if err != nil {
 		return failed(res, err)
+	}
+	if leave, why := r.leaveInPlace(ctx, u, o, rd, hasRc); leave {
+		res.Outcome, res.Detail = OutSkipped, why
+		return res
 	}
 	var rcp *receiptDisk
 	if hasRc {

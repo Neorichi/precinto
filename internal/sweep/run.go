@@ -52,6 +52,21 @@ type run struct {
 	// onQuiet is Options.OnQuietWait of the operation (D113).
 	onQuiet func(time.Duration)
 
+	// locked: the run holds state/locks/sweep.lock (a sweep or a queue
+	// drain), so it drains the queue (SPEC §10.6), during its quiet wait
+	// too (D131).
+	locked bool
+	// drain, set while a pass of a locked run decides its jobs, lets the
+	// pass's quiet wait seal the queued requests whose writer is gone
+	// (D131); pass is the job list that wait belongs to.
+	drain *midDrain
+	pass  *waitPass
+
+	// view is the run's view of the folders' state (folders.go), taken
+	// again for every decision pass; nil when stale.
+	viewMu sync.Mutex
+	view   *folderView
+
 	// dec holds the final result of every unit the run decided.
 	dec decisions
 }

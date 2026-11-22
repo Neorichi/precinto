@@ -22,6 +22,8 @@ Status per host: **Claude Code** verified (2.1.329, min 2.1.295); **Codex** veri
 
    A missing marker therefore never makes a gate fail open: `CLAUDE_PID` was set on every captured Claude Code 2.1.329 hook run (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd; PreCompact and PermissionRequest were not captured), but nothing relies on it, and Codex SessionStart/SessionEnd payloads have no `turn_id`. Only an unrecognised label with no marker is "unknown": its gate events whose cwd or `CLAUDE_PROJECT_DIR` lies inside a root exit 1 (the shim then applies §5 step 3), everything else exits 0. A Claude-format hook firing inside another host answers in that host's format or exits 0. HA21 de-duplication (`state/hookdedupe/`) applies only to non-gate events of Cursor and Copilot, keyed by (host, session, event, prompt id, tool name, paths, source, reason); gate events are never suppressed.
 
+8. **Spawned processes (D139).** The workers the hook spawns (`seal --queue`, `sweep --quiet`) and a daemon it autostarts get an allowlisted environment: no `PRECINTO_*` override, no agent marker, no loader variable, nothing the harness set for itself, and no dialog endpoint (`DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`), because a hook always runs in an agent context whose environment Claude's settings `env` can set, and the daemon would hand those to the pinentry that asks for the passphrase.
+
 ## 1. Timing (normative; `hook.Timings`)
 
 | Host | Event | Declared timeout | Hook deadline | Unlock wait |

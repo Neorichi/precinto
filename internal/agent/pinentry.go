@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/platform"
 )
 
 // pinentryNames are the pinentry programs tried, most specific first (D4).
@@ -31,16 +34,169 @@ const maxPin = 4096
 
 // pinentryEnv is the environment of pinentry: what a dialog needs to find
 // the user's display, nothing else; PATH is limited to the program's own
-// directory (D97, as for age plugins).
+// directory (D97, as for age plugins). The dialog endpoints decide where
+// the install-wide passphrase is typed, and the daemon's environment is
+// that of whichever client started it, so each passes only in the form
+// that names the user's own local session (D139): the per-user runtime
+// directory the login manager creates, the session bus in it, a Wayland
+// socket of the user there, an X display of this machine with its socket.
+// The clients pass these variables only from a terminal no agent runs
+// (the hook never does).
 func pinentryEnv(e paths.Env, prog string) []string {
 	env := []string{"PATH=" + filepath.Dir(prog)}
-	for _, k := range []string{"HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE", "DISPLAY", "WAYLAND_DISPLAY",
-		"DBUS_SESSION_BUS_ADDRESS", paths.EnvXDGRuntimeDir} {
+	for _, k := range []string{"HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE"} {
 		if v, ok := e.Lookup(k); ok {
 			env = append(env, k+"="+v)
 		}
 	}
+	return append(env, dialogEnv(e)...)
+}
+
+// Where the dialog endpoints live (variables so tests can use a temporary
+// tree; trusted replaces the root-only check of the runtime directory's
+// parent there).
+var (
+	runUserDir = "/run/user"
+	x11Dir     = "/tmp/.X11-unix"
+	trusted    = rootOnlyChain
+)
+
+// dialogEnv returns the dialog endpoints of e that name the user's own
+// session (D139), as KEY=VALUE pairs.
+func dialogEnv(e paths.Env) []string {
+	var env []string
+	uid := os.Getuid()
+	rt := filepath.Join(runUserDir, strconv.Itoa(uid))
+	rtOK := e.Get(paths.EnvXDGRuntimeDir) == rt && privateDir(rt, uid) && trusted(runUserDir)
+	if rtOK {
+		env = append(env, paths.EnvXDGRuntimeDir+"="+rt)
+		if e.Get("DBUS_SESSION_BUS_ADDRESS") == "unix:path="+filepath.Join(rt, "bus") {
+			env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+filepath.Join(rt, "bus"))
+		}
+		if w := e.Get("WAYLAND_DISPLAY"); waylandName(w) && ownSocket(filepath.Join(rt, w), uid) {
+			env = append(env, "WAYLAND_DISPLAY="+w)
+		}
+	}
+	if d := e.Get("DISPLAY"); localDisplay(d) {
+		n, _, _ := strings.Cut(strings.TrimPrefix(d, ":"), ".")
+		// The X socket directory is writable by everyone: the socket must
+		// be the user's own server's (rootless Xorg, Xwayland) or root's.
+		if st, err := fsx.Lstat(filepath.Join(x11Dir, "X"+n)); err == nil && st.Mode&0o170000 == 0o140000 &&
+			(int(st.UID) == uid || st.UID == 0) {
+			env = append(env, "DISPLAY="+d)
+		}
+	}
 	return env
+}
+
+// dialogKeys are the variables that tell a pinentry where to draw its
+// dialog or which session bus prompter to ask (D139).
+var dialogKeys = []string{"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
+
+// StartEnv returns the environment a daemon started by process pid keeps
+// (D139): e without the dialog endpoints (DISPLAY, WAYLAND_DISPLAY,
+// DBUS_SESSION_BUS_ADDRESS) when pid runs in an agent context by evidence
+// an autostarted daemon does not carry on its own — an agent marker in e,
+// or an AI agent among pid's ancestors (cut at the D64 stop in -tags
+// testing builds; ancestry that cannot be read counts as one) — so
+// `precinto agent` run from an agent's shell gives its pinentry no display
+// of the agent's choosing. The no-controlling-terminal rule does not
+// count: every autostarted daemon is detached, and a client that runs in
+// an agent context already leaves these variables out of the daemon it
+// autostarts (the hook always does).
+func StartEnv(e paths.Env, t platform.ProcTable, pid int) paths.Env {
+	if !startedByAgent(e, t, pid) {
+		return e
+	}
+	return e.Without(dialogKeys...)
+}
+
+// startedByAgent reports the agent-context evidence StartEnv uses.
+func startedByAgent(e paths.Env, t platform.ProcTable, pid int) bool {
+	if len(paths.AgentMarkers(e)) > 0 {
+		return true
+	}
+	if t == nil {
+		return true
+	}
+	self, err := t.Lookup(pid)
+	if err != nil {
+		return true // fail closed
+	}
+	stop, haveStop := testAncestryStop(e)
+	if haveStop && sameIncarnation(self.ID, stop) {
+		return false
+	}
+	anc, err := platform.Ancestors(t, pid, maxAncestry)
+	if err != nil {
+		return true
+	}
+	for _, a := range anc {
+		if haveStop && sameIncarnation(a.ID, stop) {
+			return false // D64: the test process and everything above it
+		}
+		if _, ok := agentProgram(a); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// pinentryCanDraw reports whether prog can show its dialog with the
+// dialog endpoints env: pinentry-mac uses the user's macOS session and
+// needs none; the X11/Wayland pinentries need a display (D139).
+func pinentryCanDraw(prog string, env []string) bool {
+	if filepath.Base(prog) == "pinentry-mac" {
+		return true
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "DISPLAY=") || strings.HasPrefix(kv, "WAYLAND_DISPLAY=") {
+			return true
+		}
+	}
+	return false
+}
+
+// privateDir reports a directory (not a symlink) owned by uid, mode 0700.
+func privateDir(p string, uid int) bool {
+	st, err := fsx.Lstat(p)
+	return err == nil && st.IsDir() && int(st.UID) == uid && st.Mode&0o777 == 0o700
+}
+
+// ownSocket reports a socket owned by uid.
+func ownSocket(p string, uid int) bool {
+	st, err := fsx.Lstat(p)
+	return err == nil && st.Mode&0o170000 == 0o140000 && int(st.UID) == uid
+}
+
+// waylandName reports a compositor socket name as compositors choose it
+// ("wayland-0"): no path, nothing else.
+func waylandName(s string) bool {
+	n, ok := strings.CutPrefix(s, "wayland-")
+	return ok && digits(n)
+}
+
+// localDisplay reports an X display of this machine (":0", ":1.0"): no
+// host part, so never a connection to another machine.
+func localDisplay(s string) bool {
+	rest, ok := strings.CutPrefix(s, ":")
+	if !ok {
+		return false
+	}
+	n, screen, has := strings.Cut(rest, ".")
+	return digits(n) && (!has || digits(screen))
+}
+
+func digits(s string) bool {
+	if s == "" || len(s) > 6 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // findPinentry returns the pinentry program to run (D97): the first of

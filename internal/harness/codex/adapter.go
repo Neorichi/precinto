@@ -489,7 +489,7 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	if err != nil {
 		return harness.LaunchPlan{}, err
 	}
-	seed := Seed{UserHome: user, RootHome: home}
+	seed := Seed{UserHome: user, UserDefault: isDefaultHome(e.Host, user), RootHome: home}
 	plan.Roots = []config.Root{root}
 	plan.Env = launchEnv(home)
 	plan.Sync = []harness.Selector{{Kind: capsule.KindCodexHome, RootID: root.ID, Keys: []string{key}}}

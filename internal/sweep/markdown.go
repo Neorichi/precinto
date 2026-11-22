@@ -325,11 +325,14 @@ func (r *run) noteCandidates(ctx context.Context, root config.Root) map[string]*
 		return out
 	}
 	add := func(abs string) *noteCand {
-		if !filepath.IsAbs(abs) || !paths.Within(root.Path, abs) || !isNoteName(abs) {
+		if !isNoteName(abs) {
 			return nil
 		}
-		rel, err := filepath.Rel(root.Path, abs)
-		if err != nil || rel == "." {
+		// D136: a path the harness reports in another spelling of the
+		// folder (Unicode normalization) is a note of the folder too, at
+		// its path under the folder's own spelling.
+		rel, ok := harness.RelInFolder(root.Path, abs)
+		if !ok || rel == "." {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)

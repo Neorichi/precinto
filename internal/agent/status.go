@@ -325,10 +325,15 @@ func (d *daemon) factorKinds(id string) []string {
 }
 
 // pinentryAvailable reports whether a pinentry program the daemon would
-// run is on the PATH (D97: a trusted one only).
+// run is on the PATH (D97: a trusted one only) and has somewhere to draw:
+// pinentry-mac needs nothing, the others a display among the dialog
+// endpoints the daemon trusts (D139).
 func (d *daemon) pinentryAvailable() bool {
-	_, err := findPinentry(d.o.Env)
-	return err == nil
+	prog, err := findPinentry(d.o.Env)
+	if err != nil {
+		return false
+	}
+	return pinentryCanDraw(prog, dialogEnv(d.o.Env))
 }
 
 // bootstrap feeds the sessions the ledger shows as running (SPEC §13.1).

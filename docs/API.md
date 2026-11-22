@@ -2560,6 +2560,19 @@ func KillGrace(sessionEndBudget time.Duration) time.Duration
 // requests and triggers until ctx ends or the idle-exit rule fires.
 func Run(ctx context.Context, o Options) error
 
+// StartEnv returns the environment a daemon started by process pid keeps
+// (D139): e without the dialog endpoints (DISPLAY, WAYLAND_DISPLAY,
+// DBUS_SESSION_BUS_ADDRESS) when pid runs in an agent context by evidence
+// an autostarted daemon does not carry on its own — an agent marker in e,
+// or an AI agent among pid's ancestors (cut at the D64 stop in -tags
+// testing builds; ancestry that cannot be read counts as one) — so
+// `precinto agent` run from an agent's shell gives its pinentry no display
+// of the agent's choosing. The no-controlling-terminal rule does not
+// count: every autostarted daemon is detached, and a client that runs in
+// an agent context already leaves these variables out of the daemon it
+// autostarts (the hook always does).
+func StartEnv(e paths.Env, t platform.ProcTable, pid int) paths.Env
+
 // Action is one effect.
 type Action struct {
 	Kind     ActionKind
@@ -3252,6 +3265,15 @@ var (
 	ErrUnitKey        = errors.New("harness: unit key parts missing or malformed")
 )
 
+// InFolder reports whether p lies inside the folder dir by the rule
+// config.RootsFor applies to protected folders (D93): component by
+// component (paths.Within), and on darwin, for a folder whose path holds
+// non-ASCII bytes, also by identity, so a path a harness reports in one
+// Unicode normalization matches the folder recorded in the other (Claude
+// Code reports NFC, getcwd and Finder's names are often NFD). Every
+// comparison of a harness-reported path with a folder uses it (D136).
+func InFolder(dir, p string) bool
+
 // KillGrace is the SIGTERM→SIGKILL grace for a harness whose SessionEnd
 // hooks take up to sessionEnd: max(8 s, sessionEnd+6 s), capped at 70 s
 // (SPEC §12.7).
@@ -3259,6 +3281,14 @@ func KillGrace(sessionEnd time.Duration) time.Duration
 
 // Register adds an adapter (called from cmd/precinto wiring).
 func Register(a Adapter)
+
+// RelInFolder returns p relative to the folder dir when p lies inside it
+// (InFolder). When p names the folder in another spelling, the part below
+// the folder is p's and the folder part is dir's own: the ancestor of p
+// that is dir's directory (same device and inode, symlinks not followed)
+// is cut off, so a unit, a marker or a restore under the folder uses one
+// path whichever spelling the harness reported (D136).
+func RelInFolder(dir, p string) (string, bool)
 
 // UnitKeyFor derives the unit key of a unit from the parts table of SPEC
 // §6.2 (D45), so every group computes keys identically (implemented in the
@@ -3573,6 +3603,12 @@ type Selector struct {
 	// entrypoints Claude's interactive --continue skips (D102); a unit
 	// that records none is kept.
 	SkipEntrypoints []string
+	// Optional marks units a launch restores beside its target (D132): a
+	// unit of this selector that is live at restore — in use by another
+	// process, such as the project unit while another Claude runs in the
+	// folder — is left as it is and reported skipped; it neither stops a
+	// StopOnErr restore nor makes it fail.
+	Optional bool
 }
 
 // TargetRules says where a capsule of a kind may restore, computed from
@@ -3837,7 +3873,8 @@ func PrepareHome(ctx context.Context, s Seed) error
 
 // SyncAuthBack copies RootHome/auth.json to UserHome/auth.json atomically
 // when it is newer and differs (token refresh), after the child exited; a
-// logout on either side is never undone (D100).
+// logout on either side is never undone (D100). Into a user home that has
+// no auth.json it copies only when UserDefault (D140).
 func SyncAuthBack(ctx context.Context, s Seed) error
 
 // UserHome resolves the user's own Codex home (CODEX_HOME or ~/.codex) from e.
@@ -3874,7 +3911,11 @@ func Classify(rel string) Class
 // Seed describes how a per-root home is created and refreshed (D31, D44).
 type Seed struct {
 	UserHome string // ~/.codex (or the user's CODEX_HOME outside roots)
-	RootHome string // <base>/homes/codex/<root-id>
+	// UserDefault reports that UserHome is the default ~/.codex (CODEX_HOME
+	// unset or naming it): only there does SyncAuthBack create an auth.json
+	// the user home lacks (D140).
+	UserDefault bool
+	RootHome    string // <base>/homes/codex/<root-id>
 	// ForceConfig re-copies config.toml even when the home already has one
 	// (`precinto codex sync-config`); hooks trust entries of the per-root
 	// home are kept.
@@ -4441,6 +4482,7 @@ type Options struct {
 	// from a terminal can say why it pauses (D113). It never runs for a
 	// run that does not wait.
 	OnQuietWait func(d time.Duration)
+	// contains filtered or unexported fields
 }
 
 // Outcome of one unit.

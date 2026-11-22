@@ -203,6 +203,10 @@ func (r *run) sealCodexLocked(ctx context.Context, ad harness.Adapter, u harness
 	if err != nil {
 		return failed(res, err)
 	}
+	if leave, why := r.leaveInPlace(ctx, u, o, rd, hasRc); leave {
+		res.Outcome, res.Detail = OutSkipped, why
+		return res
+	}
 	var rcp *receiptDisk
 	if hasRc {
 		rcp = &rd

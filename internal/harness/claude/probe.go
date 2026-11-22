@@ -340,7 +340,7 @@ func (p *prober) sessionCwds(sid string) []string {
 // touches reports whether cwd and any of dirs contain one another.
 func touches(dirs []string, cwd string) bool {
 	for _, d := range dirs {
-		if paths.Within(d, cwd) || paths.Within(cwd, d) {
+		if harness.InFolder(d, cwd) || harness.InFolder(cwd, d) {
 			return true
 		}
 	}
@@ -373,7 +373,7 @@ func (p *prober) project() {
 	}
 	p.claudeProcesses(func(cwd string) bool {
 		for _, f := range folders {
-			if paths.Within(f, cwd) {
+			if harness.InFolder(f, cwd) { // D136: both spellings of the folder
 				return true
 			}
 		}

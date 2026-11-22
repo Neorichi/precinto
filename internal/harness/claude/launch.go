@@ -76,6 +76,69 @@ var (
 // and the Agent SDKs (D102).
 var sdkEntrypoints = []string{"sdk-cli", "sdk-ts", "sdk-py"}
 
+// The short options of Claude's root command (Claude Code 2.1.330): the
+// boolean ones can be bundled ("-pc" is -p then -c) and a value-taking one
+// takes the rest of its token as its value, whatever it is ("-r<id>" is
+// --resume <id>, "-r=<id>" is --resume =<id>: only a long option splits at
+// "="), as Claude's option parser reads them (D134).
+const (
+	shortBool   = "chpv" // --continue, --help, --print, --version
+	shortValued = "dnrw" // --debug [filter], --name <name>, --resume [value], --worktree [name]
+)
+
+// claudeView returns args as Claude's option parser reads them, for
+// precinto's own decisions only (the child always gets the user's args):
+// every bundle of short options becomes one token per option, and the
+// value attached to a value-taking short option becomes a token of its
+// own, as is ("-r<id>" gives "-r", "<id>"; "-r=<id>" gives "-r", "=<id>",
+// a value that names no session). known is false when a token holds a
+// short option Claude's root command does not have: precinto cannot tell
+// what it means there. Reading stops at "--".
+func claudeView(args []string) (view []string, known bool) {
+	known = true
+	for i, a := range args {
+		if a == "--" {
+			return append(view, args[i:]...), known
+		}
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			view = append(view, a)
+			continue
+		}
+		if len(a) == 2 {
+			if strings.IndexByte(shortBool+shortValued, a[1]) < 0 {
+				known = false
+			}
+			view = append(view, a)
+			continue
+		}
+		var exp []string
+		ok := true
+		for rest := a[1:]; rest != "" && ok; {
+			c := rest[0]
+			switch {
+			case strings.IndexByte(shortBool, c) >= 0:
+				exp = append(exp, "-"+string(c))
+				rest = rest[1:]
+			case strings.IndexByte(shortValued, c) >= 0:
+				exp = append(exp, "-"+string(c))
+				if v := rest[1:]; v != "" {
+					exp = append(exp, v) // "=" included: Claude keeps it
+				}
+				rest = ""
+			default:
+				ok = false
+			}
+		}
+		if !ok {
+			known = false
+			view = append(view, a)
+			continue
+		}
+		view = append(view, exp...)
+	}
+	return view, known
+}
+
 // printMode reports whether the launch is claude -p / --print.
 func printMode(args []string) bool {
 	for _, f := range printFlags {

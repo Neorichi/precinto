@@ -63,20 +63,23 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	// exactly (D73), so a launch through a symlinked path selects the same.
 	cwd = realpath(cwd)
 	args := append([]string(nil), argv[1:]...)
+	// D134: precinto reads the options as Claude does (bundled short
+	// options, attached values); the child gets args unchanged.
+	view, known := claudeView(args)
 	exe, err := a.resolveExe(e, argv[0])
 	if err != nil {
 		return harness.LaunchPlan{}, err
 	}
 	plan := harness.LaunchPlan{
 		Harness:   harness.ClaudeCode,
-		Mode:      a.inv.Classify(args, true, true),
+		Mode:      a.inv.Classify(view, true, true),
 		HookCheck: harness.HookCheck{Event: "SessionStart", Within: hookPresenceWithin},
 		// Claude's SessionEnd hooks get 1.5 s (HOOKS-IO §1); it exits on
 		// SIGTERM, so no quit keys.
 		KillGrace: harness.KillGrace(sessionEndBudget),
 	}
 	resume, cont, fork := resumeFlagsOf(a.inv)
-	plan.Resume = parseResume(args, resume, cont, fork)
+	plan.Resume = parseResume(view, resume, cont, fork)
 	purge := len(args) > 0 && args[0] == cmdPurge
 	touched := append([]string{cwd}, addDirs(args, cwd)...)
 	if purge {
@@ -122,9 +125,15 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	// the child owns, finds it without hooks.
 	freshSID := ""
 	if plan.Resume.Kind == harness.ResumeNone && !plan.Resume.Fork {
-		sid, inject, err := freshSessionID(args)
+		sid, inject, err := freshSessionID(view)
 		if err != nil {
 			return harness.LaunchPlan{}, err
+		}
+		if inject && !known {
+			// An option precinto cannot read might be one Claude refuses
+			// --session-id with: no id is chosen, the hooks and the
+			// registry watch record the session (D134).
+			sid, inject = "", false
 		}
 		if inject {
 			final = append(final, flagSessionID, sid)
@@ -143,7 +152,7 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	recent := harness.Selector{Kind: capsule.KindClaudeSession, RootID: root.ID, ProjectDir: cwd,
 		Recent: e.Cfg.Policy.RestoreRecent, MaxAge: maxAge, MaxBytes: e.Cfg.Policy.RestoreMaxBytes}
 	project := a.projectSelector(e, h, registered, root, cwd)
-	var extra []harness.Selector // best effort before exec, after project
+	var extra []harness.Selector // best effort before exec, after project (Optional, D132)
 
 	if sid, ok := a.resumeTarget(e, h, plan.Resume); ok {
 		if registered {
@@ -181,12 +190,16 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 			plan.Sync = append(plan.Sync, sel)
 		case harness.ResumePicker:
 			if someRecent {
-				plan.Sync = append(plan.Sync, recent)
+				// The picker lists them; one open elsewhere is in use
+				// there, not a reason to refuse the launch (D132).
+				pick := recent
+				pick.Optional = true
+				plan.Sync = append(plan.Sync, pick)
 			}
 		case harness.ResumeContinue:
 			sel := recent
 			sel.Recent, sel.Newest, sel.MaxAge, sel.MtimeNow = 0, true, 0, true
-			if printMode(args) {
+			if printMode(view) {
 				// claude -p --continue picks the newest session of any kind.
 				plan.Sync = append(plan.Sync, sel)
 				break
@@ -206,10 +219,14 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 			if someRecent {
 				next := recent
 				next.SkipEntrypoints = sdkEntrypoints
+				next.Optional = true // D132: one in use elsewhere stays as it is
 				extra = append(extra, next)
 			}
 		}
 	}
+	// D132: the project unit is in use (live) while another Claude runs
+	// in the folder; it is left as it is there, and the launch goes on.
+	project.Optional = true
 	plan.Sync = append(plan.Sync, project)
 	plan.Sync = append(plan.Sync, extra...)
 	plan.Lease = append(plan.Lease, project.Keys...)
@@ -362,9 +379,9 @@ const flagSessionID = "--session-id"
 // session id (D107). Passthrough commands never reach PlanLaunch's fresh
 // branch; they are listed too, so the rule holds whatever the inventory.
 var nonSessionVerbs = []string{
-	"agents", "attach", "auth", "auto-mode", "config", "daemon", "doctor", "gateway", "import", "install",
-	"kill", "logs", "mcp", "migrate-installer", "plugin", "plugins", "purge", "rc", "remote-control",
-	"respawn", "rm", "self-hosted-runner", "setup-token", "stop", "ultrareview", "update",
+	"agents", "attach", "auth", "auto-mode", "bridge", "daemon", "doctor", "gateway", "import", "install",
+	"kill", "logs", "mcp", "migrate-installer", "plugin", "plugins", "purge", "rc", "remote", "remote-control",
+	"respawn", "rm", "self-hosted-runner", "setup-token", "stop", "sync", "ultrareview", "update", "upgrade",
 }
 
 // noSessionFlags are options under which a launch starts no new local
@@ -372,7 +389,7 @@ var nonSessionVerbs = []string{
 // app, a cloud or teleported session, the PR session picker, hooks only,
 // or a session never written to disk): no session id is chosen (D107).
 var noSessionFlags = []string{
-	"--bg", "--background", "--exec", "--desktop", "--cloud", "--remote", "--environment", "--teleport",
+	"--bg", "--background", "--exec", "--desktop", "--cloud", "--remote", "--environment", "--pool", "--teleport",
 	"--from-pr", "--init-only", "--no-session-persistence",
 }
 

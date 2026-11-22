@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -165,7 +166,7 @@ func (a *app) dial(ctx context.Context, autostart bool) (daemonClient, error) {
 	if autostart {
 		exe, err := a.sys.executable()
 		if err == nil {
-			o.Autostart, o.Exe, o.Env, o.Timeout = true, exe, daemonEnv(a.env), autostartTimeout
+			o.Autostart, o.Exe, o.Env, o.Timeout = true, exe, a.autostartEnv(), autostartTimeout
 		}
 	}
 	c, err := a.sys.dial(ctx, o)
@@ -210,6 +211,25 @@ var daemonEnvKeys = []string{
 	"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
 	"XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
 	"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+}
+
+// dialogKeys are the variables a daemon hands its pinentry to reach the
+// user's display (D139).
+var dialogKeys = []string{"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"}
+
+// autostartEnv is daemonEnv for a daemon this process autostarts: the
+// dialog endpoints, which decide where the daemon's pinentry asks for the
+// passphrase, pass only from a terminal no agent runs (ui.AgentContext:
+// no agent marker, no harness ancestor, a controlling terminal; D139).
+func (a *app) autostartEnv() []string {
+	env := daemonEnv(a.env)
+	if agent, _ := a.sys.agentContext(a.env, a.procs()); !agent {
+		return env
+	}
+	return slices.DeleteFunc(env, func(kv string) bool {
+		k, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(dialogKeys, k)
+	})
 }
 
 // daemonEnv returns the allowlisted environment for a daemon or worker.

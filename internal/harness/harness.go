@@ -317,6 +317,12 @@ type Selector struct {
 	// entrypoints Claude's interactive --continue skips (D102); a unit
 	// that records none is kept.
 	SkipEntrypoints []string
+	// Optional marks units a launch restores beside its target (D132): a
+	// unit of this selector that is live at restore — in use by another
+	// process, such as the project unit while another Claude runs in the
+	// folder — is left as it is and reported skipped; it neither stops a
+	// StopOnErr restore nor makes it fail.
+	Optional bool
 }
 
 // LaunchPlan is what the wrapper executes for one harness invocation.
