@@ -478,6 +478,9 @@ type Vars struct {
 	Action   string        // {action}
 	Command  string        // {command}
 	Unit     string        // {unit}: unit key (note markers)
+	// Global: the message is about the global vault, whose commands take
+	// --global: "--root {folder}" renders as "--global" (D152).
+	Global bool
 }
 
 // Format renders a catalog message: every {placeholder} of the text is
@@ -486,6 +489,8 @@ type Vars struct {
 // renders as the id itself so a missing entry is visible. An empty v.SID
 // drops its slot: "({sid} · " renders as "(" and "session {sid} " as
 // "this session " (a Codex session has no id the wrapper knows, D128).
+// With v.Global, "--root {folder}" renders as "--global": the global
+// vault is no folder a --root could name (D152).
 // Implemented in the scaffold.
 func Format(id MsgID, v Vars) string {
 	text, ok := catalog[id]
@@ -494,6 +499,9 @@ func Format(id MsgID, v Vars) string {
 	}
 	if v.SID == "" {
 		text = strings.NewReplacer("({sid} · ", "(", "session {sid} ", "this session ").Replace(text)
+	}
+	if v.Global {
+		text = strings.ReplaceAll(text, "--root {folder}", "--global")
 	}
 	sid := v.SID
 	if utf8.RuneCountInString(sid) > 8 {

@@ -13,6 +13,7 @@ import (
 	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 // The agent's "needs attention" items speak doctor's vocabulary
@@ -112,7 +113,8 @@ func (e *env) fromAttention(a ipc.Attention) Finding {
 	var msg string
 	switch code {
 	case ipc.AttnVaultTampered:
-		msg = catalog(ui.MsgVaultTampered, ui.Vars{Folder: folder})
+		// The agent names the global vault by its id (D152: --global).
+		msg = catalog(ui.MsgVaultTampered, ui.Vars{Folder: folder, Global: a.Folder == vault.GlobalID})
 	case ipc.AttnPolicyTampered:
 		msg = catalog(ui.MsgPolicyTampered, ui.Vars{})
 	case ipc.AttnPendingPolicy:

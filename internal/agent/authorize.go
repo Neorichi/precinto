@@ -6,6 +6,7 @@ import (
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 // maxAncestry bounds the ancestry walk of a peer.
@@ -87,6 +88,16 @@ func (f peerFacts) needsPresence(purpose string) bool {
 	return f.agent || (f.noCTTY && contentPurpose(purpose))
 }
 
+// targetArg is the CLI argument a fix command names vault id with:
+// --global for the global vault (`--root global` names no folder), else
+// --root and the folder's name (D152).
+func targetArg(id string, name folderName) string {
+	if id == vault.GlobalID {
+		return "--global"
+	}
+	return "--root " + name(id)
+}
+
 // refuse builds the C12.agent refusal.
 func refuse(action, folder, command string) *ipc.Error {
 	return &ipc.Error{Code: ipc.CodeAgentContext, Msg: ui.Format(ui.MsgRefuseAgent, ui.Vars{Action: action, Folder: folder, Command: command})}
@@ -113,11 +124,11 @@ func authorizeFacts(f peerFacts, op ipc.Op, purpose string, rootIDs, sessionRoot
 		}
 	case ipc.OpVaultRepair:
 		if refused {
-			folder := "the vault of"
+			folder, arg := "the vault of", "--root DIR"
 			if len(rootIDs) > 0 {
-				folder = name(rootIDs[0])
+				folder, arg = name(rootIDs[0]), targetArg(rootIDs[0], name)
 			}
-			return refuse("repair", folder, "vault repair --root "+folder)
+			return refuse("repair", folder, "vault repair "+arg)
 		}
 	case ipc.OpPolicy:
 		if refused {
@@ -127,7 +138,7 @@ func authorizeFacts(f peerFacts, op ipc.Op, purpose string, rootIDs, sessionRoot
 		if f.agent {
 			for _, id := range rootIDs {
 				if !slices.Contains(sessionRoots, id) {
-					return refuse("unlock", name(id), "unlock --root "+name(id))
+					return refuse("unlock", name(id), "unlock "+targetArg(id, name))
 				}
 			}
 		}
@@ -137,7 +148,7 @@ func authorizeFacts(f peerFacts, op ipc.Op, purpose string, rootIDs, sessionRoot
 			// keys (D1, D28); its own folder's need fresh presence.
 			for _, id := range rootIDs {
 				if !slices.Contains(sessionRoots, id) {
-					return refuse("open", name(id), "restore --root "+name(id))
+					return refuse("open", name(id), "restore "+targetArg(id, name))
 				}
 			}
 		}

@@ -224,7 +224,7 @@ func (d *daemon) unlock(ctx context.Context, cs *connState, req ipc.Request) ipc
 				continue
 			}
 			if f.noCTTY {
-				return ipc.Response{Err: refuse("unlock", d.folder(id), "unlock --root "+d.folder(id))}
+				return ipc.Response{Err: refuse("unlock", d.folder(id), "unlock "+targetArg(id, d.folder))}
 			}
 			return errResp(ipc.CodeNoUI, ui.Format(ui.MsgPromptBlocked, ui.Vars{Folder: d.folder(id), Reason: ui.ReasonStart}))
 		}
@@ -383,7 +383,7 @@ func (d *daemon) unwrapAndCheck(ctx context.Context, cs *connState, reqID uint64
 	defer identity.Destroy()
 	if err := d.deps.vaults.verify(id, identity); err != nil {
 		if isVerifyErr(err) {
-			d.setAttention(ipc.Attention{Code: ipc.AttnVaultTampered, Folder: d.folder(id), Fix: "precinto vault repair --root " + d.folder(id)}, true)
+			d.setAttention(ipc.Attention{Code: ipc.AttnVaultTampered, Folder: d.folder(id), Fix: "precinto vault repair " + targetArg(id, d.folder)}, true)
 		}
 		return err
 	}
@@ -417,7 +417,7 @@ func (d *daemon) unwrapAndGrant(ctx context.Context, cs *connState, reqID uint64
 	if err := d.deps.vaults.verify(id, identity); err != nil {
 		identity.Destroy()
 		if isVerifyErr(err) {
-			d.setAttention(ipc.Attention{Code: ipc.AttnVaultTampered, Folder: d.folder(id), Fix: "precinto vault repair --root " + d.folder(id)}, true)
+			d.setAttention(ipc.Attention{Code: ipc.AttnVaultTampered, Folder: d.folder(id), Fix: "precinto vault repair " + targetArg(id, d.folder)}, true)
 		}
 		return err
 	}
@@ -503,7 +503,7 @@ func (d *daemon) unlockErr(id string, err error) *ipc.Error {
 	case errors.Is(err, vault.ErrNoUI):
 		return &ipc.Error{Code: ipc.CodeNoUI, Msg: d.noUIText(id, folder)}
 	case isVerifyErr(err):
-		return &ipc.Error{Code: ipc.CodeVerify, Msg: ui.Format(ui.MsgVaultTampered, ui.Vars{Folder: folder})}
+		return &ipc.Error{Code: ipc.CodeVerify, Msg: ui.Format(ui.MsgVaultTampered, ui.Vars{Folder: folder, Global: id == vault.GlobalID})}
 	case errors.Is(err, errNoVault), errors.Is(err, vault.ErrNotFound):
 		return &ipc.Error{Code: ipc.CodeBadRequest, Msg: "precinto: " + folder + " has no vault; run precinto protect"}
 	}

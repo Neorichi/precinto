@@ -83,7 +83,7 @@ func checkVaultTampered(e *env) []Finding {
 		case vi.openErr != nil:
 			out = append(out, warn(CheckVaultTampered, "could not read the vault of "+e.folderOf(id)+" ("+errClass(vi.openErr)+")", e.repairCommand(id)))
 		case errors.Is(vi.recErr, vault.ErrRecipientsChanged):
-			out = append(out, fail(CheckVaultTampered, catalog(ui.MsgVaultTampered, ui.Vars{Folder: e.folderOf(id)}), e.repairCommand(id)))
+			out = append(out, fail(CheckVaultTampered, catalog(ui.MsgVaultTampered, ui.Vars{Folder: e.folderOf(id), Global: id == vault.GlobalID}), e.repairCommand(id)))
 		case vi.recErr != nil:
 			out = append(out, warn(CheckVaultTampered, "could not check the recipients of "+e.folderOf(id)+"'s vault ("+errClass(vi.recErr)+"); sealing there may be paused", e.repairCommand(id)))
 		}

@@ -340,7 +340,7 @@ func (d *daemon) vaultRepair(ctx context.Context, cs *connState, req ipc.Request
 		return ipc.Response{Err: d.unlockErr(id, err)}
 	}
 	if genuine, err := d.genuine(id, identity, meta.LastAudit); err != nil || !genuine {
-		return errResp(ipc.CodeVerify, ui.Format(ui.MsgVaultNotGenuine, ui.Vars{Folder: folder}))
+		return errResp(ipc.CodeVerify, ui.Format(ui.MsgVaultNotGenuine, ui.Vars{Folder: folder, Global: id == vault.GlobalID}))
 	}
 	if !r.Confirmed {
 		res, fpr, err := d.deps.vaults.repairPlan(id, identity, recovery, d.clock.Now())
@@ -383,7 +383,7 @@ func (d *daemon) vaultRepair(ctx context.Context, cs *connState, req ipc.Request
 // repairErr maps a repair (or dry-run) failure.
 func (d *daemon) repairErr(id string, err error) *ipc.Error {
 	if errors.Is(err, vault.ErrNeedRecovery) {
-		return &ipc.Error{Code: ipc.CodeUnauthorized, Msg: "precinto: the recovery key is needed: precinto vault repair --root " + d.folder(id) + " --recovery"}
+		return &ipc.Error{Code: ipc.CodeUnauthorized, Msg: "precinto: the recovery key is needed: precinto vault repair " + targetArg(id, d.folder) + " --recovery"}
 	}
 	return d.unlockErr(id, err)
 }
