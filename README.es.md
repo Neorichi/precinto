@@ -6,7 +6,7 @@
 
 precinto es una bóveda al estilo de KeePass para las sesiones de los agentes de programación con IA. Tú decides qué carpetas importan. Cuando una de ellas se bloquea (porque has dejado de teclear, porque se ha bloqueado la pantalla o porque lo pides), precinto sella en cápsulas cifradas con [age](https://age-encryption.org) las conversaciones, los resúmenes, las memorias, los planes, las salidas de herramientas y las notas que los agentes escribieron en ella. Para recuperarlas hace falta tu presencia (Touch ID o la contraseña del Mac, una llave de seguridad o una frase de paso), y todo vuelve a su sitio exactamente igual, byte a byte.
 
-> **Estado: versión preliminar, especificación v0.2, en pleno desarrollo.** Los comandos de esta página describen la especificación v0.2 y se están implementando ahora mismo: puede que falte alguno o que cambie. Primero macOS; Linux, en parte; Windows, no. El repositorio todavía no es público y todas las decisiones de diseño son valores por defecto pendientes de que el responsable del proyecto las confirme, así que los detalles pueden cambiar.
+> **Estado: versión preliminar, especificación v0.2.** Todos los comandos de esta página están implementados y probados, pero precinto aún no se ha usado en el día a día, así que los detalles pueden cambiar. Primero macOS; Linux, en parte; Windows, no. El repositorio todavía no es público y todas las decisiones de diseño son valores por defecto pendientes de que el responsable del proyecto las confirme.
 
 ## Índice
 
@@ -89,7 +89,7 @@ Los hooks son una barrera, no una frontera de seguridad: un harness se puede arr
 
 ## Estado del proyecto
 
-- **Versión preliminar, especificación v0.2** (sustituye a la v0.1). La especificación, el contrato de la API en Go y el plan de pruebas están escritos, y el código se está implementando ahora a partir de ellos. Faltarán comandos y habrá cambios incompatibles.
+- **Versión preliminar, especificación v0.2** (sustituye a la v0.1). Están implementados todos los comandos de la especificación salvo los aplazados (`canary`, `scrub`, `rekey` e `import`, que lo indican y terminan con el código 2). Las pruebas unitarias, de integración, de caídas y de carreras lo cubren, y las pruebas de extremo a extremo opcionales pasan con Claude Code 2.1.330 y Codex 0.154.0 sin llamar a ningún modelo: los hooks, el lanzador, `integrate`, una carpeta bloqueada y una sesión sellada al terminar. Falta probar sesiones que llamen a un modelo, un Secure Enclave o una YubiKey reales, el servicio en segundo plano y Linux en una máquina real. Puede haber cambios incompatibles antes de la primera versión.
 - **Primero macOS**: factor del Secure Enclave mediante `age-plugin-se`, disparadores por bloqueo de pantalla, inactividad y reposo, y un servicio opcional de resellado en segundo plano (un LaunchAgent).
 - **Linux, en parte**: compila y funciona con una frase de paso como factor (o con un plugin de age, como una YubiKey), y lee el bloqueo de pantalla y la inactividad de `loginctl`. Todavía no hay servicio en segundo plano (`precinto service install` solo existe en macOS en la v0.2), y en las máquinas sin logind solo cuentan los temporizadores de inactividad y el límite de 8 horas.
 - **Windows, no** (WSL se comporta como Linux).

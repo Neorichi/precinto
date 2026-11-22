@@ -6,7 +6,7 @@ English · [Español](README.es.md)
 
 precinto is a KeePass-style vault for AI coding-agent sessions. You choose the folders that matter. When one of them locks (because you stopped typing, the screen locked, or you asked), precinto seals the conversations, summaries, memories, plans, tool outputs and agent-written notes of its sessions into [age](https://age-encryption.org)-encrypted capsules. Coming back asks for your presence (Touch ID or your Mac password, a hardware key, or a passphrase), and everything is restored byte for byte where it was.
 
-> **Status: pre-release, specification v0.2, under active development.** The commands on this page describe the v0.2 specification and are being implemented right now: some may be missing or change. macOS first, Linux partial, no Windows. The repository is not public yet, and every design decision is still a default waiting for the project owner's confirmation, so details are subject to change.
+> **Status: pre-release, specification v0.2.** Every command on this page is implemented and tested, but precinto has not been used day to day yet, so details may still change. macOS first, Linux partial, no Windows. The repository is not public yet, and every design decision is still a default waiting for the project owner's confirmation.
 
 ## Contents
 
@@ -89,7 +89,7 @@ Hooks are a gate, not a security boundary: a harness can be started with hooks t
 
 ## Status
 
-- **Pre-release, specification v0.2** (it supersedes v0.1). The specification, the Go API contract and the test plan are written; the code is being implemented against them now. Expect missing commands and breaking changes.
+- **Pre-release, specification v0.2** (it supersedes v0.1). Every command of the specification is implemented except the deferred `canary`, `scrub`, `rekey` and `import`, which say so and exit 2. Unit, integration, crash and race tests cover it, and the opt-in end-to-end suites pass against Claude Code 2.1.330 and Codex 0.154.0 without calling a model: the hooks, the wrapper, `integrate`, a locked folder and a session sealed when it ends. Not tested yet: sessions that call a model, a real Secure Enclave or YubiKey, the background service, and Linux on a real machine. Expect breaking changes before a first release.
 - **macOS first.** Secure Enclave factor through `age-plugin-se`, screen-lock, idle and sleep triggers, and an optional background re-seal service (a LaunchAgent).
 - **Linux partial.** It builds and runs with a passphrase factor (or an age plugin such as a YubiKey); screen lock and idle come from `loginctl`. There is no background service yet (`precinto service install` is macOS-only in v0.2), and machines without logind rely on idle timers and the 8-hour limit.
 - **No Windows** (WSL behaves like Linux).
