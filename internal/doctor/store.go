@@ -16,6 +16,7 @@ import (
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/ui"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 // Checks of precinto's own store: provenance (D8), plaintext left
@@ -379,10 +380,35 @@ func checkInterrupted(e *env) []Finding {
 		}
 		return fs
 	})...)
+	out = append(out, e.part(CheckInterrupted, e.hiddenMarketplace)...)
 	if len(out) == 0 {
 		out = append(out, ok(CheckInterrupted, "no interrupted operation left anything behind"))
 	}
 	return out
+}
+
+// hiddenMarketplace reports an integrate stopped between the two renames
+// that replace <base>/marketplace (D148): the plugin Claude Code loads in
+// place from there is gone and the working tree sits under its hidden
+// name, so Claude runs without precinto's hooks; the next integrate puts it
+// back.
+func (e *env) hiddenMarketplace() []Finding {
+	mp := e.o.Layout.Marketplace
+	if mp == "" || exists(mp) {
+		return nil
+	}
+	es, err := listDir(filepath.Dir(mp))
+	if err != nil {
+		return nil
+	}
+	prefix := "." + filepath.Base(mp) + ".old-"
+	for _, en := range es {
+		if strings.HasPrefix(en.Name(), prefix) && en.IsDir() {
+			return []Finding{fail(CheckInterrupted, "precinto's plugin folder "+e.show(mp)+" is missing after an interrupted precinto integrate (its copy is "+
+				e.show(filepath.Join(filepath.Dir(mp), en.Name()))+"): Claude Code runs without precinto's hooks", "precinto integrate claude-code")}
+		}
+	}
+	return nil
 }
 
 func checkResidue(e *env) []Finding {
@@ -766,7 +792,8 @@ func checkPolicyTampered(e *env) []Finding {
 	p, present, err := e.pinned()
 	fix := "precinto unlock (in a terminal), then confirm the settings again"
 	if !present {
-		for _, id := range e.vaultIDs() {
+		disk, _ := e.diskRootVaults()
+		for _, id := range append(e.vaultIDs(), disk...) {
 			if vi := e.vault(id); vi.v != nil && !vi.v.Meta.LastAudit.IsZero() {
 				return []Finding{warn(CheckPolicyTampered, "the saved copy of the settings you confirmed (state/policy.pinned) is missing although folders have been unlocked before: config.toml alone decides the policy now", fix)}
 			}
@@ -779,15 +806,10 @@ func checkPolicyTampered(e *env) []Finding {
 	}
 	// D91: the daemon's rule (config.Pinned.CheckShape) once a root vault
 	// exists: no MAC, a malformed one, one for a vault outside the pinned
-	// settings or for a vault that does not exist means forged.
-	vaultExists := func(id string) bool { return e.vault(id).openErr == nil }
-	rootVault := false
-	for _, r := range e.o.Cfg.Roots {
-		if vaultExists(r.ID) {
-			rootVault = true
-		}
-	}
-	if serr := p.CheckShape(vaultExists); serr != nil && (rootVault || len(p.MACs) == 0) {
+	// settings or for a vault that does not exist means forged. A root
+	// vault is any folder vault on disk, as the agent finds them, also one
+	// that config.toml no longer names.
+	if serr := p.CheckShape(e.vaultExists); serr != nil && (e.rootVaultExists() || len(p.MACs) == 0) {
 		reason := strings.TrimPrefix(serr.Error(), config.ErrForgedPin.Error()+": ")
 		return []Finding{fail(CheckPolicyTampered, text+" (state/policy.pinned "+reason+")", fix)}
 	}
@@ -798,20 +820,112 @@ func checkPolicyTampered(e *env) []Finding {
 	var out []Finding
 	var foreign []string
 	for id := range p.MACs {
-		if !known[id] {
-			foreign = append(foreign, id)
+		if _, pinnedRoot := p.Config.RootByID(id); !known[id] && !pinnedRoot {
+			// A folder of the pinned settings that config.toml no longer
+			// lists is a removal waiting for its confirmation, which
+			// pending-policy names by its path (U6-1).
+			foreign = append(foreign, e.folderOf(id))
 		}
 	}
 	if err := p.Config.Validate(); err != nil {
 		out = append(out, fail(CheckPolicyTampered, text+" (the saved settings in state/policy.pinned are not valid)", fix))
 	}
 	if len(foreign) > 0 {
-		out = append(out, warn(CheckPolicyTampered, "state/policy.pinned names "+plural(len(foreign), "vault", "vaults")+" that no protected folder uses ("+joinNames(foreign)+")", fix))
+		out = append(out, warn(CheckPolicyTampered, "state/policy.pinned is signed for "+plural(len(foreign), "vault", "vaults")+" that no protected folder uses ("+joinNames(foreign)+")", fix))
 	}
 	if len(out) == 0 {
 		out = append(out, ok(CheckPolicyTampered, "the saved copy of the confirmed settings is well-formed (the agent checks its MACs at unlock)"))
 	}
 	return out
+}
+
+// vaultExists reports whether vault id exists (its vault.toml reads).
+func (e *env) vaultExists(id string) bool { return e.vault(id).openErr == nil }
+
+// diskRootVaults lists the folder vaults on disk (vaults/<id>/ whose
+// vault.toml reads), as the agent finds them: config.toml's folders',
+// retired ones (D74), any other. unreadable: vaults/ exists but cannot be
+// listed.
+func (e *env) diskRootVaults() (ids []string, unreadable bool) {
+	es, err := listDir(e.o.Layout.VaultsDir)
+	if err != nil {
+		return nil, true
+	}
+	for _, en := range es {
+		name := en.Name()
+		if name == vault.GlobalID || !en.IsDir() || !vaultIDName(name) {
+			continue
+		}
+		if e.vaultExists(name) {
+			ids = append(ids, name)
+		}
+	}
+	return ids, false
+}
+
+// rootVaultExists reports, as the agent does, whether a folder vault
+// exists: one of a folder config.toml names, or any on disk (an unreadable
+// vaults/ counts as one, the strict reading).
+func (e *env) rootVaultExists() bool {
+	for _, r := range e.o.Cfg.Roots {
+		if e.vaultExists(r.ID) {
+			return true
+		}
+	}
+	ids, unreadable := e.diskRootVaults()
+	return unreadable || len(ids) > 0
+}
+
+// checkUnprotectedFolders reports, while the confirmed settings name no
+// folder at all, the folders whose vault is kept but that nothing protects
+// (D145): such settings are signed by the global vault alone, and only
+// precinto unlock --global checks that signature, so a forged copy that
+// dropped every folder (with config.toml) would otherwise go unseen. A
+// user who stopped protecting those folders sees them as well: their
+// vaults are kept (D74). A missing or forged copy is policy-tampered's,
+// and the agent enforces every folder a vault records then.
+func checkUnprotectedFolders(e *env) []Finding {
+	p, present, err := e.pinned()
+	switch {
+	case !present || err != nil || p.CheckShape(e.vaultExists) != nil:
+		return []Finding{ok(CheckUnprotectedFolders, "precinto enforces every folder whose vault is kept until you confirm settings again")}
+	case len(p.Config.Roots) > 0:
+		return []Finding{ok(CheckUnprotectedFolders, "the settings you confirmed name a protected folder, whose next unlock checks them")}
+	}
+	agent := map[string]bool{}
+	if st := e.daemon(); st != nil {
+		for _, v := range st.Vaults {
+			agent[v.VaultID] = true
+		}
+	}
+	ids, _ := e.diskRootVaults()
+	var names []string
+	for _, id := range ids {
+		vi := e.vault(id)
+		if vi.v == nil || vi.v.Meta.RootPath == "" || agent[id] {
+			continue
+		}
+		if _, in := e.o.Cfg.RootByID(id); in || e.protectsPath(vi.v.Meta.RootPath) {
+			continue
+		}
+		names = append(names, e.show(vi.v.Meta.RootPath))
+	}
+	if len(names) == 0 {
+		return []Finding{ok(CheckUnprotectedFolders, "no folder whose vault is kept is left without protection")}
+	}
+	return []Finding{warn(CheckUnprotectedFolders, "the settings you confirmed protect no folder, though the vaults of "+plural(len(names), "folder", "folders")+
+		" are kept ("+joinNames(names)+"): if you did not stop protecting them, check those settings", "precinto unlock --global (in a terminal)")}
+}
+
+// protectsPath reports whether a folder of the settings doctor checks has
+// path p.
+func (e *env) protectsPath(p string) bool {
+	for _, r := range e.o.Cfg.Roots {
+		if r.Path == p {
+			return true
+		}
+	}
+	return false
 }
 
 func checkConflict(e *env) []Finding {

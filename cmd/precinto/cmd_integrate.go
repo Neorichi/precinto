@@ -144,17 +144,24 @@ func (a *app) integrateBuiltin(id harness.ID, exeName string, printOnly bool) in
 		return a.fail("integrate", err)
 	}
 	a.say(textIntegrateBin, a.display(link))
-	next := cfg
-	next.Harness = cloneHarness(cfg.Harness)
-	nh := next.Harness[string(id)]
-	nh.Enabled, nh.Bin = true, bin
-	next.Harness[string(id)] = nh
+	home, addClaudeHome := config.Home{}, false
 	if id == harness.ClaudeCode {
-		if home, ok := a.claudeHomeFromEnv(); ok {
+		home, addClaudeHome = a.claudeHomeFromEnv()
+	}
+	// The harness is recorded in config.toml as it is on disk now (D144):
+	// the plugin commands can take minutes, and a folder protected or
+	// unprotected meanwhile stays as that command left it.
+	if _, err := a.editConfig(func(disk config.Config) (config.Config, error) {
+		next := disk
+		next.Harness = cloneHarness(disk.Harness)
+		nh := next.Harness[string(id)]
+		nh.Enabled, nh.Bin = true, bin
+		next.Harness[string(id)] = nh
+		if addClaudeHome {
 			addHome(next.Harness, string(id), home)
 		}
-	}
-	if err := a.saveConfig(next); err != nil {
+		return next, nil
+	}); err != nil {
 		return a.fail("integrate", err)
 	}
 	a.say(textIntegrateDone, exeName)
@@ -174,13 +181,25 @@ func marketplaceMode(rel string) fs.FileMode {
 	return 0o600
 }
 
+// marketplaceLockWait bounds how long an integrate waits for another
+// integrate's marketplace swap (a few small writes and two renames).
+var marketplaceLockWait = 10 * time.Second
+
 // writeMarketplace makes <base>/marketplace hold exactly the embedded
 // marketplace manifests and plugin roots (precinto.Plugins), byte for byte
 // (D116), and returns its path. A tree that already matches is left alone,
 // so the files stay byte-stable (newer Codex versions trust a plugin by
 // its files, D78); otherwise a complete tree is built next to it and
 // renamed into place, so that a harness never reads a partial one and no
-// stray file ever sits inside a plugin root.
+// stray file ever sits inside a plugin root. Claude Code loads the plugin
+// in place from there, so there is never a lasting moment without one
+// (D148): from the first rename on, any failure puts the previous tree
+// back (a rename can report a failed directory fsync after it happened),
+// and a tree an interrupted integrate left only under its hidden name is
+// put back first. One integrate swaps at a time (state/locks/
+// marketplace.lock), so the hidden trees found at the start — the
+// replaced ".marketplace.old-*" ones and the half-built ".marketplace.new-*"
+// ones — are an interrupted integrate's, and are removed.
 func (a *app) writeMarketplace() (string, error) {
 	l, err := a.layout()
 	if err != nil {
@@ -193,16 +212,29 @@ func (a *app) writeMarketplace() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if sameTree(l.Marketplace, want) {
-		return l.Marketplace, nil
+	ctx, cancel := context.WithTimeout(context.Background(), marketplaceLockWait)
+	defer cancel()
+	lk, err := fsx.WaitLock(ctx, l.LockFile("marketplace"), false)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "", errors.New("another precinto integrate is replacing the plugin folder; try again")
 	}
+	if err != nil {
+		return "", err
+	}
+	defer lk.Unlock()
 	base, err := fsx.OpenBase(l.Base)
 	if err != nil {
 		return "", err
 	}
 	defer base.Close()
 	name := filepath.Base(l.Marketplace)
-	tmp := "." + name + ".new-" + randomHex()
+	restoreMarketplace(base, name)
+	removeHidden(base, l.Base, newMarketplacePrefix(name))
+	if sameTree(l.Marketplace, want) {
+		removeOldMarketplaces(base, l.Base, name)
+		return l.Marketplace, nil
+	}
+	tmp := newMarketplacePrefix(name) + randomHex()
 	tmpPath := filepath.Join(l.Base, tmp)
 	built := false
 	defer func() {
@@ -233,8 +265,19 @@ func (a *app) writeMarketplace() (string, error) {
 		}
 	}
 	old := ""
+	defer func() {
+		// Never leave Claude without a plugin (D148): when the swap failed
+		// and <base>/marketplace is missing — the first rename happened,
+		// then reported an error, or the second one failed — the previous
+		// tree goes back; the next integrate replaces it again.
+		if !built && old != "" {
+			if _, err := base.Lstat(name); errors.Is(err, fs.ErrNotExist) {
+				_ = base.Rename(old, name, fsx.NoReplace)
+			}
+		}
+	}()
 	if _, err := base.Lstat(name); err == nil {
-		old = "." + name + ".old-" + randomHex()
+		old = oldMarketplacePrefix(name) + randomHex()
 		if err := base.Rename(name, old, fsx.NoReplace); err != nil {
 			return "", err
 		}
@@ -251,7 +294,72 @@ func (a *app) writeMarketplace() (string, error) {
 	if old != "" {
 		removeTree(filepath.Join(l.Base, old))
 	}
+	removeOldMarketplaces(base, l.Base, name)
 	return l.Marketplace, nil
+}
+
+// oldMarketplacePrefix is the hidden name of a replaced marketplace tree
+// (".marketplace.old-<hex>").
+func oldMarketplacePrefix(name string) string { return "." + name + ".old-" }
+
+// newMarketplacePrefix is the hidden name of a marketplace tree being
+// built (".marketplace.new-<hex>").
+func newMarketplacePrefix(name string) string { return "." + name + ".new-" }
+
+// restoreMarketplace puts back the newest replaced tree when <base>/name is
+// missing (D148): an integrate stopped between its two renames (a crash, a
+// power loss) left the working plugin only under its hidden name.
+func restoreMarketplace(base *fsx.Dir, name string) {
+	if _, err := base.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	newest, at := "", int64(0)
+	for _, e := range oldMarketplaces(base, name) {
+		if st, err := base.Lstat(e); err == nil && st.IsDir() && (newest == "" || st.MtimeNS > at) {
+			newest, at = e, st.MtimeNS
+		}
+	}
+	if newest != "" {
+		_ = base.Rename(newest, name, fsx.NoReplace)
+	}
+}
+
+// removeOldMarketplaces deletes replaced trees left next to a live
+// <base>/name (an interrupted integrate's).
+func removeOldMarketplaces(base *fsx.Dir, dir, name string) {
+	if _, err := base.Lstat(name); err != nil {
+		return
+	}
+	removeHidden(base, dir, oldMarketplacePrefix(name))
+}
+
+// removeHidden deletes the hidden trees of <base> whose names start with
+// prefix (an interrupted integrate's; called under the marketplace lock).
+func removeHidden(base *fsx.Dir, dir, prefix string) {
+	for _, e := range hiddenTrees(base, prefix) {
+		removeTree(filepath.Join(dir, e))
+	}
+}
+
+// oldMarketplaces lists the replaced trees of <base>/name.
+func oldMarketplaces(base *fsx.Dir, name string) []string {
+	return hiddenTrees(base, oldMarketplacePrefix(name))
+}
+
+// hiddenTrees lists the directories of <base> whose names start with
+// prefix.
+func hiddenTrees(base *fsx.Dir, prefix string) []string {
+	ents, err := base.ReadDir("")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if e.Type == fsx.TypeDir && strings.HasPrefix(e.Name, prefix) {
+			out = append(out, e.Name)
+		}
+	}
+	return out
 }
 
 // embeddedPlugins returns every embedded file by its path.
@@ -380,16 +488,14 @@ func (a *app) integrateGeneric(id string, experimental, printOnly bool) int {
 		a.sayOut(textIntegrateExp, id, id)
 		return exitOK
 	}
-	cfg, err := a.config()
-	if err != nil {
-		return a.fail("integrate", err)
-	}
-	next := cfg
-	next.Harness = cloneHarness(cfg.Harness)
-	nh := next.Harness[id]
-	nh.Enabled, nh.Experimental = true, inv.Status == "experimental"
-	next.Harness[id] = nh
-	if err := a.saveConfig(next); err != nil {
+	if _, err := a.editConfig(func(disk config.Config) (config.Config, error) {
+		next := disk
+		next.Harness = cloneHarness(disk.Harness)
+		nh := next.Harness[id]
+		nh.Enabled, nh.Experimental = true, inv.Status == "experimental"
+		next.Harness[id] = nh
+		return next, nil
+	}); err != nil {
 		return a.fail("integrate", err)
 	}
 	a.sayOut(textIntegrateExp, id, id)

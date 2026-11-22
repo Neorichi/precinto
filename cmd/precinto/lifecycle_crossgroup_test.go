@@ -90,9 +90,10 @@ func TestCrossgroupSealAdoptSealsAnAdoptedSession(t *testing.T) {
 	if code := a.run([]string{"seal", "--adopt", "--dry-run"}); code != exitOK {
 		t.Fatalf("seal --adopt --dry-run: exit %d (%s)", code, e.stderr())
 	}
-	// The session and the project unit its transcript ties to the folder.
-	if out := e.stdout(); strings.Contains(out, "nothing to seal") || !strings.Contains(out, "precinto: sealed ") {
-		t.Fatalf("seal --adopt --dry-run printed %q, want the adopted session", out)
+	// The session and the project unit its transcript ties to the folder;
+	// a dry run seals nothing, so it says what a seal would do (D150).
+	if out := e.stdout(); strings.Contains(out, "nothing to seal") || strings.Contains(out, "precinto: sealed ") || !strings.Contains(out, "precinto: would seal ") {
+		t.Fatalf("seal --adopt --dry-run printed %q, want the adopted session as what a seal would do", out)
 	}
 	if gone(transcript) {
 		t.Fatal("the dry run removed the transcript")

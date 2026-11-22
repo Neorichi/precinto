@@ -330,7 +330,8 @@ func TestPendingAndTamperedPolicy(t *testing.T) {
 		_ = name
 	}
 	// A vault of the pinned settings that config.toml no longer lists (a
-	// pending removal) is only reported.
+	// pending removal) is pending-policy's, named by its folder, never by
+	// its vault id (U6-1); the copy itself is well-formed.
 	const oldID = "9f0e1d2c3b4a59687766554433221100"
 	q := p
 	q.Config = f.h.Cfg
@@ -339,7 +340,14 @@ func TestPendingAndTamperedPolicy(t *testing.T) {
 	if err := config.SavePinned(f.h.Layout.PolicyPinned, q); err != nil {
 		t.Fatal(err)
 	}
-	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Warn, "names 1 vault that no protected folder uses")
+	fs = f.run()
+	want(t, fs, doctor.CheckPolicyTampered, doctor.OK)
+	want(t, fs, doctor.CheckPendingPolicy, doctor.Warn, "folder ~/work/old removed")
+	for _, x := range fs {
+		if strings.Contains(x.Message, oldID) {
+			t.Errorf("a finding names the vault id: %+v", x)
+		}
+	}
 	// A vault that does not exist (D91).
 	opened := f.d.OpenVault
 	f.d.OpenVault = func(id string) (*vault.Vault, error) {
@@ -375,7 +383,19 @@ func TestPendingAndTamperedPolicy(t *testing.T) {
 func TestPolicyPinnedMissingAfterUnlocks(t *testing.T) {
 	f := newFixture(t)
 	f.d.OpenVault = func(id string) (*vault.Vault, error) {
-		return &vault.Vault{Meta: vault.Meta{ID: id, RecoveryVerifiedAt: now, LastAudit: now.Add(-time.Hour)}}, nil
+		m := vault.Meta{ID: id, RecoveryVerifiedAt: now}
+		if id != "global" {
+			m.LastAudit = now.Add(-time.Hour)
+		}
+		return &vault.Vault{Meta: m}, nil
+	}
+	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Warn, "is missing although folders have been unlocked before")
+	// The folders gone from config.toml too: the vaults on disk still
+	// tell (D145).
+	f.o.Cfg.Roots = nil
+	none(t, f.run(), doctor.CheckPolicyTampered)
+	if err := os.MkdirAll(filepath.Join(f.h.Layout.VaultsDir, "root-acme"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Warn, "is missing although folders have been unlocked before")
 }
@@ -581,4 +601,107 @@ func TestUngatedScanUnknownCwd(t *testing.T) {
 			}
 		}
 	}
+}
+
+// D148: an integrate stopped between the two renames that replace
+// <base>/marketplace left the plugin Claude Code loads in place only under
+// its hidden name: doctor fails it and names the command that puts it back.
+func TestHiddenMarketplaceIsReported(t *testing.T) {
+	f := newFixture(t)
+	hidden := filepath.Join(f.h.Layout.Base, ".marketplace.old-0123456789ab", "plugin")
+	if err := os.MkdirAll(hidden, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := want(t, f.run(), doctor.CheckInterrupted, doctor.Fail, "is missing after an interrupted precinto integrate")
+	if got.Fix != "precinto integrate claude-code" {
+		t.Errorf("fix %q", got.Fix)
+	}
+	// With the live tree in place the leftover is no finding.
+	if err := os.MkdirAll(f.h.Layout.Marketplace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range f.run() {
+		if x.Code == doctor.CheckInterrupted && strings.Contains(x.Message, "plugin folder") {
+			t.Errorf("a live marketplace is reported: %+v", x)
+		}
+	}
+}
+
+// D145: doctor finds root vaults as the agent does, on disk, so a pin of
+// a shape precinto never writes is forged even when config.toml names no
+// folder any more (a forged pin that names folders, next to a config.toml
+// emptied with it).
+func TestPolicyTamperedSeesTheVaultsOnDisk(t *testing.T) {
+	f := newFixture(t)
+	f.o.Cfg.Roots = nil
+	pinned := f.h.Cfg
+	p := config.Pinned{Version: config.PinnedVersion, ConfirmedAt: now, Config: pinned, MACs: map[string]string{"global": strings.Repeat("ab", 32)}}
+	if err := config.SavePinned(f.h.Layout.PolicyPinned, p); err != nil {
+		t.Fatal(err)
+	}
+	// No vault on disk: no root vault, so the shape is not enforced.
+	want(t, f.run(), doctor.CheckPolicyTampered, doctor.OK)
+	if err := os.MkdirAll(filepath.Join(f.h.Layout.VaultsDir, "root-acme"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want(t, f.run(), doctor.CheckPolicyTampered, doctor.Fail, "names folders but carries no MAC of theirs")
+}
+
+// D145 (S6-1): settings that name no folder are signed by the global vault
+// alone, and only precinto unlock --global checks that MAC. When folders
+// whose vault is kept are protected by nothing then — every folder dropped
+// from config.toml next to such a pin, or folders the user stopped
+// protecting (D74) — doctor names them and the command that checks the
+// settings, as a warning (never a failure: unprotecting is legitimate).
+func TestUnprotectedFoldersAreNamed(t *testing.T) {
+	f := newFixture(t)
+	acme, beta := f.h.Root, filepath.Join(f.h.HomeDir, "work", "beta")
+	f.d.OpenVault = func(id string) (*vault.Vault, error) {
+		m := vault.Meta{ID: id, RecoveryVerifiedAt: now.Add(-time.Hour), Factors: []vault.Factor{{Name: "se", Kind: vault.FactorSE}}}
+		switch id {
+		case "root-acme":
+			m.RootPath = acme
+		case "root-beta":
+			m.RootPath = beta
+		}
+		return &vault.Vault{Meta: m}, nil
+	}
+	for _, id := range []string{"global", "root-acme", "root-beta"} {
+		if err := os.MkdirAll(filepath.Join(f.h.Layout.VaultsDir, id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pin := func(c config.Config, macs map[string]string) {
+		t.Helper()
+		if err := config.SavePinned(f.h.Layout.PolicyPinned, config.Pinned{Version: config.PinnedVersion, ConfirmedAt: now, Config: c, MACs: macs}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mac := strings.Repeat("ab", 32)
+	// A pin that names a folder: that folder's next unlock checks it.
+	pin(f.h.Cfg, map[string]string{"root-acme": mac})
+	want(t, f.run(), doctor.CheckUnprotectedFolders, doctor.OK, "whose next unlock checks them")
+
+	// Every folder dropped, from config.toml and from a pin that keeps
+	// only a "global" MAC.
+	empty := f.h.Cfg
+	empty.Roots = nil
+	f.o.Cfg = empty
+	pin(empty, map[string]string{"global": mac})
+	got := want(t, f.run(), doctor.CheckUnprotectedFolders, doctor.Warn, "protect no folder", "2 folders", "~/work/acme", "~/work/beta")
+	if got.Fix != "precinto unlock --global (in a terminal)" {
+		t.Errorf("fix %q", got.Fix)
+	}
+	// config.toml still protects one of them: only the other is named.
+	f.o.Cfg = f.h.Cfg
+	got = want(t, f.run(), doctor.CheckUnprotectedFolders, doctor.Warn, "1 folder", "~/work/beta")
+	if strings.Contains(got.Message, "~/work/acme") {
+		t.Errorf("a protected folder is named: %q", got.Message)
+	}
+	// A folder the agent enforces (it found the settings tampered) is
+	// protected.
+	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) {
+		return ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-beta", RootPath: beta, State: "locked"}}}, nil
+	}
+	want(t, f.run(), doctor.CheckUnprotectedFolders, doctor.OK, "left without protection")
 }

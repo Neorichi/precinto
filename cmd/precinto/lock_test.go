@@ -495,3 +495,94 @@ func TestUnlockQuotesThePolicyInForce(t *testing.T) {
 		t.Errorf("failed confirmation: stderr %q, want %q first, then the error", out, ok)
 	}
 }
+
+// D150 (UX-14, U6-6): nothing is restored after a global unlock, so its
+// line promises no background restore and names restore --global, which
+// restores what belongs to no folder; a folder's line stays C2.ok.
+func TestUnlockGlobalNamesRestoreGlobal(t *testing.T) {
+	e := newEnv(t)
+	until := testkit.Epoch.Add(8 * time.Hour)
+	e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{vault.GlobalID}, Until: until}
+	if code := e.run("unlock", "--global"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	out := e.stderr()
+	if !strings.Contains(out, "precinto restore --global") || strings.Contains(out, "Restoring up to") || !strings.Contains(out, "the global vault unlocked.") {
+		t.Fatalf("stderr %q, want the global vault's own line (C2.okglobal)", out)
+	}
+}
+
+// D146 (U6-1): a folder whose removal from config.toml waits for its
+// confirmation is still protected by the agent (the confirmed settings
+// hold it), so unlock can name it — by --root or as the working directory
+// — and the review of that removal is reachable from the folder itself.
+func TestUnlockNamesAFolderWhoseRemovalWaits(t *testing.T) {
+	for _, args := range [][]string{{"unlock", "--root", ""}, {"unlock"}} {
+		e := newEnv(t)
+		pinPolicy(t, e, e.loadConfig()) // the confirmed settings hold the folder
+		c := e.loadConfig()
+		c.Roots = nil
+		e.saveConfig(c) // removed from config.toml: a weakening edit, pending
+		e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{"root-acme"}, Until: testkit.Epoch.Add(8 * time.Hour)}
+		if args[len(args)-1] == "" {
+			args[len(args)-1] = e.h.Root
+		}
+		if code := e.run(args...); code != exitOK {
+			t.Fatalf("%v: exit %d (%s)", args, code, e.stderr())
+		}
+		if len(e.daemon.unlocks) != 1 || len(e.daemon.unlocks[0].RootIDs) != 1 || e.daemon.unlocks[0].RootIDs[0] != "root-acme" {
+			t.Fatalf("%v: unlock requests %+v", args, e.daemon.unlocks)
+		}
+	}
+}
+
+// D145 (S6-1): while the confirmed settings name no folder (signed by the
+// global vault alone, which a folder unlock never checks), the review of
+// a terminal unlock of a folder also names the folders whose vault is kept
+// but that config.toml does not protect: confirming adopts config.toml, so
+// a yes never drops one unseen, even when the agent lists nothing. unlock
+// --global checks the settings itself and shows no such line.
+func TestUnlockReviewNamesTheFoldersTheSettingsDrop(t *testing.T) {
+	setup := func(t *testing.T) *env {
+		e := newEnv(t)
+		if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		e.vaults.metas["root-acme"] = vault.Meta{ID: "root-acme", RootPath: e.h.Root}
+		e.vaults.metas["root-beta"] = vault.Meta{ID: "root-beta", RootPath: filepath.Join(e.h.HomeDir, "work", "beta")}
+		c := e.loadConfig()
+		c.Roots = nil
+		if err := os.MkdirAll(filepath.Dir(e.h.Layout.PolicyPinned), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := config.SavePinned(e.h.Layout.PolicyPinned, config.Pinned{Config: c, MACs: map[string]string{vault.GlobalID: strings.Repeat("ab", 32)}}); err != nil {
+			t.Fatal(err)
+		}
+		e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{"root-acme"}}
+		return e
+	}
+	for _, yes := range []bool{false, true} {
+		e := setup(t)
+		e.tty.yesno = []bool{yes}
+		if code := e.run("unlock"); code != exitOK {
+			t.Fatalf("yes=%v: exit %d (%s)", yes, code, e.stderr())
+		}
+		out := e.stderr()
+		if !strings.Contains(out, ui.Format(ui.MsgPolicyReview, ui.Vars{N: 1})) || !strings.Contains(out, "~/work/beta: no longer protected") ||
+			strings.Contains(out, "~/work/acme: no longer protected") || strings.Contains(out, "roots[") {
+			t.Fatalf("yes=%v: review %q", yes, out)
+		}
+		confirmed := len(e.daemon.policies) == 1 && e.daemon.policies[0].Confirm
+		if confirmed != yes {
+			t.Fatalf("yes=%v: policy calls %+v", yes, e.daemon.policies)
+		}
+	}
+	e := setup(t)
+	e.daemon.unlockRes = ipc.UnlockResp{Unlocked: []string{vault.GlobalID}}
+	if code := e.run("unlock", "--global"); code != exitOK {
+		t.Fatalf("unlock --global: exit %d (%s)", code, e.stderr())
+	}
+	if strings.Contains(e.stderr(), "no longer protected") || len(e.tty.prompts) != 0 {
+		t.Fatalf("unlock --global reviews the dropped folders: %q (prompts %q)", e.stderr(), e.tty.prompts)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -498,5 +499,211 @@ func TestProtectHardens(t *testing.T) {
 	e2.hardenErr = errors.New("ptrace attach allowed")
 	if code := e2.run("protect", "work/beta", "--harness", "claude-code"); code == exitOK || len(e2.daemon.creates) != 0 {
 		t.Fatalf("protect went on after a failed harden: exit %d, %d vault_create", code, len(e2.daemon.creates))
+	}
+}
+
+// D144 (D6-2): every config.toml edit applies its own change to the file as
+// it is on disk under the config lock, never the copy the command loaded
+// at its start: a folder another command protected or unprotected while
+// integrate ran its plugin commands, or while unprotect restored, stays as
+// that command left it, in config.toml and in roots.list.
+func TestConfigEditsKeepChangesMadeMeanwhile(t *testing.T) {
+	other := func(e *env, edit func(c config.Config) config.Config) {
+		e.t.Helper()
+		// Another terminal saves its edit (under the config lock).
+		if _, err := e.app().editConfig(func(disk config.Config) (config.Config, error) { return edit(disk), nil }); err != nil {
+			e.t.Error(err)
+		}
+	}
+	added := func(e *env) config.Root {
+		r := config.Root{ID: "root-new", Path: filepath.Join(e.h.HomeDir, "work", "new"), MD: config.MDLedger}
+		if err := os.MkdirAll(r.Path, 0o700); err != nil {
+			e.t.Fatal(err)
+		}
+		return r
+	}
+	check := func(e *env, keep, gone []string) {
+		e.t.Helper()
+		c := e.loadConfig()
+		list, _ := config.ReadRootsList(e.h.Layout.RootsList)
+		for _, p := range keep {
+			if _, ok := rootByPath(c, p); !ok || !slices.Contains(list, p) {
+				e.t.Errorf("%s was dropped (config.toml %v, roots.list %v)", p, c.Roots, list)
+			}
+		}
+		for _, p := range gone {
+			if _, ok := rootByPath(c, p); ok || slices.Contains(list, p) {
+				e.t.Errorf("%s came back (config.toml %v, roots.list %v)", p, c.Roots, list)
+			}
+		}
+	}
+
+	t.Run("protect during integrate", func(t *testing.T) {
+		e := newEnv(t)
+		fakePluginDir(t, e, "claude")
+		e.execOut["--version"] = []byte("2.1.329 (Claude Code)\n")
+		r := added(e)
+		exe := filepath.Join(e.h.Dir, "precinto-bin")
+		if err := os.WriteFile(exe, []byte("x"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		a := e.app()
+		a.sys.executable = func() (string, error) { return exe, nil }
+		inner := a.sys.exec
+		once := false
+		a.sys.exec = func(ctx context.Context, c execSpec) ([]byte, error) {
+			if len(c.Argv) > 1 && c.Argv[1] == "plugin" && !once {
+				once = true
+				other(e, func(c config.Config) config.Config { c.Roots = append(c.Roots, r); return c })
+			}
+			return inner(ctx, c)
+		}
+		if code := a.run([]string{"integrate", "claude-code"}); code != exitOK {
+			t.Fatalf("integrate: exit %d (%s)", code, e.stderr())
+		}
+		check(e, []string{e.h.Root, r.Path}, nil)
+		if e.loadConfig().Harness["claude-code"].Bin == "" {
+			t.Error("integrate did not record the harness")
+		}
+	})
+
+	t.Run("protect during unprotect", func(t *testing.T) {
+		e := newEnv(t)
+		r := added(e)
+		e.eng.units = []sweep.UnitInfo{{Unit: "u", RootIDs: []string{"root-acme"}}}
+		e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+		e.eng.restoreFn = func(sweep.KeySource, sweep.RestoreRequest) {
+			other(e, func(c config.Config) config.Config { c.Roots = append(c.Roots, r); return c })
+		}
+		e.tty.lines = []string{wordUnprotect}
+		if code := e.run("unprotect", e.h.Root); code != exitOK {
+			t.Fatalf("unprotect: exit %d (%s)", code, e.stderr())
+		}
+		check(e, []string{r.Path}, []string{e.h.Root})
+	})
+
+	t.Run("two unprotects", func(t *testing.T) {
+		e := newEnv(t)
+		beta := e.h.Protect(t, "work/beta")
+		e.eng.units = []sweep.UnitInfo{{Unit: "u", RootIDs: []string{"root-acme"}}}
+		e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+		e.eng.restoreFn = func(sweep.KeySource, sweep.RestoreRequest) {
+			// The other terminal unprotects beta meanwhile.
+			other(e, func(c config.Config) config.Config {
+				c.Roots = slices.DeleteFunc(slices.Clone(c.Roots), func(x config.Root) bool { return x.ID == beta.ID })
+				return c
+			})
+		}
+		e.tty.lines = []string{wordUnprotect}
+		if code := e.run("unprotect", e.h.Root); code != exitOK {
+			t.Fatalf("unprotect: exit %d (%s)", code, e.stderr())
+		}
+		check(e, nil, []string{e.h.Root, beta.Path})
+	})
+}
+
+// D146 (U6-1): unprotect reviews the folder's removal and confirms it over
+// one connection to the agent. The agent signs the confirmed settings with
+// the key of a vault of those settings (D145): when no folder stays
+// protected that is the global vault, which unprotect asks to unlock
+// (C13.signer) over the same connection, a terminal unlock, before it
+// confirms; a folder that stays protected and is open signs without a
+// question. A declined question confirms nothing: unprotect then says the
+// folder stays protected until a terminal unlock confirms the change, and
+// exits 3, never "is no longer protected" (U6-1).
+func TestUnprotectConfirmsTheRemoval(t *testing.T) {
+	signer := ui.Format(ui.MsgPolicySigner, ui.Vars{Folder: "the global vault"})
+	for _, tc := range []struct {
+		name      string
+		beta      bool // another folder stays protected and is open
+		yes       []bool
+		confirmed bool
+	}{
+		{"the global vault signs", false, []bool{true, true}, true},
+		{"an open folder that stays signs", true, []bool{true}, true},
+		{"the signer question declined", false, []bool{true, false}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			open := []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}
+			if tc.beta {
+				beta := e.h.Protect(t, "work/beta")
+				open = append(open, ipc.VaultStatus{VaultID: beta.ID, State: "unlocked"})
+			}
+			e.eng.units = []sweep.UnitInfo{{Unit: "u", RootIDs: []string{"root-acme"}}}
+			e.daemon.status = ipc.StatusResp{Vaults: open}
+			e.daemon.pending = []string{"roots[root-acme]: " + e.h.Root + " → "}
+			e.tty.lines = []string{wordUnprotect}
+			e.tty.yesno = tc.yes
+			want := exitOK
+			if !tc.confirmed {
+				want = exitLocked
+			}
+			if code := e.run("unprotect", e.h.Root); code != want {
+				t.Fatalf("exit %d, want %d (%s)", code, want, e.stderr())
+			}
+			out := e.stderr()
+			// The review names the folder, never its id.
+			if !strings.Contains(out, "~/work/acme: no longer protected") || strings.Contains(out, "roots[root-acme]") {
+				t.Errorf("review %q", out)
+			}
+			asked := slices.Contains(e.tty.prompts, signer)
+			if asked == tc.beta {
+				t.Errorf("signer question asked=%v (prompts %q)", asked, e.tty.prompts)
+			}
+			n := len(e.daemon.policies)
+			if got := n > 0 && e.daemon.policies[n-1].Confirm; got != tc.confirmed {
+				t.Fatalf("confirmed=%v (policy calls %+v)", got, e.daemon.policies)
+			}
+			if tc.confirmed {
+				last := e.daemon.unlocks[len(e.daemon.unlocks)-1]
+				if !last.TTY || (!tc.beta && !last.Global) || (tc.beta && (last.Global || len(last.RootIDs) != 1 || last.RootIDs[0] != "root-beta")) {
+					t.Errorf("signer unlock %+v", last)
+				}
+			}
+			done := strings.Contains(out, fmt.Sprintf(textUnprotectDone, "~/work/acme"))
+			waits := strings.Contains(out, fmt.Sprintf(textUnprotectWaits, "~/work/acme", "~/work/acme"))
+			if done != tc.confirmed || waits == tc.confirmed {
+				t.Errorf("confirmed=%v: \"no longer protected\" shown %v, \"stays protected\" shown %v: %q", tc.confirmed, done, waits, out)
+			}
+		})
+	}
+}
+
+// U6-1: an agent that refuses the confirmation is quoted as its own line,
+// never behind "unprotect:", and a cancelled unlock of the global vault
+// that would sign names "the global vault", never its id; either way the
+// folder stays protected (exit 3).
+func TestUnprotectSaysWhyTheRemovalWaits(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		unlockErr  error
+		policyErr  error
+		want, lose string
+	}{
+		{"the signer unlock is cancelled", &ipc.Error{Code: ipc.CodeCancelled, Msg: "precinto: unlock cancelled. global stays locked."}, nil,
+			ui.Format(ui.MsgUnlockCancelled, ui.Vars{Folder: "the global vault"}), "global stays locked"},
+		{"the agent refuses the confirmation", nil, &ipc.Error{Code: ipc.CodeUnauthorized, Msg: "precinto: confirm settings right after unlocking in a terminal"}, "precinto: confirm settings right after unlocking in a terminal", "unprotect: precinto:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.eng.units = []sweep.UnitInfo{{Unit: "u", RootIDs: []string{"root-acme"}}}
+			e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", State: "unlocked"}}}
+			e.daemon.pending = []string{"roots[root-acme]: " + e.h.Root + " → "}
+			e.daemon.unlockErr = tc.unlockErr
+			e.daemon.policyErr = tc.policyErr
+			e.tty.lines = []string{wordUnprotect}
+			e.tty.yesno = []bool{true, true}
+			if code := e.run("unprotect", e.h.Root); code != exitLocked {
+				t.Fatalf("exit %d, want %d (%s)", code, exitLocked, e.stderr())
+			}
+			out := e.stderr()
+			if !strings.Contains(out, tc.want+"\n") || strings.Contains(out, tc.lose) || strings.Contains(out, "unprotect: precinto") {
+				t.Errorf("stderr %q, want the line %q and never %q", out, tc.want, tc.lose)
+			}
+			if !strings.Contains(out, fmt.Sprintf(textUnprotectWaits, "~/work/acme", "~/work/acme")) || strings.Contains(out, "is no longer protected") {
+				t.Errorf("stderr %q", out)
+			}
+		})
 	}
 }

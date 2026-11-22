@@ -127,7 +127,7 @@ func TestNormativeTexts(t *testing.T) {
 		ui.MsgPassphraseAgain:  "Type the passphrase again:",
 		ui.MsgPassphraseWeak:   "that passphrase is too weak (at least 12 characters and about 80 bits are needed). Try again.",
 		ui.MsgPassphraseDiff:   "the two passphrases differ. Try again.",
-		ui.MsgPassphraseGen:    "Your new precinto passphrase:",
+		ui.MsgPassphraseGen:    "Your new precinto passphrase. Type it exactly as shown, hyphens included:", // D150: it is typed as shown
 		ui.MsgRecoveryHeader:   "Your precinto recovery key. It opens every sealed folder if you lose your other ways to unlock.\nWrite it down and keep it offline. It is shown only once.",
 		ui.MsgRecoveryAgain:    "The recovery key is shown only now. Show it again? [Y/n]",
 		ui.MsgRecoveryLost:     "WARNING: the recovery key was not confirmed and cannot be shown again. Keep your other ways to unlock safe.",

@@ -165,21 +165,39 @@ func cmdProtect(a *app, args []string) int {
 		if root.MD == "" {
 			root.MD = config.MDLedger
 		}
-		next := cfg
-		next.Roots = append(append([]config.Root(nil), cfg.Roots...), root)
-		next.Harness = cloneHarness(cfg.Harness)
+		home, addClaudeHome := config.Home{}, false
 		if slices.Contains(harnesses, string(harness.ClaudeCode)) {
-			if h, ok := a.claudeHomeFromEnv(); ok {
-				addHome(next.Harness, string(harness.ClaudeCode), h)
-			}
+			home, addClaudeHome = a.claudeHomeFromEnv()
 		}
 		// The folder is listed (config.toml and roots.list, which the
 		// shim reads) before its vault exists: from now on hooks fail
-		// closed there (I5).
-		if err := a.saveConfig(next); err != nil {
+		// closed there (I5). It is added to config.toml as it is on disk
+		// now (D144): a folder another command protected or unprotected
+		// meanwhile stays as that command left it.
+		saved, err := a.editConfig(func(disk config.Config) (config.Config, error) {
+			if r, ok := rootByPath(disk, dir); ok {
+				root, existing = r, true // protected meanwhile by another command
+				return disk, errNoEdit
+			}
+			next := disk
+			next.Roots = append(append([]config.Root(nil), disk.Roots...), root)
+			next.Harness = cloneHarness(disk.Harness)
+			if addClaudeHome {
+				addHome(next.Harness, string(harness.ClaudeCode), home)
+			}
+			return next, nil
+		})
+		if err != nil && !errors.Is(err, errNoEdit) {
 			return a.fail("protect", err)
 		}
-		cfg = next
+		cfg = saved
+		if existing {
+			if _, err := vs.Meta(root.ID); err == nil {
+				a.say(textAlreadyProt, disp)
+				return exitOK
+			}
+			reused = false
+		}
 	}
 
 	if reused {
@@ -267,34 +285,33 @@ func (a *app) codexInstalled(cfg config.Config) bool {
 }
 
 // addCodexConsent records a yes to C10.consent from `precinto run codex`
-// (D72): codex joins the folder's harness list, a strengthening edit (D48).
+// (D72): codex joins the folder's harness list, a strengthening edit (D48),
+// in config.toml as it is on disk (D144).
 func (a *app) addCodexConsent(rootID string) error {
-	l, err := a.layout()
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load(l.ConfigFile) // the file as it is now, not a cached copy
-	if err != nil {
-		return err
-	}
-	next := cfg
-	next.Roots = append([]config.Root(nil), cfg.Roots...)
-	for i, r := range next.Roots {
-		if r.ID != rootID {
-			continue
+	_, err := a.editConfig(func(disk config.Config) (config.Config, error) {
+		next := disk
+		next.Roots = append([]config.Root(nil), disk.Roots...)
+		for i, r := range next.Roots {
+			if r.ID != rootID {
+				continue
+			}
+			if slices.Contains(r.Harnesses, string(harness.Codex)) {
+				return disk, errNoEdit
+			}
+			hs := append([]string(nil), r.Harnesses...)
+			if len(hs) == 0 {
+				hs = []string{string(harness.ClaudeCode)} // an empty list meant both built-ins
+			}
+			r.Harnesses = append(hs, string(harness.Codex))
+			next.Roots[i] = r
+			return next, nil
 		}
-		if slices.Contains(r.Harnesses, string(harness.Codex)) {
-			return nil
-		}
-		hs := append([]string(nil), r.Harnesses...)
-		if len(hs) == 0 {
-			hs = []string{string(harness.ClaudeCode)} // an empty list meant both built-ins
-		}
-		r.Harnesses = append(hs, string(harness.Codex))
-		next.Roots[i] = r
-		return a.saveConfig(next)
+		return disk, errNoEdit
+	})
+	if errors.Is(err, errNoEdit) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 // rootByPath returns the root whose path is exactly dir.
@@ -752,9 +769,18 @@ func cmdUnprotect(a *app, args []string) int {
 		}
 		a.printRestore(rep)
 	}
-	next := cfg
-	next.Roots = slices.DeleteFunc(append([]config.Root(nil), cfg.Roots...), func(r config.Root) bool { return r.ID == root.ID })
-	if err := a.saveConfig(next); err != nil {
+	// The folder leaves config.toml as it is on disk now (D144): folders
+	// other commands protected or unprotected meanwhile stay as they left
+	// them.
+	saved, err := a.editConfig(func(disk config.Config) (config.Config, error) {
+		if _, ok := disk.RootByID(root.ID); !ok {
+			return disk, errNoEdit // removed meanwhile by another command
+		}
+		next := disk
+		next.Roots = slices.DeleteFunc(append([]config.Root(nil), disk.Roots...), func(r config.Root) bool { return r.ID == root.ID })
+		return next, nil
+	})
+	if err != nil && !errors.Is(err, errNoEdit) {
 		return a.fail("unprotect", err)
 	}
 	if root.ClaudeSettings {
@@ -767,8 +793,14 @@ func cmdUnprotect(a *app, args []string) int {
 	// Removing a folder weakens protection: the daemon keeps it until the
 	// change is confirmed in a terminal (D48). Every pending change is
 	// listed and confirmed explicitly: the typed "unprotect" covered only
-	// this folder, not other edits an agent may have made.
-	a.confirmPolicy(ctx, t)
+	// this folder, not other edits an agent may have made (D146). Only a
+	// confirmed removal (or one nothing held back) is "no longer
+	// protected": otherwise the agent keeps locking and gating the folder,
+	// and its lock seals it again.
+	if !a.confirmRemoval(ctx, t, root, saved) {
+		a.say(textUnprotectWaits, disp, ui.ShellWord(a.home(), root.Path))
+		return exitLocked
+	}
 	a.say(textUnprotectDone, disp)
 	return exitOK
 }
@@ -854,35 +886,166 @@ func (a *app) ensureUnlocked(ctx context.Context, roots []config.Root, relay ipc
 	return err
 }
 
-// confirmPolicy lists the weakening changes waiting for confirmation (D48)
-// and confirms them only after an explicit yes on the terminal.
-func (a *app) confirmPolicy(ctx context.Context, t terminal) {
-	if t == nil {
-		return
-	}
-	c, err := a.dial(ctx, false)
+// confirmRemoval reviews, right after unprotect saved config.toml, the
+// weakening changes that wait for a confirmation — the folder's removal
+// and any other edit — and confirms them after an explicit yes (D48,
+// D146). Everything goes over one connection: the agent re-reads
+// config.toml before it lists them, and a confirmation is accepted only
+// after a terminal unlock on that connection (D91). settings is
+// config.toml as saved, the settings being confirmed. It reports whether
+// the folder is no longer protected: the changes were confirmed, or the
+// agent holds nothing back (the confirmed settings never named the
+// folder). A removal left unconfirmed — declined, refused, or with no
+// agent to ask (it is started as for the unlock before; one that cannot
+// start enforces the confirmed settings again at its next start) — is
+// false: the agent keeps protecting the folder until a terminal unlock
+// confirms it. The agent's refusal is printed as its own line.
+func (a *app) confirmRemoval(ctx context.Context, t terminal, root config.Root, settings config.Config) bool {
+	c, err := a.dial(ctx, true)
 	if err != nil {
-		return
+		a.sayErr("unprotect", err)
+		return false
 	}
 	defer c.Close()
 	p, err := c.Policy(ctx, ipc.PolicyReq{})
-	if err != nil || len(p.Pending) == 0 {
-		return
+	if err != nil {
+		a.sayErr("unprotect", err)
+		return false
 	}
-	a.showPending(p.Pending)
-	ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false)
-	if err != nil || !ok {
-		return
+	if len(p.Pending) == 0 {
+		return true
 	}
-	_, _ = c.Policy(ctx, ipc.PolicyReq{Confirm: true})
+	open := map[string]bool{}
+	if st, err := c.Status(ctx); err == nil {
+		open = unlockedVaults(st)
+	}
+	names := config.WithRoots(settings, root)
+	ok, err := a.confirmChanges(ctx, c, t, p.Pending, settings, names, open, false)
+	if err != nil {
+		a.sayErr("unprotect", err)
+	}
+	return err == nil && ok
+}
+
+// confirmChanges shows the pending weakening changes on t, naming folders
+// (names maps root ids to folders), and on an explicit yes confirms them
+// over c (D48, D123). The agent signs the settings it pins with the key of
+// a vault of those settings (D145): one of their folders, or the global
+// vault when they name none; when no such vault is unlocked, it asks
+// (C13.signer) to unlock one — the global vault, or the first of their
+// folders — on c, which is also the terminal unlock the confirmation needs
+// on that connection; ttyDone says c made one already. It reports whether
+// the changes were confirmed; a refusal of the agent is its error.
+func (a *app) confirmChanges(ctx context.Context, c daemonClient, t terminal, pending []string, settings, names config.Config, open map[string]bool, ttyDone bool) (bool, error) {
+	a.showPending(pending, names)
+	if ok, err := t.YesNo(ui.Format(ui.MsgPolicyConfirm, ui.Vars{}), false); err != nil || !ok {
+		return false, nil
+	}
+	signer, folder := pinSigner(settings, open)
+	signerName := "the global vault"
+	if signer != vault.GlobalID {
+		signerName = a.display(folder)
+	}
+	if !open[signer] || !ttyDone {
+		if !open[signer] {
+			if ok, err := t.YesNo(ui.Format(ui.MsgPolicySigner, ui.Vars{Folder: signerName}), true); err != nil || !ok {
+				return false, nil
+			}
+		}
+		req := ipc.UnlockReq{TTY: true, Confirmed: true, Deadline: wireDeadline(unlockDeadline)}
+		if signer == vault.GlobalID {
+			req.Global = true
+		} else {
+			req.RootIDs = []string{signer}
+		}
+		if _, err := c.Unlock(ctx, req, t); err != nil {
+			// A cancel or a wrong secret is said as an unlock says it,
+			// naming the folder or "the global vault" (never its id).
+			switch {
+			case isCancel(err):
+				a.line(ui.MsgUnlockCancelled, ui.Vars{Folder: signerName})
+				return false, shownError{reason: "cancelled", code: exitLocked}
+			case isBadSecret(err):
+				a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: signerName})
+				return false, shownError{reason: "bad secret", code: exitLocked}
+			}
+			return false, err
+		}
+	}
+	if _, err := c.Policy(ctx, ipc.PolicyReq{Confirm: true}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// pinSigner is the vault whose key signs a pin of settings (D145): an
+// unlocked folder of the settings, else their first folder by path (to
+// unlock), or the global vault when they name no folder; folder is that
+// folder's path ("" for the global vault).
+func pinSigner(settings config.Config, open map[string]bool) (id, folder string) {
+	if len(settings.Roots) == 0 {
+		return vault.GlobalID, ""
+	}
+	roots := append([]config.Root(nil), settings.Roots...)
+	slices.SortFunc(roots, func(x, y config.Root) int { return strings.Compare(x.Path, y.Path) })
+	for _, r := range roots {
+		if open[r.ID] {
+			return r.ID, r.Path
+		}
+	}
+	return roots[0].ID, roots[0].Path
 }
 
 // showPending prints the pending changes for the terminal review that
 // follows (C13.review: the user decides now, so never C13.policy's "at
-// your next unlock", UX-14).
-func (a *app) showPending(pending []string) {
+// your next unlock", UX-14), a folder's by its path, never its id (D146).
+func (a *app) showPending(pending []string, names config.Config) {
 	a.line(ui.MsgPolicyReview, ui.Vars{N: len(pending)})
 	for _, ch := range pending {
-		a.say(textPolicyLine, oneLineText(ch))
+		a.say(textPolicyLine, oneLineText(a.pendingLine(ch, names)))
 	}
+}
+
+// pendingLine renders one pending change of the agent ("key: old → new",
+// content-free) for the review: a change of folder id, roots[<id>]…,
+// names the folder (names, else the path the change carries), and a
+// folder that stops or starts being protected says so.
+func (a *app) pendingLine(line string, names config.Config) string {
+	rest, ok := strings.CutPrefix(line, "roots[")
+	if !ok {
+		return line
+	}
+	id, rest, ok := strings.Cut(rest, "]")
+	if !ok {
+		return line
+	}
+	folder := ""
+	if r, ok := names.RootByID(id); ok {
+		folder = a.display(r.Path)
+	}
+	if body, ok := strings.CutPrefix(rest, ": "); ok {
+		old, new, ok := strings.Cut(body, " → ")
+		if !ok {
+			return line
+		}
+		switch {
+		case folder == "" && old != "":
+			folder = a.display(old)
+		case folder == "" && new != "":
+			folder = a.display(new)
+		}
+		switch {
+		case folder == "":
+			return line
+		case new == "":
+			return folder + ": " + textNoLongerProtected
+		case old == "":
+			return folder + ": " + textNewlyProtected
+		}
+		return line
+	}
+	if field, ok := strings.CutPrefix(rest, "."); ok && folder != "" {
+		return folder + ": " + strings.Replace(field, ": ", " ", 1)
+	}
+	return line
 }

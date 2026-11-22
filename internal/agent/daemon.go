@@ -113,6 +113,9 @@ type policyState struct {
 	verified bool
 	eff      config.Config // what the daemon enforces
 	pending  []config.Change
+	// recorded: the folders the root vaults record, which join eff while
+	// the policy is tampered (D145, recordedRoots).
+	recorded []config.Root
 }
 
 // daemon is one running `precinto agent`.

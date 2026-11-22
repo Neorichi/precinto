@@ -162,27 +162,35 @@ func (a *app) failRestore(name string, err error) int {
 }
 
 func (a *app) failWith(name string, err error, code int) int {
+	a.sayErr(name, err)
+	return code
+}
+
+// sayErr prints err for command name as fail does: nothing for a refusal
+// or an error printed already, a daemon error's catalog message on its
+// own (it carries its "precinto: " prefix), C3.agentdown without an
+// agent, C2.badsecret for a wrong secret, else "name: error".
+func (a *app) sayErr(name string, err error) {
 	var re refusedError
 	var se shownError
 	if errors.As(err, &re) || errors.As(err, &se) {
-		return code
+		return
 	}
 	var ie *ipc.Error
 	if errors.As(err, &ie) && ie.Msg != "" {
 		a.say("%s", oneLineText(ie.Msg))
-		return code
+		return
 	}
 	if errors.Is(err, ipc.ErrNoDaemon) {
 		a.line(ui.MsgAgentDownAll, ui.Vars{})
-		return code
+		return
 	}
 	if isBadSecret(err) {
 		// CC-08: C2.badsecret, never the error chain.
 		a.line(ui.MsgUnlockBadSecret, ui.Vars{Folder: "the folder"})
-		return code
+		return
 	}
 	a.say("%s: %s", name, oneLineText(err.Error()))
-	return code
 }
 
 // oneLineText keeps the first line of s and strips terminal controls.

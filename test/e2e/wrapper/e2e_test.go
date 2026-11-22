@@ -118,11 +118,24 @@ type world struct {
 func newWorld(t *testing.T, extraPath ...string) *world {
 	t.Helper()
 	requireE2E(t)
+	return buildWorld(t, extraPath...)
+}
+
+// buildWorld is newWorld without the opt-in check. When the test ends, the
+// world stops what its installation left running (D129): the agent its
+// commands autostarted, with `precinto agent --stop`, and the workers that
+// agent spawned, before the fake home is removed; a process of the world
+// that is still running then fails the test (testkit.StopInstallation).
+func buildWorld(t *testing.T, extraPath ...string) *world {
+	t.Helper()
 	h := testkit.NewHome(t)
 	w := &world{t: t, h: h, bin: testkit.BuildBinary(t, "testing"), env: map[string]string{}}
 	w.path = strings.Join(append(extraPath, "/usr/bin:/bin:/usr/sbin:/sbin"), ":")
 	w.env["TERM"] = "xterm-256color"
 	w.env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ""
+	// Registered after the home and before every session: it runs after
+	// the sessions' cleanups and before the home is removed.
+	t.Cleanup(func() { testkit.StopInstallation(t, w.bin, w.environ(), w.h.Dir, w.h.RunDir) })
 	w.setup()
 	return w
 }
@@ -778,4 +791,31 @@ func TestE2E6CodexHomeThroughTheWrapper(t *testing.T) {
 		t.Fatalf("no codex-home snapshot sealed after exit:\n%s", tail(run.text()))
 	}
 	t.Logf("%d capsule(s) sealed", len(caps))
+}
+
+// TestWorldCleanupLeavesNothingRunning runs without PRECINTO_E2E and
+// without a harness: the world's own setup (init, protect) autostarts its
+// agent, a lock makes the agent spawn its lock workers, and when the test
+// ends the world stops them all before its home is removed, so no process
+// of the world outlives it (D129; before, every E2E world left its agent
+// running, recreating files in its removed home).
+func TestWorldCleanupLeavesNothingRunning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the precinto binary (slow)")
+	}
+	var bin, home string
+	ok := t.Run("world", func(t *testing.T) {
+		w := buildWorld(t)
+		bin, home = w.bin, w.h.Dir
+		w.lock() // the agent spawns sweep --lock workers
+		if left := testkit.Leftovers(w.bin); len(left) == 0 {
+			t.Fatal("the world runs no process of its installation: nothing to stop")
+		}
+	})
+	if !ok {
+		t.Fatal("the world's cleanup failed")
+	}
+	if left := testkit.Leftovers(bin, home); len(left) > 0 {
+		t.Fatalf("left running after the world's test: %v", left)
+	}
 }

@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
+	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
+	"github.com/precinto/precinto/internal/vault"
 )
 
 func TestSealOptions(t *testing.T) {
@@ -39,11 +41,19 @@ func TestSealOptions(t *testing.T) {
 	if hs := e.eng.sealHarness[0]; len(hs) != 1 || hs[0] != harness.ClaudeCode {
 		t.Fatalf("harnesses %v", hs)
 	}
-	if !strings.Contains(e.stdout(), "sealed 1 unit(s) (4 files, 2 kB).") || !strings.Contains(e.stdout(), "1 unit(s) are still in use") {
-		t.Fatalf("stdout %q", e.stdout())
+	// D150: a dry run says what a seal would do, never "sealed".
+	if out := e.stdout(); !strings.Contains(out, "would seal 1 unit(s) (4 files, 2 kB)") || !strings.Contains(out, "1 unit(s) are still in use") || strings.Contains(out, "precinto: sealed") {
+		t.Fatalf("stdout %q", out)
 	}
-	if len(e.dials) != 0 {
-		t.Fatal("seal dialled the daemon itself (it never needs a key)")
+	// D142: seal asks a running agent which folders it enforces, nothing
+	// more: it never needs a key and never starts the agent.
+	if len(e.daemon.keys) != 0 {
+		t.Fatalf("seal asked the daemon for keys: %+v", e.daemon.keys)
+	}
+	for _, d := range e.dials {
+		if d.Autostart {
+			t.Fatal("seal started the daemon")
+		}
 	}
 }
 
@@ -511,5 +521,172 @@ func TestRestoreStoppedByALock(t *testing.T) {
 	}
 	if code := e.run("restore", "--session", "sid1"); code != exitOK {
 		t.Fatalf("restore with nothing interrupted: exit %d (%s)", code, e.stderr())
+	}
+}
+
+// D150 (UX, U6-4): a dry run reports what it would seal as OutSealed with
+// Detail "dry-run"; seal --dry-run and sweep --dry-run say "would seal",
+// never "sealed", and the held and adopted lines are conditional too.
+func TestDryRunSaysWhatASealWouldDo(t *testing.T) {
+	rep := &sweep.Report{Units: []sweep.UnitResult{
+		{Harness: "claude-code", Kind: capsule.KindClaudeSession, Unit: "0123456789abcdef0123456789abcdef", Outcome: sweep.OutSealed, Files: 1, Bytes: 272, Detail: "dry-run"},
+		{Harness: "claude-code", Kind: capsule.KindClaudeSession, Unit: "1123456789abcdef0123456789abcdef", Outcome: sweep.OutSkipped, Detail: "adopted: seal --adopt"},
+		{Harness: "claude-code", Kind: capsule.KindClaudeSession, Unit: "2123456789abcdef0123456789abcdef", Outcome: sweep.OutLive},
+	}}
+	for _, args := range [][]string{{"seal", "--adopt", "--dry-run"}, {"sweep", "--dry-run"}} {
+		e := newEnv(t)
+		e.eng.sealRep, e.eng.sweepRep = rep, rep
+		if code := e.run(args...); code != exitOK {
+			t.Fatalf("%v: exit %d (%s)", args, code, e.stderr())
+		}
+		out := e.stdout()
+		if strings.Contains(out, "precinto: sealed ") || strings.Contains(out, "hooks, stay unencrypted") || strings.Contains(out, "stay unencrypted for now") {
+			t.Errorf("%v (nothing was sealed) prints %q", args, out)
+		}
+		for _, want := range []string{"precinto: would seal 1 unit(s) (1 files, 272 B); nothing was sealed.", "would stay unencrypted", "a seal now would leave them unencrypted"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v: %q lacks %q", args, out, want)
+			}
+		}
+	}
+	// Without --dry-run the same report reads as done.
+	e := newEnv(t)
+	e.eng.sealRep = rep
+	if code := e.run("seal", "--adopt"); code != exitOK {
+		t.Fatalf("seal --adopt: exit %d (%s)", code, e.stderr())
+	}
+	if out := e.stdout(); !strings.Contains(out, "precinto: sealed 1 unit(s) (1 files, 272 B).") {
+		t.Errorf("seal --adopt prints %q", out)
+	}
+}
+
+// D142, D145 (R2): a sealing command's --root DIR resolves against the
+// folders the agent enforces. A folder only a vault records — a retired
+// one (D74) next to a pin of the shape precinto writes — is no protected
+// folder, for the agent's lock worker (`sweep --lock`) as for anyone, so
+// a hand-run `sweep --lock --root ~/retired` seals nothing there. It is
+// one when the running agent reports it (a pin whose MAC failed at an
+// unlock: the agent enforces every recorded folder then), and when this
+// process finds the pin missing (the agent's tampered state at start).
+func TestLockSweepTakesOnlyFoldersTheAgentEnforces(t *testing.T) {
+	setup := func(t *testing.T, pin bool) (*env, string) {
+		e := newEnv(t)
+		beta := filepath.Join(e.h.HomeDir, "work", "beta")
+		if err := os.MkdirAll(beta, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		e.vaults.metas["root-beta"] = vault.Meta{ID: "root-beta", RootPath: beta}
+		if pin {
+			if err := os.MkdirAll(filepath.Dir(e.h.Layout.PolicyPinned), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := config.SavePinned(e.h.Layout.PolicyPinned, config.Pinned{Config: e.loadConfig(), MACs: map[string]string{"root-acme": strings.Repeat("ab", 32)}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return e, beta
+	}
+	sealsBeta := func(t *testing.T, e *env, beta string) {
+		t.Helper()
+		o := e.eng.sweepOpts[len(e.eng.sweepOpts)-1]
+		if len(o.Scope.RootIDs) != 1 || o.Scope.RootIDs[0] != "root-beta" {
+			t.Fatalf("scope %+v", o.Scope)
+		}
+		cfg := e.engCfg[len(e.engCfg)-1]
+		if r, ok := cfg.RootByID("root-beta"); !ok || r.Path != beta {
+			t.Fatalf("the engine does not seal the folder: %+v", cfg.Roots)
+		}
+	}
+
+	t.Run("retired", func(t *testing.T) {
+		e, beta := setup(t, true)
+		e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{{VaultID: "root-acme", RootPath: e.h.Root, State: "locked"}}}
+		for _, args := range [][]string{{"sweep", "--root", beta, "--quiet"}, {"sweep", "--lock", "--root", beta, "--quiet"}, {"seal", "--root", beta}} {
+			if code := e.run(args...); code != exitUsage {
+				t.Fatalf("%v of a retired folder: exit %d, want %d (%s)", args, code, exitUsage, e.stderr())
+			}
+		}
+		if len(e.eng.sweepOpts) != 0 || len(e.eng.sealOpts) != 0 {
+			t.Fatalf("a retired folder was swept: %+v %+v", e.eng.sweepOpts, e.eng.sealOpts)
+		}
+		if !strings.Contains(e.stderr(), "is not inside a protected folder") {
+			t.Errorf("stderr %q", e.stderr())
+		}
+	})
+	t.Run("the agent enforces it", func(t *testing.T) {
+		e, beta := setup(t, true)
+		e.daemon.status = ipc.StatusResp{Vaults: []ipc.VaultStatus{
+			{VaultID: "root-acme", RootPath: e.h.Root, State: "locked"},
+			{VaultID: "root-beta", RootPath: beta, State: "locked"},
+			{VaultID: vault.GlobalID, State: "locked"},
+		}}
+		if code := e.run("sweep", "--lock", "--root", beta, "--quiet"); code != exitOK {
+			t.Fatalf("sweep --lock --root: exit %d (%s)", code, e.stderr())
+		}
+		sealsBeta(t, e, beta)
+		for _, d := range e.dials {
+			if d.Autostart {
+				t.Fatal("a sealing command started the agent")
+			}
+		}
+	})
+	t.Run("no pin, no agent", func(t *testing.T) {
+		e, beta := setup(t, false)
+		e.dialErr = ipc.ErrNoDaemon
+		if code := e.run("sweep", "--lock", "--root", beta, "--quiet"); code != exitOK {
+			t.Fatalf("sweep --lock --root: exit %d (%s)", code, e.stderr())
+		}
+		sealsBeta(t, e, beta)
+	})
+}
+
+// D142, D145 (R1): a config.toml that does not load never makes a sweep
+// seal a folder the user stopped protecting. The settings standing in
+// for it hold the confirmed settings' folders, those the agent reports,
+// and the folders vaults record only while the pin is missing or forged;
+// a retired vault (D74) next to a pin of the shape precinto writes is
+// none of them.
+func TestBrokenConfigNeverSealsARetiredFolder(t *testing.T) {
+	e := newEnv(t)
+	old := filepath.Join(e.h.HomeDir, "work", "old")
+	if err := os.MkdirAll(e.h.Layout.VaultsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.vaults.metas["root-acme"] = vault.Meta{ID: "root-acme", RootPath: e.h.Root}
+	e.vaults.metas["root-old"] = vault.Meta{ID: "root-old", RootPath: old}
+	if err := os.MkdirAll(filepath.Dir(e.h.Layout.PolicyPinned), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePinned(e.h.Layout.PolicyPinned, config.Pinned{Config: e.loadConfig(), MACs: map[string]string{"root-acme": strings.Repeat("ab", 32)}}); err != nil {
+		t.Fatal(err)
+	}
+	writeBrokenConfig(t, e)
+	e.dialErr = ipc.ErrNoDaemon
+	for _, args := range [][]string{{"sweep"}, {"sweep", "--lock", "--quiet"}, {"seal"}, {"seal", "--queue"}} {
+		e.engCfg = nil
+		e.run(args...)
+		if len(e.engCfg) == 0 {
+			t.Fatalf("%v built no engine (%s)", args, e.stderr())
+		}
+		cfg := e.engCfg[len(e.engCfg)-1]
+		if _, ok := cfg.RootByID("root-old"); ok {
+			t.Fatalf("%v with a broken config.toml seals the retired folder: %+v", args, cfg.Roots)
+		}
+		if _, ok := cfg.RootByID("root-acme"); !ok {
+			t.Fatalf("%v with a broken config.toml lost the protected folder: %+v", args, cfg.Roots)
+		}
+	}
+	// The pin gone (the agent's tampered state at start): every folder a
+	// vault records is sealed again, the retired one included.
+	if err := os.Remove(e.h.Layout.PolicyPinned); err != nil {
+		t.Fatal(err)
+	}
+	e.engCfg = nil
+	e.run("sweep")
+	if cfg := e.engCfg[len(e.engCfg)-1]; func() bool { _, ok := cfg.RootByID("root-old"); return !ok }() {
+		t.Fatalf("without a pin the recorded folder is not sealed: %+v", cfg.Roots)
 	}
 }

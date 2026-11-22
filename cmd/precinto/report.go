@@ -86,17 +86,22 @@ const (
 // "nothing to seal" when units failed, are held or were left adopted;
 // held units are listed under their line by kind and reason, indented
 // and without the "precinto: " prefix (D113); units sealed whose files
-// could not be removed get a line of their own (D111).
-func (a *app) printSeal(r *sweep.Report) []error {
+// could not be removed get a line of their own (D111). A dry run sealed
+// nothing, so its lines say what a seal would do (D150).
+func (a *app) printSeal(r *sweep.Report, dryRun bool) []error {
 	units, files, bytes := totals(r, sweep.OutSealed, sweep.OutUnchanged)
 	held := heldGroups(r)
 	nHeld := countOutcome(r, liveOutcomes...)
 	adopted := countDetail(r, detailAdopted)
 	noSpace, need := detailTotals(r, detailNoSpace)
 	failures := countFailures(r)
+	sealed, skipped, left := textSealed, textSealSkipped, textSealAdopted
+	if dryRun {
+		sealed, skipped, left = textSealDry, textSealSkippedDry, textSealAdoptedDry
+	}
 	switch {
 	case units > 0:
-		a.sayOut(textSealed, units, files, ui.HumanBytes(bytes))
+		a.sayOut(sealed, units, files, ui.HumanBytes(bytes))
 	case nHeld == 0 && adopted == 0 && failures == 0:
 		a.sayOut(textSealNone)
 	}
@@ -104,13 +109,13 @@ func (a *app) printSeal(r *sweep.Report) []error {
 		a.sayOut(textRemoveFailed, n)
 	}
 	if nHeld > 0 {
-		a.sayOut(textSealSkipped, nHeld)
+		a.sayOut(skipped, nHeld)
 		for _, g := range held {
 			fmt.Fprintf(a.out, textSealHeldLine+"\n", g.what, g.n, g.why)
 		}
 	}
 	if adopted > 0 {
-		a.sayOut(textSealAdopted, adopted)
+		a.sayOut(left, adopted)
 	}
 	var shown []error
 	if noSpace > 0 {

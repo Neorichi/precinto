@@ -158,6 +158,10 @@ func newSweepEngine(ctx context.Context, a *app, experimental bool) (engine, err
 	if err != nil {
 		return nil, err
 	}
+	// D142: the engine seals, lists and scans the folders the agent
+	// enforces, not only config.toml's (a removal waiting for its
+	// confirmation keeps its folder protected).
+	cfg = a.enforcedConfig(cfg, l)
 	if err := l.EnsureDirs(); err != nil {
 		return nil, err
 	}
@@ -209,7 +213,13 @@ func newSweepEngine(ctx context.Context, a *app, experimental bool) (engine, err
 		ledger:   led,
 		adapters: adapters,
 		invs:     invs,
-		register: a.registerHomes,
+		register: func(add []config.Home) (config.Config, error) {
+			next, err := a.registerHomes(add)
+			if err != nil {
+				return config.Config{}, err
+			}
+			return a.enforcedConfig(next, l), nil
+		},
 	}
 	e.senv = sweep.Env{
 		Cfg:      cfg,
@@ -353,6 +363,10 @@ func (e *sweepEngine) registerSeenHomes(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// The folders this engine seals stay (D142: those of the confirmed
+	// settings, and those a running agent reported, which config.toml
+	// may not hold).
+	next = config.WithRoots(next, cfg.Roots...)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = next
@@ -630,13 +644,8 @@ func (e *sweepEngine) PrepareCodexHome(ctx context.Context, rootID string, force
 // copy, D114) and returns the configuration it saved (D109; addHome
 // deduplicates by directory).
 func (a *app) registerHomes(add []config.Home) (config.Config, error) {
-	var next config.Config
-	err := a.editConfig(func(l paths.Layout) (config.Config, error) {
-		disk, err := config.Load(l.ConfigFile)
-		if err != nil {
-			return config.Config{}, err
-		}
-		next = disk
+	next, err := a.editConfig(func(disk config.Config) (config.Config, error) {
+		next := disk
 		next.Harness = cloneHarness(disk.Harness)
 		for _, h := range add {
 			addHome(next.Harness, string(harness.ClaudeCode), h)

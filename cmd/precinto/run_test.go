@@ -144,7 +144,9 @@ func TestResumeArgv(t *testing.T) {
 }
 
 // agent runs the daemon in this process (ipc.Dial's autostart executes
-// `precinto agent`); --restart shuts the running one down first.
+// `precinto agent`); --restart shuts the running one down first, then
+// starts the new one detached through the autostart path and returns
+// (D141), or, with --foreground, runs it in this terminal.
 func TestAgent(t *testing.T) {
 	e := newEnv(t)
 	e.dialErr = nil
@@ -155,23 +157,81 @@ func TestAgent(t *testing.T) {
 	if !o.Foreground || o.Exe != "/opt/precinto/bin/precinto" || o.Layout.Base != e.h.Base || o.Clock == nil || o.Procs == nil {
 		t.Fatalf("options %+v", o)
 	}
-	e = newEnv(t)
+	for _, foreground := range []bool{false, true} {
+		e = newEnv(t)
+		e.daemon.statusErr = nil
+		e.daemon.status.PID = 4242
+		calls := 0
+		a := e.app()
+		inner := a.sys.dial
+		var autostarts int
+		a.sys.dial = func(ctx context.Context, o ipc.DialOptions) (daemonClient, error) {
+			calls++
+			if o.Autostart {
+				autostarts++
+				return inner(ctx, o) // the new agent, started detached
+			}
+			if calls > 1 {
+				return nil, ipc.ErrNoDaemon // the old one stopped
+			}
+			return inner(ctx, o)
+		}
+		args := []string{"agent", "--restart"}
+		if foreground {
+			args = append(args, "--foreground")
+		}
+		if code := a.run(args); code != exitOK {
+			t.Fatalf("%v: exit %d (%s)", args, code, e.stderr())
+		}
+		if e.daemon.shutdowns != 1 {
+			t.Fatalf("%v: shutdowns %d", args, e.daemon.shutdowns)
+		}
+		switch {
+		case foreground && (len(e.agentOpts) != 1 || autostarts != 0):
+			t.Fatalf("%v: runs %d autostarts %d, want the agent in this process", args, len(e.agentOpts), autostarts)
+		case !foreground && (len(e.agentOpts) != 0 || autostarts != 1 || !strings.Contains(e.stderr(), "agent running (pid 4242).")):
+			t.Fatalf("%v: runs %d autostarts %d stderr %q, want a detached agent and the prompt back (U6-8)", args, len(e.agentOpts), autostarts, e.stderr())
+		}
+	}
+}
+
+// D129: agent --stop asks the running agent to wipe its keys and exit and
+// waits until it no longer answers; with none running it exits 0. It never
+// starts one, and it takes no other flag.
+func TestAgentStop(t *testing.T) {
+	e := newEnv(t)
 	e.daemon.statusErr = nil
 	calls := 0
 	a := e.app()
 	inner := a.sys.dial
 	a.sys.dial = func(ctx context.Context, o ipc.DialOptions) (daemonClient, error) {
 		calls++
-		if calls > 1 {
+		if o.Autostart {
+			t.Error("agent --stop autostarted an agent")
+		}
+		if calls > 2 {
 			return nil, ipc.ErrNoDaemon
 		}
 		return inner(ctx, o)
 	}
-	if code := a.run([]string{"agent", "--restart"}); code != exitOK {
-		t.Fatalf("restart: exit %d (%s)", code, e.stderr())
+	if code := a.run([]string{"agent", "--stop"}); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
 	}
-	if e.daemon.shutdowns != 1 || len(e.agentOpts) != 1 {
-		t.Fatalf("shutdowns %d runs %d", e.daemon.shutdowns, len(e.agentOpts))
+	if e.daemon.shutdowns != 1 || len(e.agentOpts) != 0 || !strings.Contains(e.stderr(), "agent stopped.") {
+		t.Fatalf("shutdowns %d runs %d stderr %q", e.daemon.shutdowns, len(e.agentOpts), e.stderr())
+	}
+	e = newEnv(t)
+	e.dialErr = ipc.ErrNoDaemon
+	if code := e.run("agent", "--stop"); code != exitOK {
+		t.Fatalf("no agent: exit %d (%s)", code, e.stderr())
+	}
+	if e.daemon.shutdowns != 0 || !strings.Contains(e.stderr(), "the agent is not running") {
+		t.Fatalf("no agent: shutdowns %d stderr %q", e.daemon.shutdowns, e.stderr())
+	}
+	for _, args := range [][]string{{"agent", "--stop", "--restart"}, {"agent", "--stop", "--foreground"}} {
+		if code := newEnv(t).run(args...); code != exitUsage {
+			t.Errorf("%v: exit %d, want %d", args, code, exitUsage)
+		}
 	}
 }
 
