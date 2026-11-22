@@ -92,7 +92,10 @@ func (d *daemon) recomputeLocked() {
 		// D145: the defaults hold no folder, so a folder both a forged pin
 		// and config.toml leave out would leave enforcement unseen; every
 		// folder a vault records stays protected until a confirmation.
+		// They count as confirmed too, so the review of the next terminal
+		// unlock lists the removal of those config.toml leaves out.
 		eff = config.WithRoots(eff, p.recorded...)
+		confirmed = eff
 	}
 	p.eff = eff
 	// Pending = what adopting config.toml would weaken relative to what is
