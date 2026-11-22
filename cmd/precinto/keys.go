@@ -261,10 +261,13 @@ func unlockedVaults(st ipc.StatusResp) map[string]bool {
 // subscription cannot be started the channel is closed at once: without it
 // a lock could not be noticed, so the operation must not hold keys.
 //
-// A subscription starts with one locked or unlocked event per folder, its
-// state at that moment (D71): that first event is not a lock during the
-// operation. A folder locked at the start is refused by the key request
-// itself (exit 3, C3); only a later locked event aborts.
+// A subscription starts with one locked or unlocked event per subscribed
+// folder, its state at that moment (D71): that first event is not a lock
+// during the operation. A folder locked at the start is refused by the key
+// request itself (exit 3, C3); only a later locked event aborts. A
+// subscription to every folder (no rootIDs: open, restore --session or
+// --global outside a folder) gets no initial events, so any locked event
+// aborts (D153).
 func (a *app) watchLocks(ctx context.Context, rootIDs []string, onLock func()) (<-chan struct{}, func()) {
 	abort := make(chan struct{})
 	var once sync.Once
@@ -330,7 +333,8 @@ func (a *app) watchLocks(ctx context.Context, rootIDs []string, onLock func()) (
 // lockedDuring reports whether ev locks a watched folder after its initial
 // state event, recording the folders whose state ev reports in seen. An
 // event naming no folder applies to every folder and is never an initial
-// state.
+// state. Only subscribed folders get an initial state event (D71): with
+// none watched (every folder) every locked event is a lock (D153).
 func lockedDuring(ev ipc.Event, watched, seen map[string]bool) bool {
 	if ev.Kind != ipc.EventLocked && ev.Kind != ipc.EventUnlocked {
 		return false
@@ -343,7 +347,7 @@ func lockedDuring(ev ipc.Event, watched, seen map[string]bool) bool {
 		if len(watched) > 0 && !watched[id] {
 			continue
 		}
-		first := !seen[id]
+		first := len(watched) > 0 && !seen[id]
 		seen[id] = true
 		if ev.Kind == ipc.EventLocked && !first {
 			locked = true

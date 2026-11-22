@@ -107,8 +107,11 @@ const maxSubscribeRoots = 256
 // then every matching event, the end events addressed to this wrapper and
 // a heartbeat each second. The initial events are queued in the same
 // critical section that registers the subscriber, from a snapshot
-// published before any event goes out, so no state change is missed. Any
-// request on the stream ends it.
+// published before any event goes out, so no state change is missed; the
+// acknowledgement goes out only after that registration, so a client whose
+// Subscribe returned is registered: a lock right after it is an event of
+// the stream, never folded into the initial state (D153). Any request on
+// the stream ends it.
 func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) {
 	r := req.Subscribe
 	roots := dedupe(r.RootIDs)
@@ -118,9 +121,6 @@ func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) 
 	sub := &subscriber{conn: cs.c, id: req.ID, roots: roots, sid: r.SID,
 		peer: cs.peer.Proc.ID, wrapper: r.Wrapper,
 		q: make(chan ipc.Event, subscriberQueue+len(roots)), done: make(chan struct{})}
-	if err := cs.c.WriteResponse(ipc.Response{ID: req.ID, OK: true}); err != nil {
-		return
-	}
 	d.mu.Lock()
 	v := d.view()
 	for _, id := range sub.roots {
@@ -142,6 +142,9 @@ func (d *daemon) subscribe(ctx context.Context, cs *connState, req ipc.Request) 
 		d.mu.Unlock()
 		sub.stop()
 	}()
+	if err := cs.c.WriteResponse(ipc.Response{ID: req.ID, OK: true}); err != nil {
+		return
+	}
 	d.goBackground(func() {
 		_, sec, _ := cs.c.ReadRequest() // EOF, or a request a stream does not take
 		destroyAll(sec)

@@ -150,12 +150,14 @@ func asErr(err error, target **ipc.Error) bool {
 // CC-40: locked, unlocked and expiring events carry the folder's factor
 // kinds in unlock order.
 func TestEventsCarryFactors(t *testing.T) {
-	x := startTD(t)
-	x.vaults.set(func(f *fakeVaults) {
-		f.metas["root-acme"] = vault.Meta{ID: "root-acme", Factors: []vault.Factor{
-			{Name: "passphrase", Kind: vault.FactorPassphrase}, {Name: "recovery", Kind: vault.FactorRecovery}}}
+	// The vault is set before serve starts: its start-up factor load reads
+	// it (a refresh racing that load could cache the fake's default).
+	x := startTD(t, func(x *td, _ *Options) {
+		x.vaults.set(func(f *fakeVaults) {
+			f.metas["root-acme"] = vault.Meta{ID: "root-acme", Factors: []vault.Factor{
+				{Name: "passphrase", Kind: vault.FactorPassphrase}, {Name: "recovery", Kind: vault.FactorRecovery}}}
+		})
 	})
-	x.d.refreshFactors("root-acme")
 	c := x.dial()
 	ctx := context.Background()
 	sub, err := c.Subscribe(ctx, ipc.SubscribeReq{RootIDs: []string{"root-acme"}})
@@ -184,5 +186,38 @@ func TestEventsCarryFactors(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(got.evs[0].Factors, ","), "recovery") {
 		t.Fatal("recovery named as a factor")
+	}
+}
+
+// D153: Subscribe returns only once the daemon has registered the
+// subscriber, so a state change right after it is an event of the stream.
+// The acknowledgement used to precede the registration: a lock in between
+// became the folder's initial state, which watchLocks ignores, so REST-8's
+// abort never fired. With d.mu held the daemon cannot register anyone, so
+// Subscribe must not return meanwhile.
+func TestSubscribeReturnsOnceRegistered(t *testing.T) {
+	x := startTD(t)
+	c := x.dial()
+	x.d.mu.Lock()
+	ret := make(chan error, 1)
+	go func() {
+		_, err := c.Subscribe(context.Background(), ipc.SubscribeReq{RootIDs: []string{"root-acme"}})
+		ret <- err
+	}()
+	select {
+	case err := <-ret:
+		x.d.mu.Unlock()
+		t.Fatalf("Subscribe returned (err %v) before the daemon could register the subscriber", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	x.d.mu.Unlock()
+	if err := <-ret; err != nil {
+		t.Fatal(err)
+	}
+	x.d.mu.Lock()
+	n := len(x.d.subs)
+	x.d.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("%d subscriber(s) registered once Subscribe returned, want 1", n)
 	}
 }

@@ -86,15 +86,14 @@ func TestUnlockBackoffMessages(t *testing.T) {
 // tmux or SSH (C2.nogui) is only for a folder unlocked with the Secure
 // Enclave.
 func TestUnlockNoUIMessageByFactor(t *testing.T) {
-	x := startTD(t)
-	x.vaults.set(func(f *fakeVaults) {
-		f.metas["root-acme"] = vault.Meta{ID: "root-acme", Factors: []vault.Factor{
-			{Name: "passphrase", Kind: vault.FactorPassphrase}, {Name: "recovery", Kind: vault.FactorRecovery}}}
-		f.unwrapErr["root-acme"] = vault.ErrNoUI
-		f.unwrapErr["root-beta"] = vault.ErrNoUI // the fake's default: a Secure Enclave factor
+	x := startTD(t, func(x *td, _ *Options) { // before serve's start-up factor load
+		x.vaults.set(func(f *fakeVaults) {
+			f.metas["root-acme"] = vault.Meta{ID: "root-acme", Factors: []vault.Factor{
+				{Name: "passphrase", Kind: vault.FactorPassphrase}, {Name: "recovery", Kind: vault.FactorRecovery}}}
+			f.unwrapErr["root-acme"] = vault.ErrNoUI
+			f.unwrapErr["root-beta"] = vault.ErrNoUI // the fake's default: a Secure Enclave factor
+		})
 	})
-	x.d.refreshFactors("root-acme")
-	x.d.refreshFactors("root-beta")
 	c := x.dial()
 	for id, want := range map[string]string{
 		"root-acme": ui.Format(ui.MsgUnlockNeedTTY, ui.Vars{Folder: "~/work/acme", Factor: "precinto passphrase"}),

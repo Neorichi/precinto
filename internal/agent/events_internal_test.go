@@ -16,13 +16,13 @@ import (
 // CC-32: a single-flight unlock in progress shows as "unlocking" to a
 // concurrent status; the folder's factor kinds are in status (CC-40).
 func TestStatusShowsUnlocking(t *testing.T) {
-	x := startTD(t)
-	x.vaults.set(func(f *fakeVaults) {
-		f.metas["root-acme"] = vault.Meta{ID: "root-acme", Factors: []vault.Factor{
-			{Name: "recovery", Kind: vault.FactorRecovery}, {Name: "passphrase", Kind: vault.FactorPassphrase},
-			{Name: "yubikey", Kind: vault.FactorPlugin}, {Name: "se", Kind: vault.FactorSE, GUI: true}}}
+	x := startTD(t, func(x *td, _ *Options) { // before serve's start-up factor load
+		x.vaults.set(func(f *fakeVaults) {
+			f.metas["root-acme"] = vault.Meta{ID: "root-acme", Factors: []vault.Factor{
+				{Name: "recovery", Kind: vault.FactorRecovery}, {Name: "passphrase", Kind: vault.FactorPassphrase},
+				{Name: "yubikey", Kind: vault.FactorPlugin}, {Name: "se", Kind: vault.FactorSE, GUI: true}}}
+		})
 	})
-	x.d.refreshFactors("root-acme")
 	c := x.dial()
 	ctx := context.Background()
 	state := func() ipc.VaultStatus {

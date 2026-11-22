@@ -120,8 +120,9 @@ func TestGrants(t *testing.T) {
 
 // watchLocks closes its channel (and destroys keys) on a lock of a watched
 // folder, and at once when no subscription can be made. The first event of
-// each folder is its state when the subscription starts (D71), not a lock
-// during the operation: a folder locked then is refused by the key request.
+// each subscribed folder is its state when the subscription starts (D71),
+// not a lock during the operation: a folder locked then is refused by the
+// key request. Watching every folder there is no such event (D153).
 func TestWatchLocks(t *testing.T) {
 	e := newEnv(t)
 	e.daemon.events = make(chan ipc.Event, 4)
@@ -156,6 +157,27 @@ func TestWatchLocks(t *testing.T) {
 	case <-abort:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a lock after the initial state did not abort")
+	}
+
+	// Watching every folder (open, restore --session outside a folder): no
+	// folder gets an initial state event (D71 sends them only for the
+	// folders named), so the first locked event of a folder is a lock
+	// during the operation (D153); an unlocked one is not.
+	e = newEnv(t)
+	e.daemon.events = make(chan ipc.Event, 2)
+	abort, stop = e.app().watchLocks(context.Background(), nil, nil)
+	defer stop()
+	e.daemon.events <- ipc.Event{Kind: ipc.EventUnlocked, RootIDs: []string{"root-beta"}}
+	select {
+	case <-abort:
+		t.Fatal("an unlocked event aborted the operation")
+	case <-time.After(200 * time.Millisecond):
+	}
+	e.daemon.events <- ipc.Event{Kind: ipc.EventLocked, RootIDs: []string{"root-acme"}}
+	select {
+	case <-abort:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first lock of a folder while watching every folder did not abort (REST-8)")
 	}
 
 	// A lock event naming no folder locks every folder.

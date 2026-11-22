@@ -1956,7 +1956,9 @@ func (c *Client) Status(ctx context.Context) (StatusResp, error)
 
 // Subscribe streams events; the channel closes on disconnect, which
 // wrappers treat as a lock (SPEC §15.3). The stream starts with one locked
-// or unlocked event per subscribed folder (D71).
+// or unlocked event per subscribed folder (D71), none when r names no
+// folder. Subscribe returns once the daemon has registered the
+// subscription, so no later state change is missed (D153).
 func (c *Client) Subscribe(ctx context.Context, r SubscribeReq) (<-chan Event, error)
 
 // Unlock requests an unlock and relays UI prompts to ui until the final
