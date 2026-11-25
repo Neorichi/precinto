@@ -85,7 +85,7 @@ What a lock does **not** stop: the harness process keeps running, with its trans
 2. **A soft lock is enforced by hooks, and hooks are not a security boundary.** They can be turned off (`--bare`, `disableAllHooks`, a disabled plugin, an untrusted Codex hook), they can fail open (Codex timeouts), and some harness paths bypass them (the flag-gated reactive compaction, the away summary).
 3. **Ending the session closes the gap.** When the session ends its process exits, and Precinto seals everything in the session unit (transcript, summaries, `precompact.json`, temporary siblings, subagent transcripts, tool results) into a capsule that it verifies before deleting the plaintext.
 
-So the timers that end paused sessions are what bounds how long a compacted conversation stays readable: `idle_hard` (60 minutes without your input by default), `screen_lock_hard_after` (15 minutes of continuous screen lock), or `precinto lock --end` when you walk away. Keep them short if this matters to you.
+So the timers that end paused sessions are what bounds how long a compacted conversation stays readable: `idle_hard` (60 minutes without your input by default), `screen_lock_hard_after` (15 minutes of continuous screen lock; it never applies under WSL 2, where Precinto cannot see the Windows lock screen, [SPEC.md §6.4](SPEC.md#64-windows-through-wsl-2-d155-d156-d157)), or `precinto lock --end` when you walk away. Keep them short if this matters to you.
 
 Background sessions (Claude Code `--bg`, agent view) are an exception: Precinto never ends them, because their supervisor would restart them [D25]. They stay paused and flagged in `precinto status`, and their files stay plaintext until you end them from Claude Code.
 

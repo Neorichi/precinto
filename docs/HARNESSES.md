@@ -8,6 +8,7 @@ A *harness* is the agent CLI you work with: Claude Code, Codex and others. This 
 - [Claude Code](#claude-code)
 - [Codex CLI](#codex-cli)
 - [Experimental harnesses](#experimental-harnesses)
+- [Windows through WSL 2](#windows-through-wsl-2)
 
 ## Summary
 
@@ -20,7 +21,7 @@ A *harness* is the agent CLI you work with: Claude Code, Codex and others. This 
 
 Every harness can be connected in two ways:
 
-- **Hooks** gate prompts, tools, permission dialogs and compaction while a folder is locked, record which files a session touches, and queue the session for sealing when it ends. They ship in a plugin that `precinto integrate HARNESS` installs through the harness's own plugin commands (`--print` shows the steps instead of running them). `integrate` also writes `<base>/bin/precinto`, a link to the binary, which is the first place the hooks look for it; run it again if you move the binary. (`<base>` is Precinto's directory: `~/Library/Application Support/precinto` on macOS, `${XDG_DATA_HOME:-~/.local/share}/precinto` on Linux.)
+- **Hooks** gate prompts, tools, permission dialogs and compaction while a folder is locked, record which files a session touches, and queue the session for sealing when it ends. They ship in a plugin that `precinto integrate HARNESS` installs through the harness's own plugin commands (`--print` shows the steps instead of running them). `integrate` also writes `<base>/bin/precinto`, a link to the binary, which is the first place the hooks look for it; run it again if you move the binary. (`<base>` is Precinto's directory: `~/Library/Application Support/precinto` on macOS, `${XDG_DATA_HOME:-~/.local/share}/precinto` on Linux, including inside a WSL 2 distribution on Windows; see [Windows through WSL 2](#windows-through-wsl-2).)
 - **The wrapper**, `precinto run [--harness H] [--no-pty] -- CMD [ARGS]`, or the shell functions from `precinto shell-init`, which call it for you unless you are already inside a session it started. It unlocks before launch, restores what the session needs, shows the lock screen, ends the session when it is time, and seals it on exit. Under its pseudo-terminal, a harness's own Ctrl-Z suspend does nothing: the harness's process group is orphaned, so the kernel discards the stop signal.
 
 `precinto status` shows the hook health of each harness ("hooks OK, seen N min ago", or why they are not running: untrusted, plugin disabled, `--bare`, `disableAllHooks`). `precinto doctor HARNESS` runs the read-only checks for one harness.
@@ -36,7 +37,7 @@ Verified on Claude Code 2.1.329. Precinto needs 2.1.295 or later, the first vers
 | Name | Location |
 |---|---|
 | config directory (`$CC`) | `CLAUDE_CONFIG_DIR`, or `~/.claude` |
-| temp directory (`$TMP`) | the base of the session's scratchpad directory, else `CLAUDE_CODE_TMPDIR`, else `/private/tmp/claude-<uid>` (macOS) or `/tmp/claude-<uid>` (Linux). It must belong to you with mode 0700, or Precinto refuses to restore there and `doctor` warns. A restore leaves `policy.min_free` free on every volume it writes, this one included: where `/tmp` is a small RAM-backed tmpfs (Fedora, Arch and Debian 13 size it at half the memory), a session with files here is restored only once `min_free` is lowered (at least 512 MiB, confirmed at a terminal) or `CLAUDE_CODE_TMPDIR` names a directory on a disk. |
+| temp directory (`$TMP`) | the base of the session's scratchpad directory, else `CLAUDE_CODE_TMPDIR`, else `/private/tmp/claude-<uid>` (macOS) or `<tmp>/claude-<uid>` (Linux), where `<tmp>` is the first of `TMPDIR`, `TMP` and `TEMP` that is set, else `/tmp`, as Claude Code itself chooses it (a value that is not an absolute path gives Precinto no temp directory to look in). It must belong to you with mode 0700, or Precinto refuses to restore there and `doctor` warns. A restore leaves `policy.min_free` free on every volume it writes, this one included: where `/tmp` is a small RAM-backed tmpfs (Fedora, Arch and Debian 13 size it at half the memory), a session with files here is restored only once `min_free` is lowered (at least 512 MiB, confirmed at a terminal) or `CLAUDE_CODE_TMPDIR` names a directory on a disk. |
 | cache directory | `~/Library/Caches/claude-cli-nodejs` (macOS), `${XDG_CACHE_HOME:-~/.cache}/claude-cli-nodejs` (Linux) |
 
 Precinto learns these locations in Claude Code's own environment, from the hooks and the wrapper, and adds every new one it sees to its list of homes; a second config directory (another `CLAUDE_CONFIG_DIR`) is covered as soon as it is seen. Below, `<P>` is Claude Code's project directory name for a folder and `<sid>` is a session id.
@@ -129,6 +130,7 @@ An unwrapped session with no working hooks (plugin disabled, `--bare`, `disableA
 - `env` keys in Claude Code settings reach every hook. Precinto ignores `PRECINTO_*` keys there, and `doctor` reports `PRECINTO_*`, `HOME`, `XDG_*`, `PATH`, `DYLD_*` and `LD_*` keys in your user settings and in the `.claude/settings*.json` files of each protected folder and of its subdirectories, up to four levels down, skipping `.git`, `node_modules` and `vendor` (`claude-settings-env`).
 - `unlock_on_prompt` ships off; it is planned to turn on once its end-to-end test passes on the pinned Claude Code version.
 - A large session is re-encrypted in full whenever it changes.
+- A Claude Code home has one temp directory, fixed when Precinto registers the home ([above](#where-claude-code-keeps-its-data)). A session started with another `CLAUDE_CODE_TMPDIR`, or on Linux another `TMPDIR`, `TMP` or `TEMP` (an IDE may set one), writes its temporary files where Precinto neither seals nor restores them. Start Claude Code with the same settings everywhere.
 - The Claude desktop app's and Cowork's stores are outside Precinto's inventory.
 
 ## Codex CLI
@@ -218,3 +220,18 @@ These harnesses have no Precinto hooks in v0.2. Precinto describes their stores 
 - `verified_versions` in an experimental inventory is informational: `doctor` warns when the installed version is outside it, but it never enables or blocks sealing.
 
 Other agent CLIs have no Precinto hooks and no shipped inventory in v0.2. Native adapters for Gemini, Kimi, Qwen, OpenCode, Cursor and Copilot are on the roadmap.
+
+## Windows through WSL 2
+
+On Windows, Precinto runs as its Linux build inside a WSL 2 distribution: [WINDOWS.md](WINDOWS.md) walks through the setup, and [SPEC.md §6.4](SPEC.md#64-windows-through-wsl-2-d155-d156-d157) has the rules. A harness is supported there only when it is installed in that same distribution and runs inside it; the rest of this guide then applies as on Linux.
+
+- **Claude Code and Codex.** Install their Linux versions in the distribution, so that `claude` and `codex` come first in its `PATH` (WSL appends the Windows `PATH` to it), and keep their data on the distribution's Linux file system, never under `/mnt/<drive>`: Claude Code's config, temp and cache directories ([above](#where-claude-code-keeps-its-data)), and `~/.codex` or `CODEX_HOME`. Start them from a terminal of the distribution, through `precinto run` or the shell functions.
+- **Harnesses that run in Windows are not supported.** Claude Code or Codex for Windows, Claude Desktop and agents in IDEs that run in Windows are invisible to Precinto: it cannot see their processes, so it can neither tell when their files are in use nor pause or end their sessions. Precinto refuses them where it finds them:
+  - `precinto run` refuses a `claude`, `codex` or experimental harness command that would run as a Windows program: a Windows executable, a file on a Windows drive (such as a `claude` found through the Windows `PATH`), WSL's `/init` launcher, or a script whose `#!` line (also through `#!/usr/bin/env`) leads to one of those. One it cannot check is refused too.
+  - `precinto integrate` refuses such a `claude` or `codex` before it runs it or installs the plugin, and it refuses a harness whose data folders are on a Windows drive, as `precinto protect` does for the harnesses of the folder it protects.
+  - `precinto doctor` fails `claude-version` or `codex-version` for a Windows install, and `precinto doctor --leaks` warns about the Claude Code and Codex folders in the Windows user folders (`windows-harness-data`), where the Windows versions keep their sessions.
+  - In a protected folder that manages Claude Code, a session whose config or temp directory is on a Windows drive is blocked, even while the folder is unlocked.
+
+  A Windows program that opens a protected folder through `\\wsl.localhost` is not seen at all: keep Windows tools away from protected folders.
+- **VS Code with its WSL extension** is supported: its window runs in Windows, but its server, its integrated terminal and the extensions installed in WSL run inside the distribution, so the harnesses they start are Linux programs of the distribution. `claude` or `codex` typed in that terminal goes through the shell functions as in any terminal; one started by an extension's chat panel runs without the wrapper, as from an IDE on Linux (see the [Claude Code caveats](#caveats): a lock stops the model, while the conversation stays visible). Extensions that run in Windows are not supported.
+- **Do not install Precinto's plugins into Claude Code or Codex for Windows** (`precinto integrate` refuses to): no Precinto runs in Windows to answer their hooks. Hooks that start there find no working Precinto and protect nothing, and Claude Code's hooks, which fail closed, block prompts and tools in every folder whenever they cannot start.
