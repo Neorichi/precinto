@@ -1,10 +1,11 @@
-# Crash-injection matrix (docs/TESTPLAN.md §4, `make test-crash`) on
-# ubuntu, weekly and on demand. Owner: G7.
+# The crash-injection matrix (docs/TESTPLAN.md §4, `make test-crash`) on
+# ubuntu, five times in a row, weekly and on demand: a row that fails only
+# now and then shows up here. Owner: G7.
 #
-# Every push and pull request already runs these tests on ubuntu: the
-# crossgroup job of ci.yml runs `make crossgroup-crash` over the same
-# packages with the tags testing,failpoints,crossgroup, and no file
-# excludes crossgroup. macOS runs the matrix in macos.yml.
+# Every push and pull request already runs each row once: the crossgroup
+# job of ci.yml runs `make crossgroup-crash` over the same packages with
+# the tags testing,failpoints,crossgroup, and no file excludes crossgroup.
+# macOS runs the matrix once in macos.yml.
 name: crash
 
 on:
@@ -30,9 +31,9 @@ env:
 
 jobs:
   crash:
-    name: crash matrix (ubuntu-latest)
+    name: crash matrix, five runs (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,4 +41,4 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: make test-crash
+      - run: make test-crash CRASH_COUNT=5

@@ -1,5 +1,6 @@
-# The CI gates of ci.yml and the crash matrix of crash.yml on macOS, on the
-# 1st and the 15th of each month and on demand. Owner: G7.
+# The CI gates of ci.yml on macOS, the crash matrix included (crossgroup-
+# crash runs every test-crash test), on the 1st and the 15th of each month
+# and on demand. Owner: G7.
 #
 # A macOS minute costs about ten Linux minutes, so pushes and pull requests
 # run on ubuntu only. One job runs every gate in turn, which pays the
@@ -10,7 +11,7 @@ name: macos
 
 on:
   schedule:
-    - cron: "0 5 1,15 * *"
+    - cron: "37 5 1,15 * *" # 1st and 15th, 05:37 UTC: off the top of the hour, when GitHub delays or drops scheduled runs
   workflow_dispatch:
 
 permissions:
@@ -96,13 +97,10 @@ jobs:
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         timeout-minutes: 30
         run: make crossgroup
+      # The crash-injection matrix (TESTPLAN §4) with the crossgroup rows:
+      # no file excludes crossgroup, so this runs every `make test-crash`
+      # test too.
       - name: make crossgroup-crash
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         timeout-minutes: 15
         run: make crossgroup-crash
-      # The crash-injection matrix (TESTPLAN §4) that crash.yml runs on
-      # ubuntu.
-      - name: make test-crash
-        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        timeout-minutes: 15
-        run: make test-crash

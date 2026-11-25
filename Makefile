@@ -64,9 +64,12 @@ crossgroup-crash:
 test-integration:
 	$(GO) test -tags testing,crossgroup -count=1 ./test/integration/...
 
-## test-crash: crash-injection matrix (docs/TESTPLAN.md §4)
+## test-crash: crash-injection matrix (docs/TESTPLAN.md §4), CRASH_COUNT
+## times in a row (crash.yml runs it 5 times to find rows that fail only now
+## and then)
+CRASH_COUNT ?= 1
 test-crash:
-	$(GO) test -tags testing,failpoints -count=1 ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/...
+	$(GO) test -tags testing,failpoints -count=$(CRASH_COUNT) -timeout 45m ./internal/fsx/... ./internal/capsule/... ./internal/sweep/... ./internal/live/...
 
 ## test-e2e: opt-in E2E against real harnesses in throwaway homes (PRECINTO_E2E=1);
 ## 30 min: SEC-14 alone needs about 7 and skips itself when less than 9 remain.
