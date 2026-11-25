@@ -84,7 +84,11 @@ func checkWindowsDrive(e *env) []Finding {
 		}
 		var de *paths.DriveError
 		if errors.As(err, &de) && de.Unknown {
-			out = append(out, fail(CheckWindowsDrive, "could not tell whether "+l.what+" "+e.show(l.path)+" is on a Windows drive, so precinto treats it as one and does not seal, restore or keep files there", l.fix))
+			why := ""
+			if de.Why != "" {
+				why = " (" + de.Why + ")"
+			}
+			out = append(out, fail(CheckWindowsDrive, "could not tell whether "+l.what+" "+e.show(l.path)+" is on a Windows drive"+why+", so precinto treats it as one and does not seal, restore or keep files there", l.fix))
 			continue
 		}
 		out = append(out, fail(CheckWindowsDrive, l.what+" "+e.show(l.path)+" is on a Windows drive: Windows programs change files there without precinto seeing them, so precinto does not seal, restore or keep files there", l.fix))

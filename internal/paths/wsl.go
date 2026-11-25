@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Windows through WSL 2 (D155, D156). precinto runs inside a WSL 2
@@ -257,8 +258,12 @@ var ErrWindowsDrive = errors.New("paths: on a Windows drive")
 // DriveError is CheckDrive's refusal of one location.
 type DriveError struct {
 	Path    string // the location, as the caller named it
-	Unknown bool   // precinto could not tell (Err says why); refused all the same
-	Err     error
+	Unknown bool   // precinto could not tell (Why and Err say why); refused all the same
+	// Why is, when Unknown, what stopped CheckDrive, short and
+	// content-free, for messages: "it is a dangling symlink", "the mount
+	// table can't be read", …
+	Why string
+	Err error
 }
 
 func (e *DriveError) Error() string {
@@ -298,21 +303,21 @@ func checkDrive(w WSL, p string, pr probe) error {
 	if w.Version == 0 {
 		return nil
 	}
-	unknown := func(err error) error { return &DriveError{Path: p, Unknown: true, Err: err} }
+	unknown := func(why string, err error) error { return &DriveError{Path: p, Unknown: true, Why: why, Err: err} }
 	if !filepath.IsAbs(p) {
-		return unknown(errors.New("the path is not absolute"))
+		return unknown("it is not an absolute path", errors.New("the path is not absolute"))
 	}
 	real, err := pr.resolve(filepath.Clean(p))
 	if err != nil {
-		return unknown(err)
+		return unknown(resolveWhy(err), err)
 	}
 	b, err := pr.mountinfo()
 	if err != nil {
-		return unknown(err)
+		return unknown("the mount table can't be read", err)
 	}
 	m, ok := mountOf(parseMountinfo(b), real)
 	if !ok {
-		return unknown(errors.New("no mount holds the path"))
+		return unknown("no mount holds it", errors.New("no mount holds the path"))
 	}
 	magic, merr := uint32(0), errors.New("not measured")
 	if dir, err := pr.exists(real); err == nil {
@@ -321,11 +326,30 @@ func checkDrive(w WSL, p string, pr probe) error {
 	windows, known := driveVerdict(m.fstype, magic, merr == nil)
 	switch {
 	case !known:
-		return unknown(fmt.Errorf("the mount table says %s but the file system says otherwise", m.fstype))
+		return unknown("the mount table and the file system disagree", fmt.Errorf("the mount table says %s but the file system says otherwise", m.fstype))
 	case windows:
 		return &DriveError{Path: p}
 	}
 	return nil
+}
+
+// errDangling marks a path whose last existing component is a symlink to
+// nothing: its target could still be created anywhere.
+var errDangling = errors.New("paths: a dangling symlink")
+
+// resolveWhy names, for DriveError.Why, why a path could not be resolved.
+func resolveWhy(err error) string {
+	switch {
+	case errors.Is(err, errDangling):
+		return "it is a dangling symlink"
+	case errors.Is(err, fs.ErrPermission):
+		return "it or a folder above it can't be read"
+	case errors.Is(err, syscall.ELOOP):
+		return "its symlinks loop"
+	case errors.Is(err, syscall.ENOTDIR):
+		return "a file stands where a folder of its path should be"
+	}
+	return "its path can't be resolved"
 }
 
 // Magic numbers of statfs f_type (linux/magic.h).
@@ -463,7 +487,7 @@ func resolveExisting(p string) (string, error) {
 		// Only a missing final component may be skipped: a dangling
 		// symlink would name a target that can still be created.
 		if _, lerr := os.Lstat(cur); lerr == nil {
-			return "", fmt.Errorf("%s is a dangling symlink", cur)
+			return "", fmt.Errorf("%w: %s", errDangling, cur)
 		}
 		rest = filepath.Join(filepath.Base(cur), rest)
 	}

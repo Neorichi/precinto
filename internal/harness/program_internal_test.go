@@ -46,27 +46,60 @@ func TestShebang(t *testing.T) {
 	}
 }
 
+// envCommand reads a "#!/usr/bin/env ARG" line as GNU env reads its one
+// argument ARG: only -S and --split-string split it (attached or not);
+// NAME=value, -i and -u change the PATH execvp searches; an option it does
+// not know, or a split env would process (quotes, escapes, variables,
+// comments), is "cannot tell".
 func TestEnvCommand(t *testing.T) {
-	for arg, want := range map[string]string{
-		"node":                        "node",
-		"-S node --no-warnings":       "node",
-		"-i PATH=/usr/bin python3":    "python3",
-		"-u HOME bash":                "bash",
-		"--unset=HOME bash":           "bash",
-		"NODE_OPTIONS=--x node":       "node",
-		"/mnt/c/tools/node.exe":       "/mnt/c/tools/node.exe",
-		"":                            "",
-		"-S":                          "",
-		"-C /tmp FOO=bar deno run -A": "deno",
+	const path = "/usr/bin:/mnt/c/nodejs"
+	for _, c := range []struct {
+		arg, cmd, path string
+		ok             bool
+	}{
+		{"node", "node", path, true},
+		{"-S node --no-warnings", "node", path, true},
+		{"-Snode", "node", path, true},
+		{"-S node", "node", path, true},
+		{"--split-string=node --no-warnings", "node", path, true},
+		{"-S PATH=/mnt/c/nodejs node", "node", "/mnt/c/nodejs", true},
+		{"-S -i node", "node", "/bin:/usr/bin", true},
+		{"-S -i PATH=/opt/x/bin node", "node", "/opt/x/bin", true},
+		{"-S -u PATH node", "node", "/bin:/usr/bin", true},
+		{"-S --unset=PATH node", "node", "/bin:/usr/bin", true},
+		{"-S -uHOME node", "node", path, true},
+		{"-S -C /tmp node", "node", path, true},
+		{"-S -- node", "node", path, true},
+		{"-S NODE_OPTIONS=--x node", "node", path, true},
+		{"-S -0v node", "node", path, true},
+		{"/mnt/c/tools/node.exe", "/mnt/c/tools/node.exe", path, true},
+		// Without -S the argument is one word: env runs no command, or a
+		// command whose name has a space (not found: nothing runs).
+		{"NODE_OPTIONS=--x node", "", path, true},
+		{"node --no-warnings", "node --no-warnings", path, true},
+		{"", "", path, true},
+		{"-i", "", "/bin:/usr/bin", true},
+		// Cannot tell.
+		{"-S", "", "", false},
+		{"-S 'node'", "", "", false},
+		{"-S node\\ x", "", "", false},
+		{"-S ${NODE} x", "", "", false},
+		{"-S node #x", "", "", false},
+		{"-i PATH=/usr/bin python3", "", "", false}, // "-i" then " ": not an option env knows
+		{"-x node", "", "", false},
+		{"--split node", "", "", false},
+		{"--help", "", "", false},
 	} {
-		if got := envCommand(arg); got != want {
-			t.Errorf("envCommand(%q) = %q, want %q", arg, got, want)
+		cmd, p, ok := envCommand(c.arg, path)
+		if cmd != c.cmd || ok != c.ok || (ok && p != c.path) {
+			t.Errorf("envCommand(%q) = %q, %q, %v; want %q, %q, %v", c.arg, cmd, p, ok, c.cmd, c.path, c.ok)
 		}
 	}
 }
 
 // fakeSystem: files by content, anything below /mnt/c on a Windows drive,
-// /broken unknown, PATH lookups from a table.
+// /broken unknown, PATH lookups from a table (or, for a PATH env sets to
+// one other folder, that folder), /init WSL's launcher.
 type fakeSystem struct {
 	files map[string]string
 	path  map[string]string
@@ -95,17 +128,26 @@ func (f *fakeSystem) io() programIO {
 			}
 			return []byte(c), nil
 		},
-		look: func(_ paths.Env, name string) (string, error) {
+		look: func(e paths.Env, name string) (string, error) {
+			if dir := e.Get("PATH"); dir != "/usr/bin" && filepath.IsAbs(dir) && !strings.Contains(dir, ":") {
+				if _, ok := f.files[filepath.Join(dir, name)]; ok {
+					return filepath.Join(dir, name), nil
+				}
+				return "", fs.ErrNotExist
+			}
 			if p, ok := f.path[name]; ok {
 				return p, nil
 			}
 			return "", fs.ErrNotExist
 		},
+		launcher: func(p string) bool { return p == "/init" || p == "/usr/local/bin/winrun" },
 	}
 }
 
 // D156: a harness executable that would run as a Windows program is
-// refused under WSL, and only there.
+// refused under WSL, and only there: itself, or any program it runs
+// through "#!" lines and env, as deep as linux follows them. Runs names
+// that program; Why never holds a path.
 func TestCheckProgram(t *testing.T) {
 	const elf = "\x7fELF\x02\x01\x01"
 	sys := &fakeSystem{
@@ -114,10 +156,18 @@ func TestCheckProgram(t *testing.T) {
 			"/usr/bin/env":                  elf,
 			"/usr/bin/node":                 elf,
 			"/usr/bin/sh":                   elf,
+			"/init":                         elf,
+			"/usr/local/bin/winrun":         elf, // a link to /init
+			"/mnt/c/nodejs/node.exe":        "MZ\x90\x00",
 			"/home/u/bin/claude.exe":        "MZ\x90\x00",
 			"/home/u/bin/npm-claude":        "#!/usr/bin/env node\nrequire('./cli.js')\n",
 			"/home/u/bin/flags-claude":      "#!/usr/bin/env -S node --no-warnings\n",
+			"/home/u/bin/attached-claude":   "#!/usr/bin/env -Snode\n",
+			"/home/u/bin/split-claude":      "#!/usr/bin/env --split-string=node\n",
+			"/home/u/bin/path-claude":       "#!/usr/bin/env -S PATH=/mnt/c/nodejs node.exe\n",
+			"/home/u/bin/odd-env-claude":    "#!/usr/bin/env -S 'node'\n",
 			"/home/u/bin/abs-claude":        "#!/usr/bin/env /mnt/c/tools/node.exe\n",
+			"/home/u/bin/relcmd-claude":     "#!/usr/bin/env -S -C /mnt/c ./node.exe\n",
 			"/home/u/bin/sh-claude":         "#!/usr/bin/sh\nexec node cli.js\n",
 			"/home/u/bin/winsh":             "#!/mnt/c/tools/sh\n",
 			"/home/u/bin/rel":               "#!node\n",
@@ -125,6 +175,24 @@ func TestCheckProgram(t *testing.T) {
 			"/home/u/bin/missing-cmd":       "#!/usr/bin/env nonode\n",
 			"/home/u/bin/unread-interp":     "#!/opt/unreadable/node\n",
 			"/home/u/bin/unreadable-interp": "#!/home/u/bin/unreadable\n",
+			"/home/u/bin/init-claude":       "#!/init\n",
+			"/home/u/bin/winrun-claude":     "#!/usr/local/bin/winrun\n",
+			"/home/u/bin/env-init":          "#!/usr/bin/env /init\n",
+			// Two levels: a script whose interpreter is a script whose
+			// interpreter is a Windows program.
+			"/home/u/bin/two-claude": "#!/home/u/bin/nodew\n",
+			"/home/u/bin/nodew":      "#!/mnt/c/nodejs/node.exe\n",
+			// Interpreters as deep as linux follows (5), then one more.
+			"/home/u/bin/deep0":   "#!/home/u/bin/deep1\n",
+			"/home/u/bin/deep1":   "#!/home/u/bin/deep2\n",
+			"/home/u/bin/deep2":   "#!/home/u/bin/deep3\n",
+			"/home/u/bin/deep3":   "#!/home/u/bin/deep4\n",
+			"/home/u/bin/deep4":   "#!/usr/bin/sh\n",
+			"/home/u/bin/deeper0": "#!/home/u/bin/deeper1\n",
+			"/home/u/bin/deeper1": "#!/home/u/bin/deep0\n",
+			// A shebang naming a terminal escape: refused, and the escape
+			// only ever travels in Runs.
+			"/home/u/bin/esc-claude": "#!/mnt/c/x\x1b]52;c;AAAA\x07y\n",
 		},
 		path: map[string]string{"node": "/mnt/c/Program Files/nodejs/node.exe"},
 	}
@@ -139,25 +207,39 @@ func TestCheckProgram(t *testing.T) {
 		exe     string
 		refused bool
 		unknown bool
+		runs    string
 		why     string
 	}{
-		{"/usr/local/bin/claude", false, false, ""},
-		{"/mnt/c/Users/Public/AppData/Roaming/npm/claude", true, false, "is on a Windows drive"},
-		{"/broken/claude", true, true, "could not tell"},
-		{"/home/u/bin/claude.exe", true, false, "is a Windows executable"},
-		{"/home/u/bin/npm-claude", true, false, "runs /mnt/c/Program Files/nodejs/node.exe, which is on a Windows drive"},
-		{"/home/u/bin/flags-claude", true, false, "runs /mnt/c/Program Files/nodejs/node.exe"},
-		{"/home/u/bin/abs-claude", true, false, "runs /mnt/c/tools/node.exe"},
-		{"/home/u/bin/sh-claude", false, false, ""},
-		{"/home/u/bin/winsh", true, false, "runs /mnt/c/tools/sh, which is on a Windows drive"},
-		{"/home/u/bin/rel", false, false, ""},
-		{"/home/u/bin/pe-interp", true, false, "runs /home/u/bin/claude.exe, which is a Windows executable"},
-		{"/home/u/bin/missing-cmd", false, false, ""},
-		{"/home/u/bin/unread-interp", false, false, ""}, // a missing interpreter: exec fails
-		{"/home/u/bin/nothing-here", false, false, ""},  // a missing executable: exec fails, as before
-		{"/home/u/bin/unreadable", true, true, "cannot be read"},
-		{"/home/u/bin/unreadable-interp", true, true, "runs /home/u/bin/unreadable, which cannot be read"},
-		{"relative/claude", true, true, "not an absolute path"},
+		{"/usr/local/bin/claude", false, false, "", ""},
+		{"/mnt/c/Users/Public/AppData/Roaming/npm/claude", true, false, "", "is on a Windows drive"},
+		{"/broken/claude", true, true, "", "could not tell"},
+		{"/home/u/bin/claude.exe", true, false, "", "is a Windows executable"},
+		{"/home/u/bin/npm-claude", true, false, "/mnt/c/Program Files/nodejs/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/flags-claude", true, false, "/mnt/c/Program Files/nodejs/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/attached-claude", true, false, "/mnt/c/Program Files/nodejs/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/split-claude", true, false, "/mnt/c/Program Files/nodejs/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/path-claude", true, false, "/mnt/c/nodejs/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/odd-env-claude", true, true, "/usr/bin/env", "options precinto can't read"},
+		{"/home/u/bin/abs-claude", true, false, "/mnt/c/tools/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/relcmd-claude", true, true, "./node.exe", "not an absolute path"},
+		{"/home/u/bin/sh-claude", false, false, "", ""},
+		{"/home/u/bin/winsh", true, false, "/mnt/c/tools/sh", "is on a Windows drive"},
+		{"/home/u/bin/rel", false, false, "", ""},
+		{"/home/u/bin/pe-interp", true, false, "/home/u/bin/claude.exe", "is a Windows executable"},
+		{"/home/u/bin/missing-cmd", false, false, "", ""},
+		{"/home/u/bin/unread-interp", false, false, "", ""}, // a missing interpreter: exec fails
+		{"/home/u/bin/nothing-here", false, false, "", ""},  // a missing executable: exec fails, as before
+		{"/home/u/bin/unreadable", true, true, "", "can't be read"},
+		{"/home/u/bin/unreadable-interp", true, true, "/home/u/bin/unreadable", "can't be read"},
+		{"/init", true, false, "", "launcher of Windows programs"},
+		{"/home/u/bin/init-claude", true, false, "/init", "launcher of Windows programs"},
+		{"/home/u/bin/winrun-claude", true, false, "/usr/local/bin/winrun", "launcher of Windows programs"},
+		{"/home/u/bin/env-init", true, false, "/init", "launcher of Windows programs"},
+		{"/home/u/bin/two-claude", true, false, "/mnt/c/nodejs/node.exe", "is on a Windows drive"},
+		{"/home/u/bin/deep0", false, false, "", ""},
+		{"/home/u/bin/deeper0", true, true, "/home/u/bin/deep3", "more interpreters"}, // linux stops there (ELOOP)
+		{"/home/u/bin/esc-claude", true, false, "/mnt/c/x\x1b]52;c;AAAA\x07y", "is on a Windows drive"},
+		{"relative/claude", true, true, "", "not an absolute path"},
 	} {
 		err := checkProgram(wsl, env, c.exe, sys.io())
 		var pe *ProgramError
@@ -167,8 +249,12 @@ func TestCheckProgram(t *testing.T) {
 			}
 			continue
 		}
-		if !errors.As(err, &pe) || !errors.Is(err, ErrWindowsProgram) || pe.Exe != c.exe || pe.Unknown != c.unknown || !strings.Contains(pe.Why, c.why) {
-			t.Errorf("%s: %v (%+v), want refused (unknown %v, %q)", c.exe, err, pe, c.unknown, c.why)
+		if !errors.As(err, &pe) || !errors.Is(err, ErrWindowsProgram) || pe.Exe != c.exe || pe.Runs != c.runs || pe.Unknown != c.unknown || !strings.Contains(pe.Why, c.why) {
+			t.Errorf("%s: %v (%+v), want refused (runs %q, unknown %v, %q)", c.exe, err, pe, c.runs, c.unknown, c.why)
+			continue
+		}
+		if strings.ContainsAny(pe.Why, "/\x1b\x07") {
+			t.Errorf("%s: Why %q holds a path or a control character", c.exe, pe.Why)
 		}
 	}
 	// With a Linux node first in PATH the npm install is accepted.

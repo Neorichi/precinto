@@ -129,23 +129,42 @@ func (a *app) checkHarnessDrives(harnesses []string) error {
 	return nil
 }
 
-// sayDrive prints the refusal of a location on a Windows drive (D156).
+// sayDrive prints the refusal of a location on a Windows drive (D156),
+// or of one precinto could not place, with what stopped it.
 func (a *app) sayDrive(de *paths.DriveError) {
 	if de.Unknown {
-		a.line(ui.MsgWindowsDriveUnsure, ui.Vars{Folder: a.display(de.Path)})
+		a.line(ui.MsgWindowsDriveUnsure, ui.Vars{Folder: a.display(de.Path), Cause: driveWhy(de)})
 		return
 	}
 	a.line(ui.MsgWindowsDrive, ui.Vars{Folder: a.display(de.Path)})
 }
 
+// driveWhy is the {cause} of an unknown drive verdict.
+func driveWhy(de *paths.DriveError) string {
+	if de.Why != "" {
+		return de.Why
+	}
+	return "precinto could not read where it lies"
+}
+
 // sayProgram prints the refusal of a harness executable that would run as
-// a Windows program (D156).
+// a Windows program (D156), or that precinto could not check: the program
+// it runs, from a "#!" or env line the user's programs can write, is
+// displayed like any path (S17), never echoed raw.
 func (a *app) sayProgram(pe *harness.ProgramError) {
 	h := harnessCommand(string(pe.Harness))
 	if h == "" {
 		h = "the harness"
 	}
-	a.line(ui.MsgWindowsProgram, ui.Vars{File: a.display(pe.Exe), Cause: pe.Why, Harness: h})
+	cause := pe.Why
+	if pe.Runs != "" {
+		cause = "runs " + a.display(pe.Runs) + ", which " + pe.Why
+	}
+	id := ui.MsgWindowsProgram
+	if pe.Unknown {
+		id = ui.MsgWinProgramUnsure
+	}
+	a.line(id, ui.Vars{File: a.display(pe.Exe), Cause: cause, Harness: h})
 }
 
 // wslStatus is what status reports under WSL (D155, D156): the facts for

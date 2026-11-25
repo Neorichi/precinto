@@ -79,7 +79,7 @@ func TestWindowsDrive(t *testing.T) {
 		}
 		for _, d := range unsure {
 			if paths.Within(d, p) {
-				return &paths.DriveError{Path: p, Unknown: true, Err: fs.ErrPermission}
+				return &paths.DriveError{Path: p, Unknown: true, Why: "it or a folder above it can't be read", Err: fs.ErrPermission}
 			}
 		}
 		return nil
@@ -96,7 +96,7 @@ func TestWindowsDrive(t *testing.T) {
 	}
 	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "the protected folder "+f.tilde(f.h.Root))
 	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Claude's config folder "+f.tilde(f.h.ClaudeConfig))
-	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "could not tell whether Claude's temporary folder")
+	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "could not tell whether Claude's temporary folder", "(it or a folder above it can't be read)")
 	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Codex's folder "+f.tilde(codexHome))
 	none(t, fs, doctor.CheckWindowsDrive, doctor.OK)
 

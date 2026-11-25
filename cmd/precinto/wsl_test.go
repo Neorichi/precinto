@@ -175,6 +175,29 @@ func TestRunReportsWSLRefusals(t *testing.T) {
 	if code := e.run("run", "--", "claude"); code != exitError || !strings.Contains(e.stderr(), ui.Format(ui.MsgWindowsDrive, ui.Vars{Folder: "~/.claude"})) {
 		t.Fatalf("home on a drive: exit %d (%s)", code, e.stderr())
 	}
+	// A location precinto could not place: the message says what stopped
+	// it, not a fixed guess.
+	e = newEnv(t)
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, &paths.DriveError{Path: filepath.Join(e.h.HomeDir, ".claude"), Unknown: true, Why: "it is a dangling symlink"}
+	want := ui.Format(ui.MsgWindowsDriveUnsure, ui.Vars{Folder: "~/.claude", Cause: "it is a dangling symlink"})
+	if code := e.run("run", "--", "claude"); code != exitError || !strings.Contains(e.stderr(), want) || strings.Contains(e.stderr(), "mountinfo") {
+		t.Fatalf("unsure drive: exit %d (%s)", code, e.stderr())
+	}
+	// A program precinto could not check is not called a Windows program.
+	e = newEnv(t)
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, &harness.ProgramError{Harness: harness.ClaudeCode, Exe: "/usr/local/bin/claude", Why: "can't be read to check that it is not a Windows program", Unknown: true}
+	want = ui.Format(ui.MsgWinProgramUnsure, ui.Vars{File: "/usr/local/bin/claude", Cause: "can't be read to check that it is not a Windows program", Harness: "claude"})
+	if code := e.run("run", "--", "claude"); code != exitError || !strings.Contains(e.stderr(), want) || strings.Contains(e.stderr(), "would run as a Windows program (") {
+		t.Fatalf("unsure program: exit %d (%s)", code, e.stderr())
+	}
+	// The program a "#!" line names reaches the terminal displayed like a
+	// path, never raw (S17): a shebang naming an OSC 52 sequence.
+	e = newEnv(t)
+	evil := "/mnt/c/x\x1b]52;c;AAAA\x07y"
+	e.wrapCode, e.wrapErr = wrapper.ExitNotStarted, &harness.ProgramError{Harness: harness.ClaudeCode, Exe: "/home/u/bin/claude", Runs: evil, Why: "is on a Windows drive"}
+	if code := e.run("run", "--", "claude"); code != exitError || strings.ContainsAny(e.stderr(), "\x1b\x07") || !strings.Contains(e.stderr(), "runs "+shownValue(evil)+", which is on a Windows drive") {
+		t.Fatalf("escape in a shebang: exit %d (%q)", code, e.stderr())
+	}
 }
 
 // D156: under WSL --recovery-out refuses the Users folder of a Windows

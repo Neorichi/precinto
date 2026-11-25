@@ -3331,13 +3331,20 @@ var ErrWindowsProgram = errors.New("harness: a Windows program")
 // CheckProgram refuses, under WSL, the executable exe (absolute) of
 // harness h when it would run as a Windows program (D156): exe or the
 // file it links to lies on a Windows drive, it is a Windows executable (it
-// starts with the PE header "MZ"), or the interpreter of its "#!" line
-// does or is, a "#!/usr/bin/env CMD" line naming CMD as found in the PATH
-// of e (an npm install runs `#!/usr/bin/env node`, and Windows's node.exe
-// can be first in that PATH). It returns nil outside WSL without reading
-// anything, and a *ProgramError (errors.Is ErrWindowsProgram) otherwise;
-// an executable that exists but cannot be read is refused too, a missing
-// one is left to fail at exec as it always did.
+// starts with the PE header "MZ"), it is WSL's launcher of Windows
+// programs (/init, the interpreter of the WSLInterop binfmt entry), or
+// the interpreter of its "#!" line is or does any of that, in turn, as
+// deep as linux follows interpreters; a "#!/usr/bin/env ARG" line is read
+// as env reads it (-S and --split-string split ARG; NAME=value, -i and -u
+// change the PATH that names the command) and its command checked the
+// same way (an npm install runs `#!/usr/bin/env node`, and Windows's
+// node.exe can be first in the PATH of e). It returns nil outside WSL
+// without reading anything, and a *ProgramError (errors.Is
+// ErrWindowsProgram) otherwise; an executable that exists but cannot be
+// read, an env line precinto cannot read and a chain deeper than linux
+// follows are refused too (Unknown), a missing one is left to fail at
+// exec as it always did. A script whose body starts a Windows program is
+// not seen here.
 func CheckProgram(e paths.Env, h ID, exe string) error
 
 // InFolder reports whether p lies inside the folder dir by the rule
@@ -3616,7 +3623,12 @@ type ProcessMatch struct {
 type ProgramError struct {
 	Harness ID     // the harness the executable was to run
 	Exe     string // the executable, absolute, as resolved for the launch
-	Why     string // short and content-free: what makes it a Windows program
+	// Runs is the program Exe runs that is, or may be, the Windows one:
+	// a "#!" interpreter or the command of an env line, at any depth; ""
+	// when Exe itself is. A path: display it as one (it comes from files
+	// the user's programs can write).
+	Runs    string
+	Why     string // short and content-free: what makes Runs (or Exe) a Windows program, or why precinto could not tell
 	Unknown bool   // precinto could not tell (refused all the same)
 }
 
@@ -5623,8 +5635,12 @@ func Within(root, p string) bool
 // DriveError is CheckDrive's refusal of one location.
 type DriveError struct {
 	Path    string // the location, as the caller named it
-	Unknown bool   // precinto could not tell (Err says why); refused all the same
-	Err     error
+	Unknown bool   // precinto could not tell (Why and Err say why); refused all the same
+	// Why is, when Unknown, what stopped CheckDrive, short and
+	// content-free, for messages: "it is a dangling symlink", "the mount
+	// table can't be read", …
+	Why string
+	Err error
 }
 
 func (e *DriveError) Error() string
@@ -6296,8 +6312,9 @@ const (
 	MsgHomeUnregistered   MsgID = "E.unregistered"     // precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code
 	MsgWSL1               MsgID = "E.wsl1"             // precinto: this Linux distribution runs under WSL 1, where precinto can't protect folders: it needs WSL 2. Convert the distribution in Windows with: {command}
 	MsgWindowsDrive       MsgID = "E.windrive"         // precinto: {folder} is on a Windows drive, where Windows programs change files without precinto seeing them, so precinto won't seal, restore or keep files there. Use a folder in the Linux file system of this WSL distribution (for example under /home), then try again.
-	MsgWindowsDriveUnsure MsgID = "E.windrive.unsure"  // precinto: precinto could not tell whether {folder} is on a Windows drive, so it won't seal, restore or keep files there. Check that /proc/self/mountinfo can be read, then try again.
+	MsgWindowsDriveUnsure MsgID = "E.windrive.unsure"  // precinto: precinto could not tell whether {folder} is on a Windows drive ({cause}), so it won't seal, restore or keep files there. Fix that, or use a folder in the Linux file system of this WSL distribution, then try again.
 	MsgWindowsProgram     MsgID = "E.winprogram"       // precinto: {file} would run as a Windows program ({cause}), which precinto can't see or seal from WSL. Install {harness} inside this WSL distribution, then try again.
+	MsgWinProgramUnsure   MsgID = "E.winprog.unsure"   // precinto: precinto could not check that {file} would not run as a Windows program ({cause}), so it won't run it from WSL. Fix that, or install {harness} inside this WSL distribution, then try again.
 	MsgShimFailed         MsgID = "D.shim"             // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
 )
 

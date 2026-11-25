@@ -2,11 +2,13 @@ package paths
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -351,19 +353,38 @@ func TestCheckDrive(t *testing.T) {
 	}
 
 	// Fail closed: an unreadable mount table, a path that cannot be
-	// resolved, a statfs that contradicts the table.
+	// resolved, a statfs that contradicts the table; Why says which, in
+	// words that hold no path (F7).
+	why := func(err error) string {
+		var de *DriveError
+		if !errors.As(err, &de) || !de.Unknown {
+			return "not unknown"
+		}
+		return de.Why
+	}
 	noTable := fakeProbe("", nil, nil)
-	if err := checkDrive(wsl, "/home/u/work", noTable); !isUnknownDrive(err) {
-		t.Errorf("unreadable mountinfo: %v", err)
+	if err := checkDrive(wsl, "/home/u/work", noTable); !isUnknownDrive(err) || why(err) != "the mount table can't be read" {
+		t.Errorf("unreadable mountinfo: %v (%q)", err, why(err))
 	}
 	broken := pr
-	broken.resolve = func(string) (string, error) { return "", fs.ErrPermission }
-	if err := checkDrive(wsl, "/home/u/work", broken); !isUnknownDrive(err) {
-		t.Errorf("unresolvable path: %v", err)
+	for e, want := range map[error]string{
+		fs.ErrPermission:                  "it or a folder above it can't be read",
+		fmt.Errorf("%w: /x", errDangling): "it is a dangling symlink",
+		syscall.ELOOP:                     "its symlinks loop",
+		syscall.ENOTDIR:                   "a file stands where a folder of its path should be",
+		syscall.EIO:                       "its path can't be resolved",
+	} {
+		broken.resolve = func(string) (string, error) { return "", e }
+		if err := checkDrive(wsl, "/home/u/work", broken); !isUnknownDrive(err) || why(err) != want {
+			t.Errorf("unresolvable path (%v): %v (%q), want %q", e, err, why(err), want)
+		}
 	}
 	odd := fakeProbe(wsl2Mountinfo, nil, map[string]uint32{"/home/u/odd": fuseMagic})
-	if err := checkDrive(wsl, "/home/u/odd", odd); !isUnknownDrive(err) {
+	if err := checkDrive(wsl, "/home/u/odd", odd); !isUnknownDrive(err) || why(err) != "the mount table and the file system disagree" {
 		t.Errorf("FUSE magic on an ext4 entry: %v", err)
+	}
+	if err := checkDrive(wsl, "relative/path", pr); why(err) != "it is not an absolute path" {
+		t.Errorf("relative: %v", err)
 	}
 	ninep := fakeProbe(wsl2Mountinfo, nil, map[string]uint32{"/home/u/odd": v9fsMagic})
 	if err := checkDrive(wsl, "/home/u/odd", ninep); err == nil || isUnknownDrive(err) {
@@ -427,8 +448,8 @@ func TestResolveExisting(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveExisting(filepath.Join(dangling, "x")); err == nil {
-		t.Error("a path below a dangling symlink resolved")
+	if _, err := resolveExisting(filepath.Join(dangling, "x")); !errors.Is(err, errDangling) {
+		t.Errorf("a path below a dangling symlink: %v", err)
 	}
 	if got, err := existingDir(filepath.Join(real, "sub", "file", "more")); err != nil || got != filepath.Join(real, "sub") {
 		t.Errorf("existingDir = %q, %v", got, err)
