@@ -9,7 +9,7 @@
 </p>
 
 > [!WARNING]
-> **Pre-release, specification v0.2.** Every command on this page is implemented and tested, but Precinto has not been used day to day yet, so details may still change. macOS first, Linux partial, no Windows. More in [Status](#status).
+> **Pre-release, specification v0.2.** Every command on this page is implemented and tested, but Precinto has not been used day to day yet, so details may still change. macOS first, Linux partial, Windows through WSL 2 ([docs/WINDOWS.md](docs/WINDOWS.md)). More in [Status](#status).
 
 ## What is Precinto?
 
@@ -97,13 +97,13 @@ On screen Precinto only says *locked*, *paused* and *ended and sealed*. A turn t
 |---|---|---|
 | 15 min without your input in the folder | the folder locks | `idle_soft` |
 | 60 min without your input | paused sessions are ended and sealed | `idle_hard` |
-| the screen locks | every folder locks at once; after 15 min of continuous screen lock, idle sessions are ended (busy ones after 30 min) | `lock_on_screen_lock`, `screen_lock_hard_after`, `busy_grace` |
+| the screen locks | every folder locks at once; after 15 min of continuous screen lock, idle sessions are ended (busy ones after 30 min). Not under WSL 2, where Precinto cannot see the Windows lock screen ([docs/WINDOWS.md](docs/WINDOWS.md)) | `lock_on_screen_lock`, `screen_lock_hard_after`, `busy_grace` |
 | the computer sleeps | every folder is locked when it wakes | – |
 | 8 h after an unlock | the folder locks however active you are; a notice comes 10 min before, and `precinto unlock --extend` asks for you again | `max_unlock` (at most 24 h) |
 | `precinto lock` | every folder locks now (or one, with `--root DIR`); `--end` also ends the sessions | – |
 | the Precinto daemon starts | every vault starts locked | – |
 
-"Input" means human input: keystrokes in a session started through Precinto, or a prompt that Precinto judges you typed. Loops, scheduled tasks and other automated prompts never keep a folder unlocked. Nothing the operating system does ever unlocks a folder.
+"Input" means human input: keystrokes in a session started through Precinto, or a prompt that Precinto judges you typed. Under WSL 2, where Precinto cannot see your keyboard and mouse in Windows, only the keystrokes count. Loops, scheduled tasks and other automated prompts never keep a folder unlocked. Nothing the operating system does ever unlocks a folder.
 
 ### The pieces
 
@@ -128,7 +128,7 @@ flowchart LR
 ```
 
 - **Protected folders, one vault each.** You protect a folder with `precinto protect DIR`. Each protected folder gets its own vault: an X25519 identity, wrapped once for each way you can unlock it (your *factors*). Unlocking a folder unwraps only that folder's key, like keeping one KeePass database per folder, so an agent working in one folder cannot obtain another folder's key without you. A separate `global` vault holds the few harness stores that belong to no folder.
-- **The daemon.** `precinto agent` is a per-user background process that starts on demand. It is the only process that unwraps vault keys. It keeps them in locked memory, never writes them to disk, and hands out only per-capsule file keys, only to the same Precinto executable, only for capsules in its log, and only while every folder of that capsule is unlocked.
+- **The daemon.** `precinto agent` is a per-user background process that starts on demand. It is the only process that unwraps vault keys. It keeps them in locked memory, never writes them to disk, and hands out only per-capsule file keys, only to the same `precinto` executable, only for capsules in its log, and only while every folder of that capsule is unlocked.
 
 ### Capsules
 
@@ -196,7 +196,7 @@ precinto integrate claude-code      # 4. install the hooks
 precinto integrate codex
 
 cd ~/work/acme                      # 5. work as usual
-claude                              #    goes through precinto thanks to step 3
+claude                              #    goes through Precinto thanks to step 3
 precinto run codex                  #    the explicit form, without the shell integration
 
 precinto status                     # 6. what is locked, running or still unencrypted
@@ -212,7 +212,7 @@ precinto unlock --root ~/work/acme  #    or name it
 1. **`precinto init`** creates your vaults and factors. On macOS the default factor is a Secure Enclave key made with `age-plugin-se`: it unlocks with Touch ID, or with your Mac password when no Touch ID is paired. On Linux it asks for a passphrase (at least 12 characters; it can suggest a 7-word one, shown exactly as you type it, hyphens included). Inside tmux, screen or SSH, where the macOS dialog cannot appear, it offers a passphrase as a second factor. Then it shows your recovery key once, on a cleared screen, and asks you to type back its last 4 characters (`--recovery-out FILE` writes it to a file instead). Nothing is set up before that: if you stop at that screen, run `precinto init` again later and you get a new key. On macOS it also offers the background re-seal service. Test the recovery key with `precinto recover --verify`.
 2. **`precinto protect DIR`** creates the folder's vault and registers it. Options: `--md ledger|all|off` (which Markdown files to seal: by default only those an agent wrote), `--on-enter prompt|notify|off`, `--harness LIST` (the harnesses Precinto manages in the folder, by default `claude-code,codex`) and `--claude-settings` (see [the FAQ](#faq)). When Codex is installed, it also asks whether Precinto should keep a separate, sealed Codex history for the folder. If you say no, the folder does not manage Codex: `precinto run codex` there asks the same question again and starts Codex only after a yes. `protect` offers to add `*.md.precinto` to the repository's local `.git/info/exclude`, which is never committed. Claude Code sessions you ran in that folder before protecting it show up in `precinto status`; seal them with `precinto seal --adopt`. Codex conversations from before stay in your own Codex home, which Precinto does not seal.
 3. **`precinto shell-init zsh|bash|fish`** prints shell functions for your harnesses and a hook that offers to unlock when you `cd` into a locked folder (Enter unlocks, any other key skips). The hook asks at most once per lock in each shell, and never in a subshell or inside a session that Precinto started. `--install` asks first, then adds exactly one line to your shell's rc file, once: `eval "$(precinto shell-init zsh)"` to `~/.zshrc`, `eval "$(precinto shell-init bash)"` to `~/.bashrc`, or `precinto shell-init fish | source` to `~/.config/fish/config.fish`. You can add the same line yourself instead. On macOS, Terminal starts bash as a login shell, which reads `~/.bashrc` only if your `~/.bash_profile` sources it.
-4. **`precinto integrate HARNESS`** installs Precinto's plugin through the harness's own plugin commands. The plugin comes from the Precinto binary itself, so nothing is downloaded: integrate writes it to the `marketplace` folder in Precinto's directory and adds that folder to the harness as a local marketplace (`claude plugin marketplace add …`, then `claude plugin install precinto@precinto`; for Codex, `codex plugin marketplace add …` and `codex plugin add precinto@precinto`). `--print` shows these commands and changes nothing. If one of them fails, Precinto's settings stay as they were and integrate prints the commands, so that you can run them yourself and read the whole error. It refuses Claude Code older than 2.1.295 (update it with `claude update`). Codex runs plugin hooks only after you trust them, and Precinto never trusts them for you: run `/hooks` in Codex and trust Precinto. Codex 0.154 keeps that trust in the `config.toml` of the Codex home it runs with, whatever folder the plugin is installed in, so trust Precinto once in your own Codex home (start Codex in a folder that is not protected): every protected folder whose Codex home Precinto creates afterwards starts with that trust. For a folder whose Codex home already exists, run `precinto codex sync-config --root DIR`, or trust Precinto once more in Codex started in that folder. Codex hooks are optional; without them Codex history is still sealed when Codex exits, but prompts are not paused while the folder is locked.
+4. **`precinto integrate HARNESS`** installs Precinto's plugin through the harness's own plugin commands. The plugin comes from the `precinto` binary itself, so nothing is downloaded: integrate writes it to the `marketplace` folder in Precinto's directory and adds that folder to the harness as a local marketplace (`claude plugin marketplace add …`, then `claude plugin install precinto@precinto`; for Codex, `codex plugin marketplace add …` and `codex plugin add precinto@precinto`). `--print` shows these commands and changes nothing. If one of them fails, Precinto's settings stay as they were and integrate prints the commands, so that you can run them yourself and read the whole error. It refuses Claude Code older than 2.1.295 (update it with `claude update`). Codex runs plugin hooks only after you trust them, and Precinto never trusts them for you: run `/hooks` in Codex and trust Precinto. Codex 0.154 keeps that trust in the `config.toml` of the Codex home it runs with, whatever folder the plugin is installed in, so trust Precinto once in your own Codex home (start Codex in a folder that is not protected): every protected folder whose Codex home Precinto creates afterwards starts with that trust. For a folder whose Codex home already exists, run `precinto codex sync-config --root DIR`, or trust Precinto once more in Codex started in that folder. Codex hooks are optional; without them Codex history is still sealed when Codex exits, but prompts are not paused while the folder is locked.
 5. **`precinto run HARNESS [ARGS]`** (or the shell function) checks that the folder is unlocked, asking for you if needed, restores what the session needs, starts the harness, and seals the session when it exits. Sessions that never touch a protected folder are left alone.
 6. **`status`, `lock`, `unlock`**: see [Everyday commands](#everyday-commands). `precinto unlock` with no flag unlocks the folder you are in. Outside every protected folder, in a terminal, it unlocks the only locked folder, or lists the locked folders and asks you to pick one by number (or all of them, after you type `unlock`). Without a terminal it can unlock only the folder of the current directory. After a cancelled or mistyped unlock, Precinto waits 30 seconds before it asks for that folder again (`prompt_backoff`), and tells you so. After an unlock, Precinto restores up to the folder's five most recent sessions, its notes and its prompt history in the background.
 
@@ -260,6 +260,8 @@ When Precinto starts Claude Code in a protected folder, it turns those backgroun
 | Factory Droid, Cursor, GitHub Copilot CLI | **Experimental**, unverified | hooks from the same plugin, enabled only with `precinto integrate <host> --experimental` |
 | Gemini CLI, Kimi Code, Qwen Code, OpenCode | **Experimental** | wrapper only, with a data-driven inventory; sealing is manual (`precinto seal --dormant <id> --experimental`) into the `global` vault, and nothing is restored automatically: run `precinto restore --global --harness <id>` after `precinto unlock --global` |
 
+On Windows, Claude Code and Codex must run inside the same WSL 2 distribution as Precinto: Precinto refuses a `claude` or `codex` that would run as a Windows program, and does not protect Claude Code or Codex for Windows, or the Claude desktop app. Do not install Precinto's plugin in Claude Code for Windows. See [docs/WINDOWS.md](docs/WINDOWS.md).
+
 What is sealed for each harness, how the hooks and the wrapper fit in, and the known caveats: [docs/HARNESSES.md](docs/HARNESSES.md).
 
 ## What Precinto protects, and what it does not
@@ -275,21 +277,25 @@ Precinto shortens the time your sessions sit on disk as plaintext. It does not m
 | A running session, or an unlocked folder | ❌ plain text, readable by any program running as you |
 | Malware that keeps running as you | ❌ it reads what is unlocked, and can capture a folder's key the next time you unlock it |
 | Copies made elsewhere: model providers, cloud sync, Spotlight, Time Machine while unlocked, terminal scrollback… | ❌ out of Precinto's reach; `precinto doctor --leaks` reports what it can find |
-| Deleted plaintext on SSDs | ❌ turn on FileVault, or disk encryption on Linux |
+| Deleted plaintext on SSDs | ❌ turn on FileVault, disk encryption on Linux, or BitLocker under WSL 2 |
+| Under WSL 2, any Windows program running as you | ❌ it can open the distribution as root (`wsl -u root`, no password) and read the keys of unlocked folders; locked folders stay sealed |
+| Under WSL 2, Claude Code, Codex or an editor running in Windows | ❌ out of Precinto's reach, since Precinto runs inside the distribution: run them there |
+| Under WSL 2, locking Windows (Win+L) | ❌ not seen: run `precinto lock`; the idle timers still lock and seal |
 
 <details>
 <summary><strong>The full list of limits</strong></summary>
 
 - **Malware that keeps running as you.** It can read whatever is unlocked or in use, and it can capture a folder's key the next time you unlock that folder. Separate vaults limit it to the folders you unlock.
 - **Sessions in use.** The files of a running session and of an unlocked folder are plaintext on disk and in memory, readable by any program running as you.
-- **Copies elsewhere.** What model providers keep, a harness's cloud sync, and copies made before you protected a folder or outside Precinto's inventory: Spotlight's index, Time Machine snapshots and backups taken while unlocked, terminal scrollback and session restoration (iTerm2, Terminal.app, tmux-resurrect), the clipboard and Handoff, notification history, editor histories, git objects, the Claude desktop app's stores, MCP servers' own stores. `precinto doctor --leaks` reports what it can find.
-- **Deleted plaintext on SSDs.** Old blocks can survive after a file is sealed and deleted. Turn on FileVault, or disk encryption on Linux.
+- **Copies elsewhere.** What model providers keep, a harness's cloud sync, and copies made before you protected a folder or outside Precinto's inventory: Spotlight's index, Time Machine snapshots and backups taken while unlocked, terminal scrollback and session restoration (iTerm2, Terminal.app, tmux-resurrect, Windows Terminal), the clipboard and Handoff, notification history, editor histories, git objects, the Claude desktop app's stores, MCP servers' own stores. `precinto doctor --leaks` reports what it can find.
+- **Deleted plaintext on SSDs.** Old blocks can survive after a file is sealed and deleted. Turn on FileVault, disk encryption on Linux, or BitLocker under WSL 2.
 - **Prompts typed while locked.** They are not sent to the model, but the harness may still write them into the transcript and its prompt history. The transcript copy is sealed with the session; the history line waits for the next history rotation, which needs every Claude Code process to be closed. Do not type secrets into a locked session.
 - **Sessions started without the wrapper.** In IDE terminals, desktop apps or `command claude`, a lock only stops the model: the conversation stays visible and local commands such as `/export` or `/copy` still work. If such a session has no working hooks either (plugin disabled, `--bare`, `disableAllHooks`), an interactive Claude Code session is ended at lock and any other one is only reported.
-- **Hooks that fail open.** Codex 0.154 lets an action proceed when a hook times out, and runs no hook you have not trusted. Claude Code 2.1.329 has a flag-gated path that can run a compaction despite Precinto's block. Copilot CLI cannot block prompts. If the Precinto binary crashes, its shim blocks only in sessions whose working directory or project directory is inside a protected folder.
+- **Hooks that fail open.** Codex 0.154 lets an action proceed when a hook times out, and runs no hook you have not trusted. Claude Code 2.1.329 has a flag-gated path that can run a compaction despite Precinto's block. Copilot CLI cannot block prompts. If the `precinto` binary crashes, its shim blocks only in sessions whose working directory or project directory is inside a protected folder.
 - **Codex started without Precinto** in a protected folder writes to your own Codex home, which Precinto never seals; `status` and `doctor` count those conversations. If you trusted Precinto's hooks in your own Codex home, they block such a session in a folder that manages Codex.
 - **Metadata.** Folder paths, how many sessions there are, capsule sizes and times can be read without a key. Titles and content cannot.
 - **A determined program running as you.** Agent detection and typed confirmations stop accidents and prompt-injected agents, not a program that fakes a terminal. Precinto also trusts your `$HOME`, your shell's `PATH` and its own binary. On Linux, Precinto can check its daemon only by user, lock-file holder and process name, so such a program could stand in for the daemon.
+- **Windows through WSL 2.** The Windows account is the boundary: any Windows program running as you can open the distribution as root without a password (`wsl -u root`), and so can a program inside it: through `wsl.exe` while Windows interoperability is on, and otherwise later, through a file it leaves on a Windows drive for Windows to run as you; root can read the keys of unlocked folders from the daemon's memory. Programs that run in Windows (Claude Code or Codex for Windows, the Claude desktop app, Windows editors) are out of Precinto's reach. Locking Windows does not lock folders, you unlock in a terminal, and the distribution's virtual disk, WSL's swap file and Windows' hibernation file lie on the Windows drive. Details and recommended settings: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 Also in v0.2: a large session is re-encrypted in full every time it changes; prompt-history lines are sealed only when no Claude Code process runs anywhere, and project memory only when none works in that folder's repository. The full list, with the reasons, is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
@@ -302,6 +308,7 @@ Also in v0.2: a large session is re-encrypted in full every time it changes; pro
 | Everywhere | Go 1.21 or newer, `make` and `git` |
 | macOS | `age-plugin-se` for the default factor (`brew install age-plugin-se`; check its own macOS requirements); optional: `pinentry-mac` |
 | Linux | optional: `pinentry-gnome3` (from your distribution's packages), and `age-plugin-yubikey` for a YubiKey factor |
+| Windows (WSL 2) | a WSL 2 distribution such as Ubuntu 24.04, with Go, `make` and `git` installed inside it: Precinto, Claude Code and Codex all run there, and your projects stay in its Linux file system, not under `/mnt/c`. See [docs/WINDOWS.md](docs/WINDOWS.md) |
 
 ```sh
 cd precinto                    # your checkout
@@ -335,7 +342,7 @@ lock_on_screen_lock = true
 screen_lock_hard_after = "15m"
 on_enter = "prompt"            # offer to unlock when you cd into a locked folder
 unlock_on_prompt = false       # let a prompt typed in a locked session raise the unlock dialog
-min_free = "2GiB"              # free space precinto always leaves on the disk when it seals or restores
+min_free = "2GiB"              # free space Precinto always leaves on the disk when it seals or restores
 ```
 
 `min_free` takes a size such as `"512MiB"` or `"4GiB"` (binary units; at least `512MiB`). When sealing a session would leave less free space than that, Precinto keeps the session as it is and reports "disk full" instead of filling the disk; the same floor applies to restores.
@@ -444,14 +451,28 @@ macOS privacy controls can stop the background service from reading those folder
 
 </details>
 
+<details>
+<summary><strong>Does it work on Windows?</strong></summary>
+
+Yes, through WSL 2. Precinto runs as its Linux build inside a WSL 2 distribution, and protects the Claude Code and Codex sessions that run in that same distribution. In short:
+
+1. In PowerShell as administrator, run `wsl --install -d Ubuntu-24.04`, restart Windows and create your Linux user. `wsl -l -v` must show `VERSION` 2.
+2. Inside Ubuntu, install Go, `make` and `git` (`sudo apt install golang-go make git`), build Precinto with the commands in [docs/WINDOWS.md](docs/WINDOWS.md), and install Claude Code or Codex there too, not in Windows.
+3. Keep your projects in the Linux file system (`~/work/…`), not under `/mnt/c`, and follow the [Quick start](#quick-start): `precinto init`, `precinto protect ~/work/acme`, `precinto shell-init bash --install`, `precinto integrate claude-code`, then `precinto doctor`.
+
+Precinto refuses WSL 1, folders on Windows drives and a `claude` or `codex` that would run as a Windows program. Locking Windows (Win+L) does not lock your folders, so run `precinto lock` when you leave; you unlock in a terminal; and your Windows account is the boundary, since any Windows program running as you can become root in the distribution. Native Windows is not supported. The full guide, with the recommended settings: [docs/WINDOWS.md](docs/WINDOWS.md).
+
+</details>
+
 ## Status
 
-- **Pre-release, specification v0.2** (it supersedes v0.1). Every command of the specification is implemented except the deferred `canary`, `scrub`, `rekey` and `import`, which say so and exit 2. Unit, integration, crash and race tests cover it, and the opt-in end-to-end suites pass against Claude Code 2.1.330 and Codex 0.154.0 without calling a model: the hooks, the wrapper, `integrate`, a locked folder and a session sealed when it ends. A real Secure Enclave key (Touch ID) and the background service have each been checked once on a Mac, and the test suites pass on Linux (Ubuntu 22.04, arm64) in a container, without a desktop session. Not tested yet: sessions that call a model, a YubiKey, and Linux on a desktop (logind's screen lock and idle, pinentry dialogs). Expect breaking changes before a first release.
+- **Pre-release, specification v0.2** (it supersedes v0.1). Every command of the specification is implemented except the deferred `canary`, `scrub`, `rekey` and `import`, which say so and exit 2. Unit, integration, crash and race tests cover it, and the opt-in end-to-end suites pass against Claude Code 2.1.330 and Codex 0.154.0 without calling a model: the hooks, the wrapper, `integrate`, a locked folder and a session sealed when it ends. A real Secure Enclave key (Touch ID) and the background service have each been checked once on a Mac, and the test suites pass on Linux (Ubuntu 22.04, arm64) in a container, without a desktop session. Not tested yet: sessions that call a model, a YubiKey, Linux on a desktop (logind's screen lock and idle, pinentry dialogs), and WSL 2 on a Windows desktop. Expect breaking changes before a first release.
 - **macOS first.** Secure Enclave factor through `age-plugin-se`, screen-lock, idle and sleep triggers, and an optional background re-seal service (a LaunchAgent).
 - **Linux partial.** It builds and runs with a passphrase factor (or an age plugin such as a YubiKey); screen lock and idle come from `loginctl`. There is no background service yet (`precinto service install` is macOS-only in v0.2), and machines without logind rely on idle timers and the 8-hour limit.
-- **No Windows** (WSL behaves like Linux).
+- **Windows through WSL 2.** Precinto runs as its Linux build inside a WSL 2 distribution, with Claude Code and Codex in that same distribution and your folders on its Linux file system. It refuses WSL 1, folders on Windows drives and harnesses that would run as Windows programs. Its main limits there: the Windows account is the boundary (any Windows program running as you can become root in the distribution), locking Windows does not lock folders, and you unlock in a terminal. Setup and limits: [docs/WINDOWS.md](docs/WINDOWS.md).
+- **No native Windows.** `precinto.exe` builds, but refuses every operation, so it protects nothing.
 - **Not public yet.** There is no public repository, release or download. The Go module path `github.com/precinto/precinto` is a placeholder.
-- **Decisions are defaults.** Every entry in [docs/DECISIONS.md](docs/DECISIONS.md) is a safe default waiting for the project owner's confirmation, and may change.
+- **Most decisions are defaults.** The entries of [docs/DECISIONS.md](docs/DECISIONS.md) marked *default* are safe defaults waiting for the project owner's confirmation, and may change; those marked *owner*, such as D155 (Windows through WSL 2) and D158 (CI), are confirmed.
 
 ## Documentation
 
@@ -460,6 +481,7 @@ macOS privacy controls can stop the background service from reading those folder
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | assets, adversaries, trust boundaries, scope and residual risks |
 | [docs/HARNESSES.md](docs/HARNESSES.md) | what is sealed per harness, hooks, wrapper and caveats |
 | [docs/COMPACTION.md](docs/COMPACTION.md) | compaction and background summaries, locked and unlocked |
+| [docs/WINDOWS.md](docs/WINDOWS.md) | Windows through WSL 2: setup, recommended settings, limits and messages |
 | [docs/SPEC.md](docs/SPEC.md) | the normative specification (v0.2) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | design decisions and their status |
 | [docs/HOOKS-IO.md](docs/HOOKS-IO.md) | exact hook inputs and outputs per harness |

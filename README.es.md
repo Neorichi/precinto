@@ -9,7 +9,7 @@
 </p>
 
 > [!WARNING]
-> **Versión preliminar, especificación v0.2.** Todos los comandos de esta página están implementados y probados, pero Precinto aún no se ha usado en el día a día, así que los detalles pueden cambiar. Primero macOS; Linux, en parte; Windows, no. Más en [Estado del proyecto](#estado-del-proyecto).
+> **Versión preliminar, especificación v0.2.** Todos los comandos de esta página están implementados y probados, pero Precinto aún no se ha usado en el día a día, así que los detalles pueden cambiar. Primero macOS; Linux, en parte; Windows, a través de WSL 2 ([docs/WINDOWS.md](docs/WINDOWS.md), en inglés). Más en [Estado del proyecto](#estado-del-proyecto).
 
 ## ¿Qué es Precinto?
 
@@ -97,13 +97,13 @@ Los mensajes de la herramienta están en inglés y solo hablan de *locked* (bloq
 |---|---|---|
 | 15 min sin actividad tuya en la carpeta | la carpeta se bloquea | `idle_soft` |
 | 60 min sin actividad tuya | las sesiones en pausa se terminan y se sellan | `idle_hard` |
-| se bloquea la pantalla | todas las carpetas se bloquean a la vez; con 15 min seguidos de pantalla bloqueada se terminan las sesiones inactivas (las ocupadas, a los 30 min) | `lock_on_screen_lock`, `screen_lock_hard_after`, `busy_grace` |
+| se bloquea la pantalla | todas las carpetas se bloquean a la vez; con 15 min seguidos de pantalla bloqueada se terminan las sesiones inactivas (las ocupadas, a los 30 min). No con WSL 2, donde Precinto no ve la pantalla de bloqueo de Windows ([docs/WINDOWS.md](docs/WINDOWS.md), en inglés) | `lock_on_screen_lock`, `screen_lock_hard_after`, `busy_grace` |
 | el ordenador entra en reposo | al despertar, todas las carpetas están bloqueadas | – |
 | 8 h después de desbloquear | la carpeta se bloquea aunque sigas trabajando; avisa 10 min antes, y `precinto unlock --extend` vuelve a pedirte presencia | `max_unlock` (24 h como máximo) |
 | `precinto lock` | se bloquean ya todas las carpetas (o una, con `--root DIR`); `--end` también termina las sesiones | – |
 | arranca el daemon de Precinto | todas las bóvedas empiezan bloqueadas | – |
 
-"Actividad" quiere decir actividad humana: teclas pulsadas en una sesión lanzada a través de Precinto, o un mensaje que Precinto considera escrito por ti. Los bucles, las tareas programadas y demás mensajes automáticos nunca mantienen una carpeta desbloqueada. Ningún evento del sistema operativo desbloquea jamás una carpeta.
+"Actividad" quiere decir actividad humana: teclas pulsadas en una sesión lanzada a través de Precinto, o un mensaje que Precinto considera escrito por ti. Con WSL 2, donde Precinto no ve tu teclado ni tu ratón en Windows, solo cuentan esas teclas. Los bucles, las tareas programadas y demás mensajes automáticos nunca mantienen una carpeta desbloqueada. Ningún evento del sistema operativo desbloquea jamás una carpeta.
 
 ### Las piezas
 
@@ -128,7 +128,7 @@ flowchart LR
 ```
 
 - **Carpetas protegidas, una bóveda cada una.** Una carpeta se protege con `precinto protect DIR`. Cada carpeta protegida tiene su propia bóveda: una identidad X25519 envuelta una vez por cada forma que tengas de desbloquearla (tus *factores*). Al desbloquear una carpeta solo se desenvuelve su clave, como si tuvieras una base de datos de KeePass por carpeta, de modo que un agente que trabaja en una carpeta no puede hacerse con la clave de otra sin ti. Una bóveda aparte, `global`, guarda los pocos almacenes del harness que no pertenecen a ninguna carpeta.
-- **El daemon.** `precinto agent` es un proceso por usuario que arranca solo cuando hace falta. Es el único que desenvuelve las claves de las bóvedas: las guarda en memoria bloqueada, nunca las escribe en disco y solo entrega claves de cápsulas concretas, solo al mismo ejecutable de Precinto, solo para cápsulas que figuran en su registro y solo mientras todas las carpetas de esa cápsula estén desbloqueadas.
+- **El daemon.** `precinto agent` es un proceso por usuario que arranca solo cuando hace falta. Es el único que desenvuelve las claves de las bóvedas: las guarda en memoria bloqueada, nunca las escribe en disco y solo entrega claves de cápsulas concretas, solo al mismo ejecutable `precinto`, solo para cápsulas que figuran en su registro y solo mientras todas las carpetas de esa cápsula estén desbloqueadas.
 
 ### Cápsulas
 
@@ -196,7 +196,7 @@ precinto integrate claude-code      # 4. instalar los hooks
 precinto integrate codex
 
 cd ~/work/acme                      # 5. trabajar como siempre
-claude                              #    pasa por precinto gracias al paso 3
+claude                              #    pasa por Precinto gracias al paso 3
 precinto run codex                  #    la forma explícita, sin integración con la shell
 
 precinto status                     # 6. qué está bloqueado, en marcha o todavía sin cifrar
@@ -212,7 +212,7 @@ precinto unlock --root ~/work/acme  #    o indicarla
 1. **`precinto init`** crea tus bóvedas y tus factores. En macOS el factor por defecto es una clave del Secure Enclave creada con `age-plugin-se`, que se desbloquea con Touch ID o, si no tienes Touch ID emparejado, con la contraseña del Mac. En Linux te pide una frase de paso (al menos 12 caracteres; puede proponerte una de 7 palabras, que te muestra tal como debes escribirla, con sus guiones). Dentro de tmux, screen o SSH, donde el diálogo de macOS no puede aparecer, ofrece además una frase de paso como segundo factor. Después te muestra la clave de recuperación una sola vez, en una pantalla limpia, y te pide que escribas sus 4 últimos caracteres (con `--recovery-out ARCHIVO`, en cambio, la guarda en un archivo). Hasta ese momento no se configura nada: si te detienes en esa pantalla, vuelve a ejecutar `precinto init` más tarde y obtendrás una clave nueva. En macOS ofrece también instalar el servicio de resellado en segundo plano. Comprueba la clave de recuperación con `precinto recover --verify`.
 2. **`precinto protect DIR`** crea la bóveda de la carpeta y la registra. Opciones: `--md ledger|all|off` (qué Markdown sellar; por defecto, solo el que escribió un agente), `--on-enter prompt|notify|off`, `--harness LISTA` (los harnesses que Precinto gestiona en la carpeta; por defecto, `claude-code,codex`) y `--claude-settings` (consulta [las preguntas frecuentes](#preguntas-frecuentes)). Si Codex está instalado, pregunta además si Precinto debe guardar para esa carpeta un historial de Codex aparte y sellado. Si respondes que no, la carpeta no gestiona Codex: allí `precinto run codex` te vuelve a hacer la misma pregunta y solo arranca Codex cuando respondes que sí. `protect` también ofrece añadir `*.md.precinto` al `.git/info/exclude` local del repositorio, que nunca se incluye en un commit. Las sesiones de Claude Code que tuviste en esa carpeta antes de protegerla aparecen en `precinto status`; séllalas con `precinto seal --adopt`. Las conversaciones anteriores de Codex se quedan en tu propio directorio de Codex, que Precinto no sella.
 3. **`precinto shell-init zsh|bash|fish`** imprime funciones de shell para tus harnesses y un hook que ofrece desbloquear cuando entras con `cd` en una carpeta bloqueada (Intro desbloquea; cualquier otra tecla lo deja estar). El hook pregunta como mucho una vez por bloqueo en cada shell, y nunca en una subshell ni dentro de una sesión que haya arrancado Precinto. `--install` te pregunta primero y luego añade exactamente una línea, una sola vez, al archivo de arranque de tu shell: `eval "$(precinto shell-init zsh)"` a `~/.zshrc`, `eval "$(precinto shell-init bash)"` a `~/.bashrc` o `precinto shell-init fish | source` a `~/.config/fish/config.fish`. También puedes añadir esa misma línea a mano. En macOS, Terminal arranca bash como shell de inicio de sesión, que solo lee `~/.bashrc` si tu `~/.bash_profile` lo carga.
-4. **`precinto integrate HARNESS`** instala el plugin de Precinto con los propios comandos de plugins del harness. El plugin viene dentro del propio binario de Precinto, así que no se descarga nada: integrate lo escribe en la carpeta `marketplace` del directorio de Precinto y añade esa carpeta al harness como un *marketplace* local (`claude plugin marketplace add …` y después `claude plugin install precinto@precinto`; en Codex, `codex plugin marketplace add …` y `codex plugin add precinto@precinto`). `--print` enseña esos comandos sin cambiar nada. Si alguno falla, la configuración de Precinto se queda como estaba e integrate imprime los comandos para que los ejecutes tú y leas el error completo. Rechaza las versiones de Claude Code anteriores a la 2.1.295 (actualízalo con `claude update`). Codex solo ejecuta los hooks de un plugin cuando confías en ellos, y Precinto nunca lo hace por ti: ejecuta `/hooks` en Codex y marca Precinto como de confianza. Codex 0.154 guarda esa confianza en el `config.toml` del directorio de Codex con el que se ejecuta, esté donde esté instalado el plugin, así que basta con que confíes en Precinto una vez en tu propio directorio de Codex (arranca Codex en una carpeta que no esté protegida): todas las carpetas protegidas cuyo directorio de Codex cree Precinto a partir de entonces empiezan con esa confianza. Para una carpeta cuyo directorio de Codex ya existe, ejecuta `precinto codex sync-config --root DIR` o vuelve a dar la confianza en Codex arrancado en esa carpeta. Los hooks de Codex son opcionales: sin ellos, el historial de Codex se sella igualmente al salir, pero los mensajes no se pausan mientras la carpeta está bloqueada.
+4. **`precinto integrate HARNESS`** instala el plugin de Precinto con los propios comandos de plugins del harness. El plugin viene dentro del propio binario `precinto`, así que no se descarga nada: integrate lo escribe en la carpeta `marketplace` del directorio de Precinto y añade esa carpeta al harness como un *marketplace* local (`claude plugin marketplace add …` y después `claude plugin install precinto@precinto`; en Codex, `codex plugin marketplace add …` y `codex plugin add precinto@precinto`). `--print` enseña esos comandos sin cambiar nada. Si alguno falla, la configuración de Precinto se queda como estaba e integrate imprime los comandos para que los ejecutes tú y leas el error completo. Rechaza las versiones de Claude Code anteriores a la 2.1.295 (actualízalo con `claude update`). Codex solo ejecuta los hooks de un plugin cuando confías en ellos, y Precinto nunca lo hace por ti: ejecuta `/hooks` en Codex y marca Precinto como de confianza. Codex 0.154 guarda esa confianza en el `config.toml` del directorio de Codex con el que se ejecuta, esté donde esté instalado el plugin, así que basta con que confíes en Precinto una vez en tu propio directorio de Codex (arranca Codex en una carpeta que no esté protegida): todas las carpetas protegidas cuyo directorio de Codex cree Precinto a partir de entonces empiezan con esa confianza. Para una carpeta cuyo directorio de Codex ya existe, ejecuta `precinto codex sync-config --root DIR` o vuelve a dar la confianza en Codex arrancado en esa carpeta. Los hooks de Codex son opcionales: sin ellos, el historial de Codex se sella igualmente al salir, pero los mensajes no se pausan mientras la carpeta está bloqueada.
 5. **`precinto run HARNESS [ARGS]`** (o la función de la shell) comprueba que la carpeta esté desbloqueada y, si no lo está, te lo pide; luego restaura lo que necesita la sesión, arranca el harness y sella la sesión al salir. Las sesiones que nunca tocan una carpeta protegida quedan al margen.
 6. **`status`, `lock` y `unlock`**: consulta [Comandos habituales](#comandos-habituales). `precinto unlock` sin opciones desbloquea la carpeta en la que estás. Fuera de cualquier carpeta protegida, en una terminal, desbloquea la única carpeta bloqueada o, si hay varias, las enumera y te pide que elijas una por su número (o todas, después de escribir `unlock`). Sin terminal, solo puede desbloquear la carpeta del directorio actual. Si cancelas un desbloqueo o te equivocas al escribir, Precinto espera 30 segundos antes de volver a pedirlo para esa carpeta (`prompt_backoff`) y te avisa de ello. Tras un desbloqueo, Precinto restaura en segundo plano hasta cinco de las sesiones más recientes de la carpeta, sus notas y su historial de mensajes.
 
@@ -260,6 +260,8 @@ Cuando Precinto arranca Claude Code en una carpeta protegida, desactiva esos res
 | Factory Droid, Cursor, GitHub Copilot CLI | **Experimental**, sin verificar | hooks del mismo plugin, que solo se activan con `precinto integrate <host> --experimental` |
 | Gemini CLI, Kimi Code, Qwen Code, OpenCode | **Experimental** | solo el lanzador, con un inventario declarativo; el sellado es manual (`precinto seal --dormant <id> --experimental`), en la bóveda `global`, y no se restaura nada automáticamente: ejecuta `precinto restore --global --harness <id>` después de `precinto unlock --global` |
 
+En Windows, Claude Code y Codex tienen que ejecutarse dentro de la misma distribución de WSL 2 que Precinto: Precinto rechaza un `claude` o un `codex` que se ejecutaría como programa de Windows, y no protege Claude Code ni Codex para Windows, ni la app de escritorio de Claude. No instales el plugin de Precinto en Claude Code para Windows. Consulta [docs/WINDOWS.md](docs/WINDOWS.md) (en inglés).
+
 Qué se sella con cada harness, cómo encajan los hooks y el lanzador, y las salvedades conocidas: [docs/HARNESSES.md](docs/HARNESSES.md) (en inglés).
 
 ## Qué protege Precinto y qué no
@@ -275,21 +277,25 @@ Precinto acorta el tiempo que tus sesiones pasan en el disco como texto plano, p
 | Una sesión en marcha o una carpeta desbloqueada | ❌ texto plano, al alcance de cualquier programa que se ejecute con tu usuario |
 | Malware que sigue ejecutándose con tu usuario | ❌ lee lo que esté desbloqueado y puede capturar la clave de una carpeta la próxima vez que la desbloquees |
 | Copias en otros sitios: proveedores de los modelos, sincronización en la nube, Spotlight, Time Machine con la carpeta desbloqueada, el historial de la terminal… | ❌ fuera del alcance de Precinto; `precinto doctor --leaks` informa de lo que encuentra |
-| Texto plano borrado en discos SSD | ❌ activa FileVault, o el cifrado de disco en Linux |
+| Texto plano borrado en discos SSD | ❌ activa FileVault, el cifrado de disco en Linux o BitLocker con WSL 2 |
+| Con WSL 2, cualquier programa de Windows que se ejecute con tu usuario | ❌ puede abrir la distribución como root (`wsl -u root`, sin contraseña) y leer las claves de las carpetas desbloqueadas; las bloqueadas siguen selladas |
+| Con WSL 2, Claude Code, Codex o un editor que se ejecutan en Windows | ❌ fuera del alcance de Precinto, que se ejecuta dentro de la distribución: ejecútalos ahí |
+| Con WSL 2, bloquear Windows (Win+L) | ❌ Precinto no lo ve: ejecuta `precinto lock`; los temporizadores de inactividad siguen bloqueando y sellando |
 
 <details>
 <summary><strong>La lista completa de límites</strong></summary>
 
 - **Malware que sigue ejecutándose con tu usuario.** Puede leer todo lo que esté desbloqueado o en uso, y capturar la clave de una carpeta la próxima vez que la desbloquees. Tener bóvedas separadas lo limita a las carpetas que desbloquees.
 - **Sesiones en uso.** Los archivos de una sesión en marcha y los de una carpeta desbloqueada están en texto plano, en el disco y en memoria, al alcance de cualquier programa que se ejecute con tu usuario.
-- **Copias en otros sitios.** Lo que guarden los proveedores de los modelos, la sincronización en la nube de un harness, y las copias hechas antes de proteger una carpeta o fuera del inventario de Precinto: el índice de Spotlight, las instantáneas y copias de Time Machine tomadas con la carpeta desbloqueada, el historial y la restauración de sesiones de la terminal (iTerm2, Terminal.app, tmux-resurrect), el portapapeles y Handoff, el historial de notificaciones, los historiales de los editores, los objetos de git, los almacenes de la app de escritorio de Claude y los de los propios servidores MCP. `precinto doctor --leaks` informa de lo que encuentra.
-- **Texto plano borrado en discos SSD.** Pueden sobrevivir bloques antiguos después de sellar y borrar un archivo. Activa FileVault, o el cifrado de disco en Linux.
+- **Copias en otros sitios.** Lo que guarden los proveedores de los modelos, la sincronización en la nube de un harness, y las copias hechas antes de proteger una carpeta o fuera del inventario de Precinto: el índice de Spotlight, las instantáneas y copias de Time Machine tomadas con la carpeta desbloqueada, el historial y la restauración de sesiones de la terminal (iTerm2, Terminal.app, tmux-resurrect, Windows Terminal), el portapapeles y Handoff, el historial de notificaciones, los historiales de los editores, los objetos de git, los almacenes de la app de escritorio de Claude y los de los propios servidores MCP. `precinto doctor --leaks` informa de lo que encuentra.
+- **Texto plano borrado en discos SSD.** Pueden sobrevivir bloques antiguos después de sellar y borrar un archivo. Activa FileVault, el cifrado de disco en Linux o BitLocker con WSL 2.
 - **Mensajes escritos con la carpeta bloqueada.** No llegan al modelo, pero el harness puede guardarlos igualmente en la transcripción y en su historial de mensajes. La copia de la transcripción se sella con la sesión; la línea del historial espera a la siguiente rotación, que exige cerrar todos los procesos de Claude Code. No escribas secretos en una sesión bloqueada.
 - **Sesiones arrancadas sin el lanzador.** En la terminal de un IDE, en una app de escritorio o con `command claude`, un bloqueo solo detiene al modelo: la conversación sigue a la vista y los comandos locales como `/export` o `/copy` siguen funcionando. Si esa sesión tampoco tiene hooks que funcionen (plugin desactivado, `--bare`, `disableAllHooks`), una sesión interactiva de Claude Code se termina al bloquear y cualquier otra solo se notifica.
-- **Hooks que dejan pasar cuando fallan.** Codex 0.154 deja seguir una acción cuando un hook agota su tiempo, y no ejecuta ningún hook en el que no hayas confiado. Claude Code 2.1.329 tiene una vía, condicionada por un indicador interno, que puede compactar pese al bloqueo de Precinto. Copilot CLI no puede bloquear mensajes. Si el binario de Precinto falla, su shim solo bloquea las sesiones cuyo directorio de trabajo o de proyecto está dentro de una carpeta protegida.
+- **Hooks que dejan pasar cuando fallan.** Codex 0.154 deja seguir una acción cuando un hook agota su tiempo, y no ejecuta ningún hook en el que no hayas confiado. Claude Code 2.1.329 tiene una vía, condicionada por un indicador interno, que puede compactar pese al bloqueo de Precinto. Copilot CLI no puede bloquear mensajes. Si el binario `precinto` falla, su shim solo bloquea las sesiones cuyo directorio de trabajo o de proyecto está dentro de una carpeta protegida.
 - **Codex arrancado sin Precinto** en una carpeta protegida escribe en tu propio directorio de Codex, que Precinto nunca sella; `status` y `doctor` cuentan esas conversaciones. Si marcaste como de confianza los hooks de Precinto en tu propio directorio de Codex, bloquean esa sesión en las carpetas que gestionan Codex.
 - **Metadatos.** Las rutas de las carpetas, cuántas sesiones hay y el tamaño y la fecha de las cápsulas se pueden leer sin clave. Los títulos y el contenido, no.
 - **Un programa decidido que se ejecuta con tu usuario.** La detección de agentes y las confirmaciones escritas frenan los accidentes y a los agentes manipulados mediante inyección de instrucciones, no a un programa que se haga pasar por una terminal. Precinto también confía en tu `$HOME`, en el `PATH` de tu shell y en su propio binario. En Linux, Precinto solo puede comprobar su daemon por el usuario, por quién tiene su archivo de bloqueo y por el nombre del proceso, así que un programa así podría suplantar al daemon.
+- **Windows a través de WSL 2.** La frontera es la cuenta de Windows: cualquier programa de Windows que se ejecute con tu usuario puede abrir la distribución como root sin contraseña (`wsl -u root`), y también puede hacerlo un programa de dentro: mediante `wsl.exe` mientras esté activada la interoperabilidad con Windows, y si no, más tarde, con un archivo que deje en una unidad de Windows para que Windows lo ejecute con tu usuario; root puede leer de la memoria del daemon las claves de las carpetas desbloqueadas. Los programas que se ejecutan en Windows (Claude Code o Codex para Windows, la app de escritorio de Claude, los editores de Windows) quedan fuera del alcance de Precinto. Bloquear Windows no bloquea las carpetas, el desbloqueo se hace en una terminal, y el disco virtual de la distribución, el archivo de intercambio de WSL y el de hibernación de Windows están en la unidad de Windows. Detalles y ajustes recomendados, en inglés: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 Y en la v0.2, además: una sesión grande se vuelve a cifrar entera cada vez que cambia; las líneas del historial de mensajes solo se sellan cuando no hay ningún proceso de Claude Code en marcha, y la memoria del proyecto, cuando ninguno trabaja en el repositorio de esa carpeta. La lista completa, con sus motivos, está en [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (en inglés).
 
@@ -302,6 +308,7 @@ Y en la v0.2, además: una sesión grande se vuelve a cifrar entera cada vez que
 | En todos los sistemas | Go 1.21 o posterior, `make` y `git` |
 | macOS | `age-plugin-se` para el factor por defecto (`brew install age-plugin-se`; revisa qué versiones de macOS admite); opcional: `pinentry-mac` |
 | Linux | opcionales: `pinentry-gnome3` (de los paquetes de tu distribución) y `age-plugin-yubikey` si quieres usar una YubiKey |
+| Windows (WSL 2) | una distribución de WSL 2, como Ubuntu 24.04, con Go, `make` y `git` instalados dentro: Precinto, Claude Code y Codex se ejecutan todos ahí, y tus proyectos se quedan en su sistema de archivos de Linux, no en `/mnt/c`. Consulta [docs/WINDOWS.md](docs/WINDOWS.md) (en inglés) |
 
 ```sh
 cd precinto                    # tu copia del repositorio
@@ -335,7 +342,7 @@ lock_on_screen_lock = true
 screen_lock_hard_after = "15m"
 on_enter = "prompt"            # ofrecer el desbloqueo al entrar con cd en una carpeta bloqueada
 unlock_on_prompt = false       # que un mensaje escrito en una sesión bloqueada abra el diálogo de desbloqueo
-min_free = "2GiB"              # espacio libre que precinto deja siempre en el disco al sellar o restaurar
+min_free = "2GiB"              # espacio libre que Precinto deja siempre en el disco al sellar o restaurar
 ```
 
 `min_free` admite un tamaño como `"512MiB"` o `"4GiB"` (unidades binarias; como mínimo `512MiB`). Si sellar una sesión dejara menos espacio libre que eso, Precinto deja la sesión como está y avisa de que el disco está lleno (*disk full*) en vez de llenarlo; el mismo límite vale para las restauraciones.
@@ -444,14 +451,28 @@ Los controles de privacidad de macOS pueden impedir que el servicio en segundo p
 
 </details>
 
+<details>
+<summary><strong>¿Funciona en Windows?</strong></summary>
+
+Sí, a través de WSL 2. Precinto se ejecuta como la versión de Linux dentro de una distribución de WSL 2 y protege las sesiones de Claude Code y Codex que se ejecutan en esa misma distribución. En resumen:
+
+1. En PowerShell como administrador, ejecuta `wsl --install -d Ubuntu-24.04`, reinicia Windows y crea tu usuario de Linux. `wsl -l -v` debe mostrar `VERSION` 2.
+2. Dentro de Ubuntu, instala Go, `make` y `git` (`sudo apt install golang-go make git`), compila Precinto con los comandos de [docs/WINDOWS.md](docs/WINDOWS.md) e instala también ahí Claude Code o Codex, no en Windows.
+3. Guarda tus proyectos en el sistema de archivos de Linux (`~/work/…`), no en `/mnt/c`, y sigue los [Primeros pasos](#primeros-pasos): `precinto init`, `precinto protect ~/work/acme`, `precinto shell-init bash --install`, `precinto integrate claude-code` y, al final, `precinto doctor`.
+
+Precinto rechaza WSL 1, las carpetas en unidades de Windows y un `claude` o un `codex` que se ejecutaría como programa de Windows. Bloquear Windows (Win+L) no bloquea tus carpetas, así que ejecuta `precinto lock` al irte; el desbloqueo se hace en una terminal; y la frontera es tu cuenta de Windows, porque cualquier programa de Windows que se ejecute con tu usuario puede hacerse root en la distribución. Precinto no funciona en Windows nativo. La guía completa, con los ajustes recomendados, está en inglés: [docs/WINDOWS.md](docs/WINDOWS.md).
+
+</details>
+
 ## Estado del proyecto
 
-- **Versión preliminar, especificación v0.2** (sustituye a la v0.1). Están implementados todos los comandos de la especificación salvo los aplazados (`canary`, `scrub`, `rekey` e `import`, que lo indican y terminan con el código 2). Las pruebas unitarias, de integración, de caídas y de carreras lo cubren, y las pruebas de extremo a extremo opcionales pasan con Claude Code 2.1.330 y Codex 0.154.0 sin llamar a ningún modelo: los hooks, el lanzador, `integrate`, una carpeta bloqueada y una sesión sellada al terminar. Una clave real del Secure Enclave (Touch ID) y el servicio en segundo plano se han comprobado una vez en un Mac, y las pruebas pasan en Linux (Ubuntu 22.04, arm64) dentro de un contenedor, sin sesión de escritorio. Falta probar sesiones que llamen a un modelo, una YubiKey y Linux en un escritorio (el bloqueo de pantalla y la inactividad de logind, los diálogos de pinentry). Puede haber cambios incompatibles antes de la primera versión.
+- **Versión preliminar, especificación v0.2** (sustituye a la v0.1). Están implementados todos los comandos de la especificación salvo los aplazados (`canary`, `scrub`, `rekey` e `import`, que lo indican y terminan con el código 2). Las pruebas unitarias, de integración, de caídas y de carreras lo cubren, y las pruebas de extremo a extremo opcionales pasan con Claude Code 2.1.330 y Codex 0.154.0 sin llamar a ningún modelo: los hooks, el lanzador, `integrate`, una carpeta bloqueada y una sesión sellada al terminar. Una clave real del Secure Enclave (Touch ID) y el servicio en segundo plano se han comprobado una vez en un Mac, y las pruebas pasan en Linux (Ubuntu 22.04, arm64) dentro de un contenedor, sin sesión de escritorio. Falta probar sesiones que llamen a un modelo, una YubiKey, Linux en un escritorio (el bloqueo de pantalla y la inactividad de logind, los diálogos de pinentry) y WSL 2 en un escritorio de Windows. Puede haber cambios incompatibles antes de la primera versión.
 - **Primero macOS**: factor del Secure Enclave mediante `age-plugin-se`, disparadores por bloqueo de pantalla, inactividad y reposo, y un servicio opcional de resellado en segundo plano (un LaunchAgent).
 - **Linux, en parte**: compila y funciona con una frase de paso como factor (o con un plugin de age, como una YubiKey), y lee el bloqueo de pantalla y la inactividad de `loginctl`. Todavía no hay servicio en segundo plano (`precinto service install` solo existe en macOS en la v0.2), y en las máquinas sin logind solo cuentan los temporizadores de inactividad y el límite de 8 horas.
-- **Windows, no** (WSL se comporta como Linux).
+- **Windows, a través de WSL 2**: Precinto se ejecuta como la versión de Linux dentro de una distribución de WSL 2, con Claude Code y Codex en esa misma distribución y tus carpetas en su sistema de archivos de Linux. Rechaza WSL 1, las carpetas en unidades de Windows y los harnesses que se ejecutarían como programas de Windows. Sus límites principales ahí: la frontera es la cuenta de Windows (cualquier programa de Windows que se ejecute con tu usuario puede hacerse root en la distribución), bloquear Windows no bloquea las carpetas y el desbloqueo se hace en una terminal. Instalación y límites, en inglés: [docs/WINDOWS.md](docs/WINDOWS.md).
+- **Windows nativo, no**: `precinto.exe` compila, pero rechaza cualquier operación, así que no protege nada.
 - **Aún no es público**: no hay repositorio público, versiones publicadas ni descargas. La ruta del módulo Go, `github.com/precinto/precinto`, es provisional.
-- **Las decisiones son provisionales**: cada entrada de [docs/DECISIONS.md](docs/DECISIONS.md) es un valor por defecto prudente a la espera de que lo confirme el responsable del proyecto, y puede cambiar.
+- **Casi todas las decisiones son provisionales**: las entradas de [docs/DECISIONS.md](docs/DECISIONS.md) marcadas *default* son valores por defecto prudentes a la espera de que los confirme el responsable del proyecto, y pueden cambiar; las marcadas *owner*, como D155 (Windows a través de WSL 2) y D158 (CI), ya están confirmadas.
 
 ## Documentación
 
@@ -462,6 +483,7 @@ La documentación detallada está en inglés:
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | activos, adversarios, fronteras de confianza, alcance y riesgos residuales |
 | [docs/HARNESSES.md](docs/HARNESSES.md) | qué se sella con cada harness, hooks, lanzador y salvedades |
 | [docs/COMPACTION.md](docs/COMPACTION.md) | compactación y resúmenes en segundo plano, con la carpeta bloqueada y desbloqueada |
+| [docs/WINDOWS.md](docs/WINDOWS.md) | Windows a través de WSL 2: instalación, ajustes recomendados, límites y mensajes |
 | [docs/SPEC.md](docs/SPEC.md) | la especificación normativa (v0.2) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | las decisiones de diseño y su estado |
 | [docs/HOOKS-IO.md](docs/HOOKS-IO.md) | entradas y salidas exactas de los hooks de cada harness |
