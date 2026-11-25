@@ -1,10 +1,15 @@
-# The Linux suites inside WSL 2 on a GitHub Windows runner, weekly and on
-# demand: this is how Precinto runs on Windows (Tier 1). A Windows minute
-# costs about 1.7 Linux minutes, so it never runs on push or pull request.
-# Owner: G7.
+# The Linux suites inside WSL 2 on a GitHub Windows runner, weekly, on
+# demand and on pull requests that change WSL code: this is how Precinto
+# runs on Windows (Tier 1). A Windows minute costs about 1.7 Linux minutes,
+# so other pushes and pull requests do not run it; a schedule and
+# workflow_dispatch only ever run the default branch's copy of this file,
+# so without the pull request trigger a change to the WSL guards would be
+# tested in WSL 2 only after it lands. Owner: G7.
 #
-# Vampire/setup-wsl installs Ubuntu 24.04 as a WSL 2 distribution (its
-# README documents WSL 2 on windows-2022). The tests run as a normal user,
+# windows-2025 ships WSL 2 (windows-2022 only WSL 1, where setup-wsl runs
+# `wsl --update` from the Microsoft Store on every run, which fails
+# intermittently with HTTP 403 there). Vampire/setup-wsl installs Ubuntu
+# 24.04 as a WSL 2 distribution. The tests run as a normal user,
 # because Precinto refuses root, from a clone on the distribution's own
 # ext4 disk, because Precinto refuses folders on Windows drives (/mnt/*);
 # the checkout under D:\ is only the source of that clone. Ubuntu's
@@ -16,6 +21,16 @@ on:
   schedule:
     - cron: "41 4 * * 3" # Wednesdays, 04:41 UTC
   workflow_dispatch:
+  # About $0.35–0.50 per update of such a pull request; the concurrency
+  # group cancels a run its next update supersedes.
+  pull_request:
+    paths:
+      - .github/workflows/wsl2.yml
+      - "**/wsl*.go"
+      - "**/boottime*.go"
+      - internal/paths/**
+      - internal/platform/**
+      - internal/harness/program*.go
 
 permissions:
   contents: read
@@ -35,8 +50,8 @@ env:
 
 jobs:
   wsl2:
-    name: test, crossgroup and test-crash in WSL 2 (Ubuntu 24.04)
-    runs-on: windows-2022
+    name: test, crossgroup and crossgroup-crash in WSL 2 (Ubuntu 24.04)
+    runs-on: windows-2025
     timeout-minutes: 120
     defaults:
       run:
@@ -142,9 +157,12 @@ jobs:
         run: |
           cd "$HOME/precinto"
           timeout --kill-after=1m 30m make crossgroup
-      - name: make test-crash
+      # The crash rows with failpoints over the real groups: every
+      # `make test-crash` test (no file excludes crossgroup) plus the sweep
+      # rows that depend on liveness, where D157's boot-time floor matters.
+      - name: make crossgroup-crash
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         timeout-minutes: 25
         run: |
           cd "$HOME/precinto"
-          timeout --kill-after=1m 20m make test-crash
+          timeout --kill-after=1m 20m make crossgroup-crash
