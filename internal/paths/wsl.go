@@ -5,10 +5,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +22,8 @@ import (
 // programs (interop), where the Windows drives are mounted, and which
 // file system holds a path (a Windows drive mounted into WSL hides the
 // Windows programs that write it from precinto). The parsing lives here,
-// in pure functions every OS tests; wsl_linux.go only reads the files.
+// in pure functions every OS tests; wsl_linux.go only reads the files,
+// and outside WSL only the kernel's release strings and /run/WSL.
 
 // WSL is what precinto knows about the Windows Subsystem for Linux
 // instance it runs in (D155). The zero value means "not WSL".
@@ -31,8 +32,15 @@ type WSL struct {
 	// kernel's release and version strings and /run/WSL.
 	Version int
 	// Interop reports whether programs of this distribution can start
-	// Windows programs: binfmt_misc holds an enabled WSLInterop entry.
-	// InteropKnown is false when binfmt_misc could not be read.
+	// Windows programs: /etc/wsl.conf does not turn interop off ([interop]
+	// enabled, true by default). The WSLInterop entry of binfmt_misc tells
+	// nothing about it: under WSL 2 it is registered for the whole virtual
+	// machine whatever a distribution's setting, and /init starts a
+	// Windows program without it (run directly, it starts the program its
+	// arguments name), as long as WSL runs this distribution's interop
+	// servers, which the setting decides. A change of the setting applies
+	// once WSL restarts the distribution. InteropKnown is false when
+	// /etc/wsl.conf exists but could not be read.
 	Interop      bool
 	InteropKnown bool
 	// MountRoot is the directory under which WSL mounts the Windows drives
@@ -45,8 +53,8 @@ type WSL struct {
 const DefaultWSLMountRoot = "/mnt/"
 
 // DetectWSL returns the WSL facts of this system, read once per process
-// (D155): on linux from /proc/sys/kernel/osrelease, /proc/version, /run/WSL,
-// /proc/sys/fs/binfmt_misc and /etc/wsl.conf; elsewhere the zero WSL.
+// (D155): on linux from /proc/sys/kernel/osrelease, /proc/version and
+// /run/WSL, then, under WSL only, /etc/wsl.conf; elsewhere the zero WSL.
 func DetectWSL() WSL {
 	wslOnce.Do(func() { wslInfo = detectWSL() })
 	return wslInfo
@@ -97,11 +105,10 @@ type wslFiles struct {
 	osrelease []byte // /proc/sys/kernel/osrelease
 	version   []byte // /proc/version
 	runWSL    bool   // /run/WSL is a directory owned by root
-	// binfmt holds the binfmt_misc entries whose name starts with
-	// WSLInterop (WSL registers WSLInterop; some releases add
-	// WSLInterop-late), nil when binfmt_misc could not be listed.
-	binfmt  map[string][]byte
-	wslConf []byte // /etc/wsl.conf, nil when absent
+	// wslConf is /etc/wsl.conf, nil when absent; wslConfErr reports one
+	// that exists but could not be read whole. Read under WSL only.
+	wslConf    []byte
+	wslConfErr bool
 }
 
 // wslFrom interprets the files: the WSL generation, interop, mount root.
@@ -111,24 +118,8 @@ func wslFrom(f wslFiles) WSL {
 		return WSL{}
 	}
 	w := WSL{Version: v, MountRoot: wslMountRoot(f.wslConf)}
-	if f.binfmt != nil {
-		w.InteropKnown = true
-		names := make([]string, 0, len(f.binfmt))
-		for n := range f.binfmt {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			enabled, ok := binfmtEnabled(f.binfmt[n])
-			if !ok {
-				w.InteropKnown = false
-				continue
-			}
-			w.Interop = w.Interop || enabled
-		}
-		if w.Interop {
-			w.InteropKnown = true // one enabled entry is enough to know
-		}
+	if !f.wslConfErr {
+		w.Interop, w.InteropKnown = wslInterop(f.wslConf), true
 	}
 	return w
 }
@@ -156,28 +147,50 @@ func wslVersion(osrelease, version string, runWSL bool) int {
 	return 0
 }
 
-// binfmtEnabled reads a binfmt_misc entry: its first line is "enabled" or
-// "disabled" (Documentation/admin-guide/binfmt-misc of the kernel).
-func binfmtEnabled(b []byte) (enabled, ok bool) {
-	first, _, _ := bytes.Cut(b, []byte("\n"))
-	switch strings.TrimSpace(string(first)) {
-	case "enabled":
-		return true, true
-	case "disabled":
-		return false, true
-	}
-	return false, false
-}
-
-// wslMountRoot returns [automount] root of /etc/wsl.conf, read as WSL
-// reads the file: section and key names without case, '#' starting a
-// comment outside double quotes, quotes removed, \" \\ escapes, the last
-// value winning; a root that is not absolute is ignored. The result ends
-// in "/" (WSL appends one), and is DefaultWSLMountRoot without a valid
-// value.
+// wslMountRoot returns [automount] root of /etc/wsl.conf, the last
+// absolute value (confValues); the result ends in "/" (WSL appends one),
+// and is DefaultWSLMountRoot without a valid value.
 func wslMountRoot(conf []byte) string {
 	root := ""
-	section := ""
+	for _, v := range confValues(conf, "automount", "root") {
+		if filepath.IsAbs(v) {
+			root = v
+		}
+	}
+	if root == "" {
+		return DefaultWSLMountRoot
+	}
+	root = filepath.Clean(root)
+	if root != "/" {
+		root += "/"
+	}
+	return root
+}
+
+// wslInterop returns [interop] enabled of /etc/wsl.conf: the last value
+// WSL reads as a boolean ("true" or "1", "false" or "0", without case for
+// the words; WSL ignores any other), true when none.
+func wslInterop(conf []byte) bool {
+	enabled := true
+	for _, v := range confValues(conf, "interop", "enabled") {
+		switch {
+		case v == "1" || strings.EqualFold(v, "true"):
+			enabled = true
+		case v == "0" || strings.EqualFold(v, "false"):
+			enabled = false
+		}
+	}
+	return enabled
+}
+
+// confValues returns, in order, the values of key in section of
+// /etc/wsl.conf, read as WSL reads the file: section and key names without
+// case, '#' starting a comment outside double quotes, quotes removed, \"
+// and \\ escapes; a line WSL would skip (bad escape, open quote) is left
+// out.
+func confValues(conf []byte, section, key string) []string {
+	var out []string
+	cur := ""
 	sc := bufio.NewScanner(bytes.NewReader(conf))
 	sc.Buffer(make([]byte, 0, 4096), 1<<20)
 	for sc.Scan() {
@@ -188,30 +201,21 @@ func wslMountRoot(conf []byte) string {
 		if line[0] == '[' {
 			end := strings.IndexByte(line, ']')
 			if end < 0 {
-				section = ""
+				cur = ""
 				continue
 			}
-			section = strings.ToLower(strings.TrimSpace(line[1:end]))
+			cur = strings.ToLower(strings.TrimSpace(line[1:end]))
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || section != "automount" || !strings.EqualFold(strings.TrimSpace(key), "root") {
+		k, value, ok := strings.Cut(line, "=")
+		if !ok || cur != section || !strings.EqualFold(strings.TrimSpace(k), key) {
 			continue
 		}
-		v, ok := confValue(value)
-		if !ok || !filepath.IsAbs(v) {
-			continue
+		if v, ok := confValue(value); ok {
+			out = append(out, v)
 		}
-		root = v
 	}
-	if root == "" {
-		return DefaultWSLMountRoot
-	}
-	root = filepath.Clean(root)
-	if root != "/" {
-		root += "/"
-	}
-	return root
+	return out
 }
 
 // confValue unquotes one wsl.conf value: double quotes toggle quoting,
@@ -463,6 +467,28 @@ func resolveExisting(p string) (string, error) {
 		}
 		rest = filepath.Join(filepath.Base(cur), rest)
 	}
+}
+
+// errTooLong: a file is longer than its reader's bound, so a part of it
+// that matters may be missing.
+var errTooLong = errors.New("paths: file too long to read whole")
+
+// readWhole reads all of a file of at most max bytes; a longer one is
+// errTooLong.
+func readWhole(p string, max int64) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, errTooLong
+	}
+	return b, nil
 }
 
 // existingDir returns the deepest existing directory at or above p (a

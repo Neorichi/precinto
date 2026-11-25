@@ -50,54 +50,61 @@ func TestWSLVersion(t *testing.T) {
 	}
 }
 
-// The binfmt_misc entry of WSL interop, as the kernel prints it.
-const (
-	interopOn  = "enabled\ninterpreter /init\nflags: PF\noffset 0\nmagic 4d5a\n"
-	interopOff = "disabled\ninterpreter /init\nflags: PF\noffset 0\nmagic 4d5a\n"
-)
-
-func TestBinfmtEnabled(t *testing.T) {
-	for in, want := range map[string][2]bool{
-		interopOn:  {true, true},
-		interopOff: {false, true},
-		"enabled":  {true, true},
-		"":         {false, false},
-		"garbage":  {false, false},
-	} {
-		on, ok := binfmtEnabled([]byte(in))
-		if on != want[0] || ok != want[1] {
-			t.Errorf("binfmtEnabled(%q) = %v, %v; want %v, %v", in, on, ok, want[0], want[1])
-		}
-	}
-}
-
-// D155: interop is on when an enabled WSLInterop entry exists; unknown
-// when binfmt_misc could not be read or an entry is unreadable.
+// D155: interop follows [interop] enabled of /etc/wsl.conf (true unless
+// set false), as WSL decides whether it runs the distribution's interop
+// servers; WSL 2's WSLInterop binfmt entry is the whole virtual machine's
+// and is not read. Unknown only when wsl.conf exists but cannot be read.
 func TestWSLFromInterop(t *testing.T) {
 	base := wslFiles{osrelease: []byte(wsl2Release), version: []byte(wsl2Version)}
 	for _, c := range []struct {
-		name        string
-		binfmt      map[string][]byte
-		on, known   bool
-		wantVersion int
+		name      string
+		conf      string
+		confErr   bool
+		on, known bool
 	}{
-		{"enabled", map[string][]byte{"WSLInterop": []byte(interopOn)}, true, true, 2},
-		{"disabled", map[string][]byte{"WSLInterop": []byte(interopOff)}, false, true, 2},
-		{"late entry enabled", map[string][]byte{"WSLInterop": []byte(interopOff), "WSLInterop-late": []byte(interopOn)}, true, true, 2},
-		{"no entry ([interop] enabled=false)", map[string][]byte{}, false, true, 2},
-		{"binfmt_misc unreadable", nil, false, false, 2},
-		{"entry unreadable", map[string][]byte{"WSLInterop": nil}, false, false, 2},
-		{"unreadable but another enabled", map[string][]byte{"WSLInterop": nil, "WSLInterop-late": []byte(interopOn)}, true, true, 2},
+		{"no wsl.conf", "", false, true, true},
+		{"no interop section", "[automount]\nroot = /\n", false, true, true},
+		{"enabled", "[interop]\nenabled = true\n", false, true, true},
+		{"disabled", "[interop]\nenabled = false\n", false, false, true},
+		{"disabled by 0", "[interop]\nenabled=0\n", false, false, true},
+		{"case of the word and names", "[Interop]\nEnabled = FALSE\n", false, false, true},
+		{"quoted, with a comment", "[interop]\nenabled = \"false\" # no Windows programs\n", false, false, true},
+		{"last valid wins", "[interop]\nenabled = false\nenabled = true\n", false, true, true},
+		{"invalid value ignored", "[interop]\nenabled = false\nenabled = no\n", false, false, true},
+		{"only invalid", "[interop]\nenabled = off\n", false, true, true},
+		{"other section's enabled", "[automount]\nenabled = false\n", false, true, true},
+		{"appendWindowsPath only", "[interop]\nappendWindowsPath = false\n", false, true, true},
+		{"commented out", "[interop]\n# enabled = false\n", false, true, true},
+		{"unreadable", "", true, false, false},
 	} {
 		f := base
-		f.binfmt = c.binfmt
+		f.wslConf, f.wslConfErr = []byte(c.conf), c.confErr
 		w := wslFrom(f)
-		if w.Version != c.wantVersion || w.Interop != c.on || w.InteropKnown != c.known || w.MountRoot != DefaultWSLMountRoot {
+		if w.Version != 2 || w.Interop != c.on || w.InteropKnown != c.known {
 			t.Errorf("%s: %+v, want interop %v known %v", c.name, w, c.on, c.known)
 		}
 	}
-	if w := wslFrom(wslFiles{osrelease: []byte(ubuntuRel), version: []byte(ubuntuVer), binfmt: map[string][]byte{"WSLInterop": []byte(interopOn)}}); w != (WSL{}) {
+	if w := wslFrom(wslFiles{osrelease: []byte(ubuntuRel), version: []byte(ubuntuVer), wslConf: []byte("[interop]\nenabled = true\n")}); w != (WSL{}) {
 		t.Errorf("plain linux: %+v, want the zero WSL", w)
+	}
+}
+
+// readWhole reads a file whole or not at all: a file longer than the
+// bound (a mount table of more than 8 MiB, an oversized wsl.conf) is an
+// error, never a truncated read (D156).
+func TestReadWhole(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := readWhole(p, 10); err != nil || string(b) != "0123456789" {
+		t.Fatalf("at the bound: %q, %v", b, err)
+	}
+	if b, err := readWhole(p, 9); !errors.Is(err, errTooLong) || b != nil {
+		t.Fatalf("over the bound: %q, %v", b, err)
+	}
+	if _, err := readWhole(filepath.Join(filepath.Dir(p), "missing"), 10); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
 	}
 }
 

@@ -3,10 +3,11 @@
 package paths
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 )
 
@@ -15,39 +16,46 @@ import (
 
 func detectWSL() WSL { return wslFrom(readWSLFiles("/")) }
 
-// readWSLFiles reads the WSL markers below root ("/" outside tests).
+// readWSLFiles reads the WSL markers below root ("/" outside tests): the
+// kernel's release strings and /run/WSL, and, only when they tell WSL,
+// /etc/wsl.conf. A plain linux reads nothing more (D155).
 func readWSLFiles(root string) wslFiles {
 	at := func(p string) string { return filepath.Join(root, p) }
 	f := wslFiles{
 		osrelease: readSmallFile(at("/proc/sys/kernel/osrelease")),
 		version:   readSmallFile(at("/proc/version")),
-		wslConf:   readSmallFile(at("/etc/wsl.conf")),
 	}
 	if st, err := os.Lstat(at("/run/WSL")); err == nil && st.IsDir() {
 		if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Uid == 0 {
 			f.runWSL = true
 		}
 	}
-	if ents, err := os.ReadDir(at("/proc/sys/fs/binfmt_misc")); err == nil {
-		f.binfmt = map[string][]byte{}
-		for _, e := range ents {
-			if strings.HasPrefix(e.Name(), "WSLInterop") {
-				f.binfmt[e.Name()] = readSmallFile(at("/proc/sys/fs/binfmt_misc/" + e.Name()))
-			}
-		}
+	if wslVersion(string(f.osrelease), string(f.version), f.runWSL) == 0 {
+		return f
+	}
+	b, err := readWhole(at("/etc/wsl.conf"), maxSmallFile)
+	switch {
+	case err == nil:
+		f.wslConf = b
+	case !errors.Is(err, fs.ErrNotExist):
+		f.wslConfErr = true // unreadable or too long: interop unknown
 	}
 	return f
 }
 
-// readSmallFile reads at most 64 KiB of a system file (nil when it cannot
-// be read): /proc entries and root's /etc/wsl.conf.
+// maxSmallFile bounds the system files DetectWSL reads: /proc entries
+// and root's /etc/wsl.conf.
+const maxSmallFile = 64 << 10
+
+// readSmallFile reads at most maxSmallFile bytes of a system file (nil
+// when it cannot be read).
 func readSmallFile(p string) []byte {
 	f, err := os.Open(p)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile))
 	if err != nil {
 		return nil
 	}

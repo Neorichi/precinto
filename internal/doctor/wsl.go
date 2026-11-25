@@ -40,13 +40,16 @@ func checkWSLInterop(e *env) []Finding {
 		return nil
 	}
 	const fix = "set enabled=false under [interop] in /etc/wsl.conf, then run wsl --shutdown in Windows (Windows programs of your account can still do it through wsl.exe; lock folders when you leave them)"
+	// /etc/wsl.conf decides (paths.WSL.Interop): WSL 2's WSLInterop
+	// binfmt entry serves the whole virtual machine, and /init starts a
+	// Windows program without it while the distribution's interop runs.
 	switch {
 	case w.Interop:
-		return []Finding{warn(CheckWSLInterop, "Windows interoperability is on: a program of this distribution, an agent included, can run wsl.exe to become the superuser of the distribution and read the keys of unlocked folders from the precinto agent's memory", fix)}
+		return []Finding{warn(CheckWSLInterop, "Windows interoperability is on (/etc/wsl.conf does not set enabled=false under [interop]): a program of this distribution, an agent included, can run wsl.exe to become the superuser of the distribution and read the keys of unlocked folders from the precinto agent's memory", fix)}
 	case !w.InteropKnown:
-		return []Finding{info(CheckWSLInterop, "could not tell whether Windows interoperability is on (binfmt_misc could not be read)", fix)}
+		return []Finding{info(CheckWSLInterop, "could not tell whether Windows interoperability is on (/etc/wsl.conf could not be read)", fix)}
 	}
-	return []Finding{ok(CheckWSLInterop, "Windows interoperability is off: programs of this distribution cannot start Windows programs")}
+	return []Finding{ok(CheckWSLInterop, "/etc/wsl.conf turns Windows interoperability off (enabled=false under [interop]): once WSL has restarted since that setting was made (wsl --shutdown), programs of this distribution cannot start Windows programs")}
 }
 
 func checkWSLIdle(e *env) []Finding {

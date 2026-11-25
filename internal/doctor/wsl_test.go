@@ -41,7 +41,7 @@ func TestWSLVersionAndInterop(t *testing.T) {
 	f.d.WSL = func() paths.WSL { return paths.WSL{Version: 2, Interop: true, InteropKnown: true, MountRoot: "/mnt/"} }
 	fs = f.run()
 	want(t, fs, doctor.CheckWSL, doctor.OK, "WSL 2")
-	x = want(t, fs, doctor.CheckWSLInterop, doctor.Warn, "wsl.exe", "superuser", "unlocked folders")
+	x = want(t, fs, doctor.CheckWSLInterop, doctor.Warn, "/etc/wsl.conf", "wsl.exe", "superuser", "unlocked folders")
 	if !strings.Contains(x.Fix, "[interop]") || !strings.Contains(x.Fix, "enabled=false") {
 		t.Errorf("interop fix: %q", x.Fix)
 	}
@@ -54,10 +54,12 @@ func TestWSLVersionAndInterop(t *testing.T) {
 		t.Errorf("disk encryption fix: %q", x.Fix)
 	}
 
+	// Off is what wsl.conf says, which applies once WSL restarted: the
+	// text names the setting and never claims more.
 	f.d.WSL = func() paths.WSL { return paths.WSL{Version: 2, InteropKnown: true, MountRoot: "/mnt/"} }
-	want(t, f.run(), doctor.CheckWSLInterop, doctor.OK, "off")
+	want(t, f.run(), doctor.CheckWSLInterop, doctor.OK, "off", "/etc/wsl.conf", "enabled=false", "wsl --shutdown")
 	f.d.WSL = func() paths.WSL { return paths.WSL{Version: 2, MountRoot: "/mnt/"} }
-	want(t, f.run(), doctor.CheckWSLInterop, doctor.Info, "could not tell")
+	want(t, f.run(), doctor.CheckWSLInterop, doctor.Info, "could not tell", "/etc/wsl.conf could not be read")
 }
 
 // D156: precinto's folders, the protected folders and the harness homes

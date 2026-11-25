@@ -5751,8 +5751,15 @@ type WSL struct {
 	// kernel's release and version strings and /run/WSL.
 	Version int
 	// Interop reports whether programs of this distribution can start
-	// Windows programs: binfmt_misc holds an enabled WSLInterop entry.
-	// InteropKnown is false when binfmt_misc could not be read.
+	// Windows programs: /etc/wsl.conf does not turn interop off ([interop]
+	// enabled, true by default). The WSLInterop entry of binfmt_misc tells
+	// nothing about it: under WSL 2 it is registered for the whole virtual
+	// machine whatever a distribution's setting, and /init starts a
+	// Windows program without it (run directly, it starts the program its
+	// arguments name), as long as WSL runs this distribution's interop
+	// servers, which the setting decides. A change of the setting applies
+	// once WSL restarts the distribution. InteropKnown is false when
+	// /etc/wsl.conf exists but could not be read.
 	Interop      bool
 	InteropKnown bool
 	// MountRoot is the directory under which WSL mounts the Windows drives
@@ -5761,8 +5768,8 @@ type WSL struct {
 }
 
 // DetectWSL returns the WSL facts of this system, read once per process
-// (D155): on linux from /proc/sys/kernel/osrelease, /proc/version, /run/WSL,
-// /proc/sys/fs/binfmt_misc and /etc/wsl.conf; elsewhere the zero WSL.
+// (D155): on linux from /proc/sys/kernel/osrelease, /proc/version and
+// /run/WSL, then, under WSL only, /etc/wsl.conf; elsewhere the zero WSL.
 func DetectWSL() WSL
 
 // UsersFolder reports whether p lies in the Users folder of a Windows drive

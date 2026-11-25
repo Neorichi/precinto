@@ -25,21 +25,41 @@ func TestReadWSLFiles(t *testing.T) {
 	if w := wslFrom(readWSLFiles(root)); w != (WSL{}) {
 		t.Fatalf("an empty tree is WSL: %+v", w)
 	}
+	// A plain kernel reads nothing beyond its release strings and
+	// /run/WSL (D155): not wsl.conf, not binfmt_misc.
+	write("proc/sys/kernel/osrelease", ubuntuRel)
+	write("proc/version", ubuntuVer)
+	write("etc/wsl.conf", "[automount]\nroot = /\n[interop]\nenabled = false\n")
+	if f := readWSLFiles(root); f.wslConf != nil || f.wslConfErr {
+		t.Fatalf("plain linux read wsl.conf: %+v", f)
+	}
 	write("proc/sys/kernel/osrelease", wsl2Release)
 	write("proc/version", wsl2Version)
-	write("proc/sys/fs/binfmt_misc/status", "enabled\n")
-	write("proc/sys/fs/binfmt_misc/WSLInterop", interopOn)
-	write("etc/wsl.conf", "[automount]\nroot = /\n[interop]\nenabled = true\n")
+	write("proc/sys/fs/binfmt_misc/WSLInterop", "enabled\ninterpreter /init\nflags: PF\noffset 0\nmagic 4d5a\n")
 	f := readWSLFiles(root)
-	if len(f.binfmt) != 1 || f.runWSL {
+	if f.wslConf == nil || f.wslConfErr || f.runWSL {
 		t.Fatalf("files: %+v", f)
 	}
-	if w := wslFrom(f); w != (WSL{Version: 2, Interop: true, InteropKnown: true, MountRoot: "/"}) {
-		t.Fatalf("WSL 2: %+v", w)
+	// WSL 2's VM-wide WSLInterop entry does not turn interop on when the
+	// distribution's wsl.conf turns it off.
+	if w := wslFrom(f); w != (WSL{Version: 2, Interop: false, InteropKnown: true, MountRoot: "/"}) {
+		t.Fatalf("WSL 2, interop off: %+v", w)
 	}
-	write("proc/sys/fs/binfmt_misc/WSLInterop", interopOff)
-	if w := wslFrom(readWSLFiles(root)); w.Interop || !w.InteropKnown {
-		t.Fatalf("interop off: %+v", w)
+	write("etc/wsl.conf", "[automount]\nroot = /\n")
+	if w := wslFrom(readWSLFiles(root)); !w.Interop || !w.InteropKnown {
+		t.Fatalf("interop on by default: %+v", w)
+	}
+	// A wsl.conf that cannot be read leaves interop unknown.
+	if os.Getuid() != 0 {
+		if err := os.Chmod(filepath.Join(root, "etc", "wsl.conf"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if w := wslFrom(readWSLFiles(root)); w.InteropKnown || w.Version != 2 {
+			t.Fatalf("unreadable wsl.conf: %+v", w)
+		}
+		if err := os.Chmod(filepath.Join(root, "etc", "wsl.conf"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	write("proc/sys/kernel/osrelease", wsl1Release)
 	write("proc/version", wsl1Version)
