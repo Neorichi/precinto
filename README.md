@@ -36,6 +36,14 @@ Precinto is a **KeePass-style vault for those sessions**. You choose the folders
 - **Sealing never needs a key.** Anything Precinto runs in the background can seal; only restoring needs you.
 - **One vault per folder.** Unlocking one folder never opens another, so an agent working in one folder cannot obtain another folder's key without you.
 
+## See it in action
+
+<p align="center">
+  <img src="docs/assets/demo-claude-code.gif" alt="Terminal recording, about one minute. In ~/acme, a protected folder, Claude Code adds a --shout option to greet.py. When Claude exits, Precinto seals the session. precinto lock locks the folder and precinto ls lists the session as sealed. claude --continue asks for the passphrase, restores the session, and Claude still knows what it changed." width="100%">
+</p>
+
+Claude Code edits a file in `~/acme`, a protected folder. When it exits, Precinto seals the session, and `precinto lock` wipes the folder's key. `claude --continue` asks for the passphrase, restores the session, and Claude picks up where it left off.
+
 ## Contents
 
 - [Why it matters](#why-it-matters)

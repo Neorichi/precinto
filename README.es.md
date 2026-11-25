@@ -36,6 +36,14 @@ Precinto es una **bóveda al estilo de KeePass para esas sesiones**. Tú decides
 - **Sellar nunca necesita una clave.** Cualquier tarea de Precinto en segundo plano puede sellar; solo restaurar te necesita a ti.
 - **Una bóveda por carpeta.** Desbloquear una carpeta nunca abre otra, de modo que un agente que trabaja en una carpeta no puede hacerse con la clave de otra sin ti.
 
+## Míralo en acción
+
+<p align="center">
+  <img src="docs/assets/demo-claude-code.gif" alt="Grabación de la terminal, de un minuto aproximadamente. En ~/acme, una carpeta protegida, Claude Code añade una opción --shout a greet.py. Al salir Claude, Precinto sella la sesión. precinto lock bloquea la carpeta y precinto ls muestra la sesión sellada. claude --continue pide la frase de paso, restaura la sesión y Claude sigue sabiendo qué cambió." width="100%">
+</p>
+
+Claude Code edita un archivo en `~/acme`, una carpeta protegida. Al salir, Precinto sella la sesión, y `precinto lock` borra la clave de la carpeta. `claude --continue` pide la frase de paso, restaura la sesión y Claude sigue donde lo dejó.
+
 ## Índice
 
 - [Por qué importa](#por-qué-importa)
