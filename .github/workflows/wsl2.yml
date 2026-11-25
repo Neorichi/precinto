@@ -1,10 +1,10 @@
-# The Linux suites inside WSL 2 on a GitHub Windows runner, weekly, on
-# demand and on pull requests that change WSL code: this is how Precinto
-# runs on Windows (Tier 1). A Windows minute costs about 1.7 Linux minutes,
-# so other pushes and pull requests do not run it; a schedule and
-# workflow_dispatch only ever run the default branch's copy of this file,
-# so without the pull request trigger a change to the WSL guards would be
-# tested in WSL 2 only after it lands. Owner: G7.
+# The Linux suites inside WSL 2 on a GitHub Windows runner, weekly and on
+# demand: this is how Precinto runs on Windows (Tier 1). A Windows minute
+# costs about 1.7 Linux minutes, so pushes and pull requests do not run it.
+# A schedule and workflow_dispatch only ever run the default branch's copy
+# of this file, so a change to the WSL guards is tested in WSL 2 once it is
+# on main: dispatch this workflow then rather than wait for Wednesday.
+# Owner: G7.
 #
 # windows-2025 ships WSL 2 (windows-2022 only WSL 1, where setup-wsl runs
 # `wsl --update` from the Microsoft Store on every run, which fails
@@ -21,16 +21,6 @@ on:
   schedule:
     - cron: "41 4 * * 3" # Wednesdays, 04:41 UTC
   workflow_dispatch:
-  # About $0.35–0.50 per update of such a pull request; the concurrency
-  # group cancels a run its next update supersedes.
-  pull_request:
-    paths:
-      - .github/workflows/wsl2.yml
-      - "**/wsl*.go"
-      - "**/boottime*.go"
-      - internal/paths/**
-      - internal/platform/**
-      - internal/harness/program*.go
 
 permissions:
   contents: read
