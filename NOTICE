@@ -5,9 +5,12 @@ This product includes software developed by third parties, used under their
 respective licenses:
 
 - age (filippo.io/age) — BSD-3-Clause — Copyright 2019 The age Authors
+- hpke (filippo.io/hpke), used by age — BSD-3-Clause — Copyright 2009 The Go Authors
+- nistec (filippo.io/nistec), used by age — BSD-3-Clause — Copyright 2009 The Go Authors
 - klauspost/compress (zstd) — BSD-3-Clause / Apache-2.0 — Copyright 2019 Klaus Post
 - creack/pty — MIT — Copyright 2011 Keith Rarick
 - awnumar/memguard — Apache-2.0 — Copyright 2017 Awn Umar
+- awnumar/memcall, used by memguard — Apache-2.0
 - BurntSushi/toml — MIT — Copyright 2013 TOML authors
 - golang.org/x/{sys,term,crypto} — BSD-3-Clause — Copyright The Go Authors
 
