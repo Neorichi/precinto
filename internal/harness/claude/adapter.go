@@ -52,6 +52,24 @@ func (a *adapter) Homes(ctx context.Context, e harness.Env) ([]harness.Home, err
 	return out, nil
 }
 
+// RegisteredHomes implements harness.RegisteredHomer: every home config
+// registers, also one Homes leaves out under WSL for lying on a Windows
+// drive (D156), so that restore authenticates its capsules and Targets
+// refuses the home for what it is.
+func (a *adapter) RegisteredHomes(ctx context.Context, e harness.Env) ([]harness.Home, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	hs := registeredHomes(e.Cfg)
+	out := make([]harness.Home, len(hs))
+	for i, h := range hs {
+		out[i] = h.Home
+	}
+	return out, nil
+}
+
+var _ harness.RegisteredHomer = (*adapter)(nil)
+
 // session is what Scan knows about one session of a home.
 type sessionInfo struct {
 	ledger  ledger.Session

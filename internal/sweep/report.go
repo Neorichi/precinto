@@ -12,6 +12,7 @@ import (
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/live"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/sweep/journal"
 	"github.com/precinto/precinto/internal/vault"
@@ -36,7 +37,8 @@ const (
 	codeTooLarge      = "too-large"
 	codeNotLogged     = "not-logged"
 	codeUnitKey       = "unit-key"
-	codeUnregistered  = "unregistered" // no registered home: a configuration gap, exit 1, never 5 (D109)
+	codeUnregistered  = "unregistered"  // no registered home: a configuration gap, exit 1, never 5 (D109)
+	codeWindowsDrive  = "windows-drive" // under WSL the home is on a Windows drive: a configuration gap, exit 1 (D156)
 	codeKeyDenied     = "key-denied"
 	codeNoSpace       = "no-space"
 	codeInaccessible  = "inaccessible"
@@ -61,6 +63,7 @@ var codeErrors = map[string]error{
 	codeNotLogged:     ErrNotLogged,
 	codeUnitKey:       harness.ErrUnitKey,
 	codeUnregistered:  harness.ErrUnregistered,
+	codeWindowsDrive:  paths.ErrWindowsDrive,
 	codeKeyDenied:     ErrKeyDenied,
 	codeNoSpace:       ErrNoSpace,
 	codeInaccessible:  ErrInaccessible,
@@ -118,6 +121,10 @@ func failureCode(err error) (string, fsx.Class) {
 	switch {
 	case err == nil:
 		return "", fsx.ClassNone
+	case errors.Is(err, paths.ErrWindowsDrive):
+		// First: a DriveError wraps what stopped the check (a symlink
+		// loop, EACCES), which must not read as tampering or I/O.
+		return codeWindowsDrive, fsx.ClassOther
 	case errors.Is(err, vault.ErrRecipientsChanged):
 		return codeTripwire, fsx.ClassOther
 	case errors.Is(err, vault.ErrMACMismatch):
@@ -236,7 +243,7 @@ func safeMsg(err error) string {
 		ErrLive, ErrConflict, ErrNoSpace, ErrNotLogged, ErrKeyDenied, ErrTripwire, ErrInaccessible,
 		capsule.ErrVerify, capsule.ErrHeader, capsule.ErrRecipients, capsule.ErrFormat, capsule.ErrUnsafe,
 		capsule.ErrTooLarge, capsule.ErrChanged, fsx.ErrUnsafe, fsx.ErrChanged, fsx.ErrExist, fsx.ErrLocked,
-		fsx.ErrNoSpace, fsx.ErrHardlink, harness.ErrUnitKey, harness.ErrUnregistered, journal.ErrConflict,
+		fsx.ErrNoSpace, fsx.ErrHardlink, harness.ErrUnitKey, harness.ErrUnregistered, paths.ErrWindowsDrive, journal.ErrConflict,
 		vault.ErrMACMismatch, vault.ErrWrongIdentity, vault.ErrPluginPin, live.ErrLeaseHeld,
 	} {
 		if errors.Is(err, s) {

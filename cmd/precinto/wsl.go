@@ -139,6 +139,30 @@ func (a *app) sayDrive(de *paths.DriveError) {
 	a.line(ui.MsgWindowsDrive, ui.Vars{Folder: a.display(de.Path)})
 }
 
+// sayClaudeHomesOnDrive prints E.windrive (or E.windrive.unsure) for every
+// registered Claude config folder on a Windows drive, whose capsules a
+// restore leaves sealed (D156), and reports whether it printed one.
+func (a *app) sayClaudeHomesOnDrive() bool {
+	cfg, err := a.config()
+	if err != nil {
+		return false
+	}
+	printed := false
+	seen := map[string]bool{}
+	for _, h := range cfg.Harness[string(harness.ClaudeCode)].Homes {
+		if !filepath.IsAbs(h.Dir) || seen[h.Dir] {
+			continue
+		}
+		seen[h.Dir] = true
+		var de *paths.DriveError
+		if errors.As(a.sys.checkDrive(h.Dir), &de) {
+			a.sayDrive(de)
+			printed = true
+		}
+	}
+	return printed
+}
+
 // driveWhy is the {cause} of an unknown drive verdict.
 func driveWhy(de *paths.DriveError) string {
 	if de.Why != "" {

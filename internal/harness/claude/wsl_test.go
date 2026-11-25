@@ -93,6 +93,33 @@ func TestTargetsOnWindowsDrives(t *testing.T) {
 	if _, err := f.a.Targets(ctx, f.e, u.Ref(), sid1); !errors.Is(err, paths.ErrWindowsDrive) {
 		t.Fatalf("config on a drive: %v", err)
 	}
+	// F1: Homes leaves that home out, but restore still authenticates its
+	// capsules against it (RegisteredHomes), so Targets refuses it as a
+	// drive, not as a key that matches no home.
+	hs, err := f.a.Homes(ctx, f.e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hs {
+		if h.ID == u.Home.ID {
+			t.Fatal("Homes kept a home on a Windows drive")
+		}
+	}
+	rh, ok := f.a.(harness.RegisteredHomer)
+	if !ok {
+		t.Fatal("the Claude adapter is no harness.RegisteredHomer")
+	}
+	reg, err := rh.RegisteredHomes(ctx, f.e)
+	if err != nil || len(reg) == 0 {
+		t.Fatalf("RegisteredHomes: %v, %v", reg, err)
+	}
+	found := false
+	for _, h := range reg {
+		found = found || (h.ID == u.Home.ID && h.Bases[capsule.BaseClaudeConfig] == f.h.ClaudeConfig)
+	}
+	if !found {
+		t.Fatalf("RegisteredHomes %+v lacks the home on a drive (%s)", reg, u.Home.ID)
+	}
 }
 
 // D156: under WSL a launch refuses a Claude that would run as a Windows

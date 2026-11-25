@@ -700,6 +700,18 @@ func (r *run) authenticate(ctx context.Context, ref harness.UnitRef, unitID stri
 	if err != nil {
 		return authenticated{}, err
 	}
+	// D156: a registered home Homes leaves out (under WSL, one on a
+	// Windows drive) still authenticates its capsules, so Targets refuses
+	// it for what it is, never as a key that matches no home.
+	if rh, ok := ad.(harness.RegisteredHomer); ok {
+		if more, err := rh.RegisteredHomes(ctx, r.e.Harness); err == nil {
+			for _, h := range more {
+				if !slices.ContainsFunc(homes, func(x harness.Home) bool { return x.ID == h.ID }) {
+					homes = append(homes, h)
+				}
+			}
+		}
+	}
 	rootCands := append([]string{""}, roots...)
 	for _, h := range homes {
 		if h.ID == "" {

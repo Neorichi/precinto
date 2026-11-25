@@ -3637,6 +3637,18 @@ func (e *ProgramError) Error() string
 // Is makes errors.Is(err, ErrWindowsProgram) hold for every ProgramError.
 func (e *ProgramError) Is(target error) bool
 
+// RegisteredHomer is implemented by an adapter whose restore targets, the
+// homes config registers (SPEC §7.0), can be missing from Homes: under WSL
+// the Claude adapter's Homes leaves out a home on a Windows drive, which
+// is never scanned or sealed (D156). Restore authenticates a capsule's
+// unit key against these homes too, so that Targets refuses such a home
+// with its *paths.DriveError, a configuration gap (exit 1), instead of
+// the key matching no home (ErrUnitKey: a capsule that looks forged,
+// exit 5).
+type RegisteredHomer interface {
+	RegisteredHomes(ctx context.Context, e Env) ([]Home, error)
+}
+
 // Resume is the parsed resume target.
 type Resume struct {
 	Kind  ResumeKind

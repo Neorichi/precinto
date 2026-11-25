@@ -11,6 +11,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/live"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/ui"
 )
@@ -75,9 +76,10 @@ var liveOutcomes = []sweep.Outcome{sweep.OutLive, sweep.OutWarm, sweep.OutLeased
 // Detail prefixes of unit results the summaries explain (internal/sweep
 // failure codes and skip details; never content, I7).
 const (
-	detailNoSpace      = "no-space:"     // the free-space floor refused the seal (SPEC §17)
-	detailUnregistered = "unregistered:" // the capsule's Claude home is not registered (SPEC §7.0)
-	detailAdopted      = "adopted:"      // a sweep left an adopted session to seal --adopt (S6)
+	detailNoSpace      = "no-space:"      // the free-space floor refused the seal (SPEC §17)
+	detailUnregistered = "unregistered:"  // the capsule's Claude home is not registered (SPEC §7.0)
+	detailWindowsDrive = "windows-drive:" // under WSL the capsule's home is on a Windows drive (D156)
+	detailAdopted      = "adopted:"       // a sweep left an adopted session to seal --adopt (S6)
 )
 
 // printSeal prints the summary of a seal or sweep run and returns the
@@ -147,6 +149,11 @@ func (a *app) printRestore(r *sweep.Report) []error {
 	if n := countDetail(r, detailUnregistered); n > 0 {
 		a.line(ui.MsgHomeUnregistered, ui.Vars{N: n})
 		shown = append(shown, harness.ErrUnregistered)
+	}
+	// D156: once for every registered Claude folder on a Windows drive,
+	// whose capsules stay sealed (exit 1, a configuration gap).
+	if countDetail(r, detailWindowsDrive) > 0 && a.sayClaudeHomesOnDrive() {
+		shown = append(shown, paths.ErrWindowsDrive)
 	}
 	return shown
 }

@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/ui"
 	"github.com/precinto/precinto/internal/wrapper"
 )
@@ -350,6 +352,34 @@ func TestStatusUnderWSL(t *testing.T) {
 
 // D156: doctor runs when precinto's own folder is on a Windows drive (the
 // windows-drive check reports it); other commands stop.
+// D156 (F1): a restore that met capsules of a registered Claude home now
+// on a Windows drive names that folder (E.windrive, once) and exits 1, a
+// configuration gap, never 5 (a capsule that looks forged); it does not
+// print the error chain too.
+func TestRestoreFromAHomeOnAWindowsDrive(t *testing.T) {
+	e := newEnv(t)
+	e.wsl = wsl2
+	e.drives = []string{e.h.ClaudeConfig}
+	unit := func(k string) sweep.UnitResult {
+		return sweep.UnitResult{Harness: "claude-code", Kind: capsule.KindClaudeSession, Unit: k, Outcome: sweep.OutFailed, Detail: "windows-drive: paths: on a Windows drive"}
+	}
+	rep := &sweep.Report{Units: []sweep.UnitResult{unit("0123456789abcdef0123456789abcdef"), unit("1123456789abcdef0123456789abcdef")}}
+	e.eng.restoreRep, e.eng.restoreErr = rep, rep.Err()
+	if !errors.Is(rep.Err(), paths.ErrWindowsDrive) || errors.Is(rep.Err(), harness.ErrUnitKey) {
+		t.Fatalf("report error %v", rep.Err())
+	}
+	if code := e.run("restore"); code != exitError {
+		t.Fatalf("exit %d, want 1 (never the tamper class 5) (%s)", code, e.stderr())
+	}
+	want := ui.Format(ui.MsgWindowsDrive, ui.Vars{Folder: e.app().display(e.h.ClaudeConfig)})
+	if got := e.stderr(); got != want+"\n" {
+		t.Fatalf("stderr %q, want only %q", got, want)
+	}
+	if exitForRestore(rep.Err()) != exitError {
+		t.Fatal("a home on a drive must map to exit 1")
+	}
+}
+
 // D155, D156: lock and agent --stop only wipe keys, so a folder of
 // precinto on a Windows drive (an agent an earlier build started there, or
 // a drive check that turned unknown) never stops them: they reach the
