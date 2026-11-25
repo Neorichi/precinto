@@ -1,10 +1,10 @@
 # Security policy
 
-precinto exists to protect sensitive data, so security reports come before any other work. Thank you for helping.
+Precinto exists to protect sensitive data, so security reports come before any other work. Thank you for helping.
 
 ## Supported versions
 
-precinto is pre-release (specification v0.2) and has no stable release yet. Only the current state of the default development branch receives security fixes. Once there are releases, this table will say which of them are supported.
+Precinto is pre-release (specification v0.2) and has no stable release yet. Only the current state of the default development branch receives security fixes. Once there are releases, this table will say which of them are supported.
 
 | Version | Supported |
 |---|---|
@@ -33,7 +33,7 @@ Please include:
 - obtaining the key or the plaintext of a folder other than the ones that are unlocked;
 - the daemon releasing keys to a different executable, to a capsule missing from the capsule log, or for a folder that is locked;
 - a restore that writes outside the allowed targets of its unit, follows a symlink, or replaces a file it should not;
-- precinto deleting or losing data: plaintext deleted before its capsule was verified, a generation overwritten, data lost after a crash or power loss;
+- Precinto deleting or losing data: plaintext deleted before its capsule was verified, a generation overwritten, data lost after a crash or power loss;
 - a gate hook that fails open for a session in a protected folder where the specification says it must fail closed;
 - secrets or content (identities, passphrases, recovery keys, prompts, tool output, environment values) written to logs, ledgers, journals, receipts, the queue or error messages;
 - recipient tampering, planted capsules or policy downgrades that go undetected;
@@ -42,7 +42,7 @@ Please include:
 **Out of scope**, unless you find a way to make them worse than documented:
 
 - the limitations listed in [docs/SPEC.md §19](docs/SPEC.md#19-known-limitations) and in the residual risks of [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md#7-residual-risks), such as what persistent malware running as you can do after you unlock a folder, sessions that run without hooks, or metadata that is visible by design;
-- vulnerabilities in a harness, in age or its plugins, or in the operating system: please report them to their maintainers, and tell us too if precinto's use of them is affected;
+- vulnerabilities in a harness, in age or its plugins, or in the operating system: please report them to their maintainers, and tell us too if Precinto's use of them is affected;
 - attacks that need administrator (root) or kernel access;
 - social engineering of maintainers or users.
 
@@ -61,7 +61,7 @@ These are targets. Like every policy of this pre-release project, they are subje
 
 We will keep you informed while we work on it, and credit you in the advisory if you wish.
 
-## How precinto is built to be secure
+## How Precinto is built to be secure
 
 - Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 - Specification, including cryptography, key custody and error handling: [docs/SPEC.md](docs/SPEC.md).

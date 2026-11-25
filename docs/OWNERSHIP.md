@@ -1,6 +1,6 @@
-# precinto — Ownership (v0.2)
+# Precinto — Ownership (v0.2)
 
-Eight groups implement precinto in parallel against the frozen contract in `docs/API.md`. Directories are disjoint: each file has exactly one owner. "Lead" means the lead/architect (contract owner).
+Eight groups implement Precinto in parallel against the frozen contract in `docs/API.md`. Directories are disjoint: each file has exactly one owner. "Lead" means the lead/architect (contract owner).
 
 ## 1. Rules
 1. **Own directory only.** Implementers may add unexported code, new files and new test files in their own directories, and change unexported fields of their own types. Helper programs for tests (a scripted TUI child, fake harness executables, fake daemons) are `main` packages under the owner's `testdata/` directory, which `internal/archtest` skips; any other new package needs a lead contract change. Helper programs take a lifeline (an inherited pipe or stdin) and exit when it closes, and every test kills and reaps every process it starts, including their sessions and descendants (TESTPLAN §1).
