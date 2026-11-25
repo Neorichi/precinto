@@ -221,7 +221,7 @@ func registryVersion(env paths.Env, configDir string) string {
 		return ""
 	}
 	path := filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json")
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return ""
 	}

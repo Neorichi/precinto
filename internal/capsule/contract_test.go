@@ -6,12 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/testkit"
 )
 
 // TmpName is a pure function of the final name: callers journal it before
@@ -164,7 +164,7 @@ func TestReadSalt(t *testing.T) {
 		t.Errorf("symlinked salt: %v %v", ok, err)
 	}
 	fifo := filepath.Join(dir, "fifo.salt")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := testkit.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := capsule.ReadSalt(fifo); ok || !errors.Is(err, fsx.ErrUnsafe) {

@@ -514,7 +514,7 @@ func (a *adapter) lockEvidence(ctx context.Context, e harness.Env, u harness.Uni
 
 // lockPID reads the pid of a json-pid lock record ({"pid": N, …}).
 func lockPID(path string) (int, bool) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return 0, false
 	}

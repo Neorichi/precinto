@@ -4,11 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/testkit"
 )
 
 // within fails the test if fn does not return within 5 s (a reader that
@@ -29,7 +29,7 @@ func within(t *testing.T, fn func()) {
 func TestReadLogRefusesFIFOsAndOversizeLogs(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "capsules.log")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := testkit.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	within(t, func() {

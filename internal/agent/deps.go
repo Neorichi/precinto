@@ -345,7 +345,7 @@ const repairScratchPrefix = ".repair-"
 // copyPublic copies a small regular file (no symlink followed, at most
 // 1 MiB) with mode 0600.
 func copyPublic(src, dst string) error {
-	f, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(src, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
@@ -542,7 +542,7 @@ func notifyTTY(tty, text string) error {
 	if !strings.HasPrefix(tty, "/dev/") || filepath.Clean(tty) != tty {
 		return fmt.Errorf("agent: not a terminal path")
 	}
-	f, err := os.OpenFile(tty, os.O_WRONLY|syscall.O_NOCTTY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(tty, os.O_WRONLY|syscall.O_NOCTTY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
@@ -551,8 +551,8 @@ func notifyTTY(tty, text string) error {
 	if err != nil {
 		return err
 	}
-	sys, ok := st.Sys().(*syscall.Stat_t)
-	if !ok || st.Mode()&fs.ModeCharDevice == 0 || int(sys.Uid) != os.Getuid() {
+	owner, err := fsx.Fstat(f)
+	if err != nil || st.Mode()&fs.ModeCharDevice == 0 || int(owner.UID) != os.Getuid() {
 		return fmt.Errorf("agent: terminal is not owned by the current user")
 	}
 	clean := strings.Map(func(r rune) rune {

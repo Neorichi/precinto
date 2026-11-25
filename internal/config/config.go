@@ -780,7 +780,7 @@ const MaxFileBytes = 1 << 20
 // following a symlink or blocking on a FIFO; a missing file is
 // os.ErrNotExist (callers treat it as "none").
 func readPolicyFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, fmt.Errorf("%w: %s is a symlink", fsx.ErrUnsafe, filepath.Base(path))

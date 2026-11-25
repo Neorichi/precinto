@@ -56,7 +56,7 @@ func findTombstone(dir, sid string, n int64) (tombstone, bool, error) {
 }
 
 func readTombstones(dir string) ([]byte, error) {
-	f, err := os.OpenFile(filepath.Join(dir, tombstoneFile), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(filepath.Join(dir, tombstoneFile), os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

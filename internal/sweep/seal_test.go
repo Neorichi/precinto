@@ -214,7 +214,7 @@ func TestSealHazardsAreReportedNeverTouched(t *testing.T) {
 	canary := filepath.Join(te.h.HomeDir, "canary.txt")
 	mustNoErr(t, os.WriteFile(canary, []byte("canary\n"), 0o600))
 	mustNoErr(t, os.Symlink(canary, filepath.Join(dir, sid1+".link")))
-	mustNoErr(t, syscall.Mkfifo(filepath.Join(dir, sid1+".fifo"), 0o600))
+	mustNoErr(t, testkit.Mkfifo(filepath.Join(dir, sid1+".fifo"), 0o600))
 	hard := filepath.Join(dir, sid1+"-hard.txt")
 	mustNoErr(t, os.WriteFile(hard, []byte("shared\n"), 0o600))
 	mustNoErr(t, os.Link(hard, filepath.Join(te.h.HomeDir, "other-link")))

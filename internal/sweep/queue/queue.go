@@ -151,7 +151,7 @@ func Remove(dir, id string) error {
 
 // readRequest reads one request without following symlinks.
 func readRequest(path string) (Request, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return Request{}, err
 	}
@@ -248,7 +248,7 @@ func createExclusive(dir, name string, data []byte) error {
 	for i := 0; ; i++ {
 		tmp = filepath.Join(dir, "."+name+".tmp-"+strconv.Itoa(os.Getpid())+"-"+strconv.Itoa(i))
 		var err error
-		f, err = os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		f, err = os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 		if err == nil {
 			break
 		}

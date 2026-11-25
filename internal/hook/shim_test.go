@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/testkit"
 	"github.com/precinto/precinto/internal/ui"
 )
 
@@ -149,8 +149,8 @@ func (h *shimHome) runShim(t *testing.T, sh shell, dir string, env map[string]st
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // never the test's terminal
-	cmd.WaitDelay = 5 * time.Second                      // a straggler holding the pipes cannot stall Wait
+	cmd.SysProcAttr = testkit.NewSession() // never the test's terminal
+	cmd.WaitDelay = 5 * time.Second        // a straggler holding the pipes cannot stall Wait
 	err = cmd.Run()
 	r := shimRun{stdout: out.String(), stderr: errb.String()}
 	if ee, ok := err.(*exec.ExitError); ok {

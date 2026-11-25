@@ -40,3 +40,7 @@ func ownedByMe(fi fs.FileInfo) bool {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	return ok && st.Uid == uint32(os.Geteuid())
 }
+
+func mkfifo(path string, perm uint32) error { return syscall.Mkfifo(path, perm) }
+
+func newSession() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }

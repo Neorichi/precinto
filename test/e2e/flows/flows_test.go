@@ -144,7 +144,7 @@ func (x *e2e) runCmd(dir, exe string, args ...string) (int, string, string) {
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Env = x.env.Environ()
 	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = testkit.NewSession()
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	cmd.WaitDelay = 10 * time.Second // a worker holding the pipes cannot stall Wait
@@ -245,7 +245,7 @@ func (x *e2e) startAgent() {
 	cmd := exec.Command(x.exe, "agent", "--foreground")
 	cmd.Env = x.env.Environ()
 	cmd.Dir = "/"
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = testkit.NewSession()
 	if err := cmd.Start(); err != nil {
 		x.t.Fatal(err)
 	}

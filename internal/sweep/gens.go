@@ -127,7 +127,7 @@ var errStateTooLarge = errors.New("sweep: state file too large")
 // symlink is refused and a FIFO never blocks, required to be a regular
 // file (fsx.ErrUnsafe otherwise) and at most max bytes (errStateTooLarge).
 func readState(p string, max int64) ([]byte, error) {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(p, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, fmt.Errorf("%w: %s is a symlink", fsx.ErrUnsafe, filepath.Base(p))
@@ -184,7 +184,7 @@ func (r *run) loadReceipt(unit string) (receiptDisk, bool, error) {
 	if !validKey(unit) {
 		return receiptDisk{}, false, fmt.Errorf("%w: invalid unit key", harness.ErrUnitKey)
 	}
-	f, err := os.OpenFile(r.receiptPath(unit), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(r.receiptPath(unit), os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return receiptDisk{}, false, nil
 	}

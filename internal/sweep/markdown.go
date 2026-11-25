@@ -51,7 +51,7 @@ func ParseMarker(path string) (unitKey string, err error) {
 	if !strings.HasSuffix(path, markerSuffix) || !isNoteName(strings.TrimSuffix(path, markerSuffix)) {
 		return "", fmt.Errorf("%w: not a *.md.precinto file", ErrNotMarker)
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return "", fmt.Errorf("%w: a symlink", ErrNotMarker)

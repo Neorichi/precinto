@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -28,7 +27,7 @@ func TestStopInstallationEndsTheAgentAndItsWorkers(t *testing.T) {
 	// (it spawns its start-up sweep worker the same way).
 	agent := exec.Command(bin, "agent")
 	agent.Env, agent.Dir = env, "/"
-	agent.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	agent.SysProcAttr = testkit.NewSession()
 	if err := agent.Start(); err != nil {
 		t.Fatal(err)
 	}

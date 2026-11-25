@@ -255,6 +255,13 @@ const MaxLine = 64 << 10
 // MaxRecord bounds Dir.AppendRecord.
 const MaxRecord = 64 << 20
 
+// ONoFollow is the os.OpenFile flag for callers that open one file by path
+// without following a symlink in its final component: O_NOFOLLOW on darwin
+// and linux. On windows (not supported yet, D34) it is
+// FILE_FLAG_OPEN_REPARSE_POINT: a link is opened itself, where O_NOFOLLOW
+// fails with ELOOP, but never followed. Elsewhere it is 0.
+const ONoFollow = oNoFollow
+
 // Errors. Callers test them with errors.Is.
 var (
 	// ErrUnsafe: a symlink, foreign owner, group/other-writable directory
@@ -6398,6 +6405,16 @@ func Leftovers(bin string, dirs ...string) []string
 
 // Marker returns a unique marker string for leak greps.
 func Marker(t testing.TB) string
+
+// Mkfifo creates a FIFO at path with mode perm (mkfifo(2)), for tests that
+// check that a FIFO is refused without blocking. It fails where precinto
+// does not run (D34).
+func Mkfifo(path string, perm uint32) error
+
+// NewSession returns the SysProcAttr that starts a child in a new session
+// without a controlling terminal (setsid), so it can never prompt on the
+// terminal running the tests; nil where precinto does not run (D34).
+func NewSession() *syscall.SysProcAttr
 
 // RemoveBinaries deletes the directory of the binaries BuildBinary built
 // in this process, so a test run leaves nothing in TMPDIR (TESTPLAN §1.8).

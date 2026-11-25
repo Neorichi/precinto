@@ -1,6 +1,7 @@
 package testkit
 
 import (
+	"syscall"
 	"testing"
 	"time"
 
@@ -141,6 +142,16 @@ func BuildBinary(t testing.TB, tags ...string) string {
 // BuildBinary in the same process fails. Without it the next test process
 // that builds removes the directory, as an abandoned one.
 func RemoveBinaries() { removeBinaries() }
+
+// Mkfifo creates a FIFO at path with mode perm (mkfifo(2)), for tests that
+// check that a FIFO is refused without blocking. It fails where precinto
+// does not run (D34).
+func Mkfifo(path string, perm uint32) error { return mkfifo(path, perm) }
+
+// NewSession returns the SysProcAttr that starts a child in a new session
+// without a controlling terminal (setsid), so it can never prompt on the
+// terminal running the tests; nil where precinto does not run (D34).
+func NewSession() *syscall.SysProcAttr { return newSession() }
 
 // Marker returns a unique marker string for leak greps.
 func Marker(t testing.TB) string {

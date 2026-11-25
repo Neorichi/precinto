@@ -42,7 +42,7 @@ type registryFile struct {
 
 // readBounded reads a regular file without following a final symlink.
 func readBounded(path string, max int64) ([]byte, fsx.Stat, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fsx.Stat{}, err
 	}

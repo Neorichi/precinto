@@ -305,6 +305,13 @@ func SyncDir(path string) error {
 	return nil
 }
 
+// ONoFollow is the os.OpenFile flag for callers that open one file by path
+// without following a symlink in its final component: O_NOFOLLOW on darwin
+// and linux. On windows (not supported yet, D34) it is
+// FILE_FLAG_OPEN_REPARSE_POINT: a link is opened itself, where O_NOFOLLOW
+// fails with ELOOP, but never followed. Elsewhere it is 0.
+const ONoFollow = oNoFollow
+
 // MaxLine bounds AppendLine (one write(2) of at most this many bytes plus
 // the newline).
 const MaxLine = 64 << 10

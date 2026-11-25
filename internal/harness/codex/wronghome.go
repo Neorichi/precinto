@@ -196,7 +196,7 @@ func skipValue(dec *json.Decoder) bool {
 // readFirstLine reads the first line of the regular file path, at most max
 // bytes of it (O_NOFOLLOW, never blocking on a FIFO).
 func readFirstLine(path string, max int) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

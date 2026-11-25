@@ -42,7 +42,7 @@ var strippedKeys = map[string]bool{"sqlite_home": true, "log_dir": true}
 var errUnsafeHome = errors.New("codex: per-root home is not a private directory")
 
 func readFileBounded(path string) ([]byte, fsx.Stat, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fsx.Stat{}, err
 	}

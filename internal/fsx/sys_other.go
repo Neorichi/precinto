@@ -13,10 +13,7 @@ import (
 // that `go vet` works everywhere.
 const osName = "unsupported"
 
-const (
-	oNoFollow = 0
-	oNonblock = 0
-)
+const oNonblock = 0 // oNoFollow: nofollow_windows.go, nofollow_other.go
 
 var errUnsupported = errors.New("fsx: unsupported OS (D34)")
 

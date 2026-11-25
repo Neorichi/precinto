@@ -71,7 +71,7 @@ type rolloutLine struct {
 // rollout wrote, resolved against the session cwd recorded in the rollout
 // (session_meta, turn_context). Only paths are retained.
 func rolloutMarkdown(ctx context.Context, path string) ([]string, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

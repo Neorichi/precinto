@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -150,7 +149,7 @@ func TestScanSessionInventoryIsFailClosed(t *testing.T) {
 	write(t, hl, "x")
 	os.Link(hl, filepath.Join(cc, "file-history", sid1, "hard-b"))
 	fifo := filepath.Join(tmp, p, sid1, "fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := testkit.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

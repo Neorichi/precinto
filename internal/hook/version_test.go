@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/precinto/precinto/internal/hook"
 	"github.com/precinto/precinto/internal/paths"
+	"github.com/precinto/precinto/internal/testkit"
 )
 
 // writeRegistry writes Claude's live-session registry entry
@@ -101,7 +101,7 @@ func TestDecodeClaudeVersionFromTheRegistry(t *testing.T) {
 	if err := os.Remove(reg); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(reg, 0o600); err != nil {
+	if err := testkit.Mkfifo(reg, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if p := decode(env); p.HarnessVersion != "" {

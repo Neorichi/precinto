@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -315,7 +314,7 @@ func treeStamps(t *testing.T, dir string) string {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&b, "%s %d %d %v\n", p, inodeOf(st), st.Size(), st.ModTime().UnixNano())
+		fmt.Fprintf(&b, "%s %d %d %v\n", p, inodeOf(p), st.Size(), st.ModTime().UnixNano())
 		return nil
 	})
 	if err != nil {
@@ -324,9 +323,9 @@ func treeStamps(t *testing.T, dir string) string {
 	return b.String()
 }
 
-func inodeOf(fi os.FileInfo) uint64 {
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return uint64(st.Ino)
+func inodeOf(p string) uint64 {
+	if st, err := fsx.Lstat(p); err == nil {
+		return st.Ino
 	}
 	return 0
 }

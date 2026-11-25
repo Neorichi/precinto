@@ -473,7 +473,7 @@ func (a *app) writeClaudeSettings(ctx context.Context, cfg config.Config, r conf
 	}
 	p := filepath.Join(dir, "settings.local.json")
 	cur := map[string]any{}
-	if fh, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0); err == nil {
+	if fh, err := os.OpenFile(p, os.O_RDONLY|fsx.ONoFollow, 0); err == nil {
 		b, rerr := readBounded(fh, 1<<20)
 		fh.Close()
 		if rerr != nil {
@@ -507,7 +507,7 @@ func (a *app) removeClaudeSettings(eng engine, cfg config.Config, r config.Root)
 		return "", err
 	}
 	p := filepath.Join(r.Path, ".claude", "settings.local.json")
-	fh, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	fh, err := os.OpenFile(p, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
@@ -632,7 +632,7 @@ func gitTop(dir string) (string, bool) {
 
 // excludeHas reports whether an exclude file already lists line.
 func excludeHas(path, line string) bool {
-	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fh, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow, 0)
 	if err != nil {
 		return false
 	}
@@ -661,7 +661,7 @@ func appendExclude(gitDir, line string) error {
 		return fmt.Errorf("%w: .git/info is not a directory", fsx.ErrUnsafe)
 	}
 	p := filepath.Join(info, "exclude")
-	fh, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
+	fh, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE|fsx.ONoFollow, 0o644)
 	if err != nil {
 		return err
 	}
@@ -678,7 +678,7 @@ func appendExclude(gitDir, line string) error {
 }
 
 func endsWithNewline(p string) bool {
-	fh, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fh, err := os.OpenFile(p, os.O_RDONLY|fsx.ONoFollow, 0)
 	if err != nil {
 		return true
 	}

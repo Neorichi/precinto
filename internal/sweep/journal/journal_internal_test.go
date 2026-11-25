@@ -4,11 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/testkit"
 )
 
 // TestCreateExclusiveNeverReplaces is the O_EXCL-create rule: a record name
@@ -52,7 +52,7 @@ func TestPendingNeverBlocksOnAFIFORecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(dir, NewID()+recordExt), 0o600); err != nil {
+	if err := testkit.Mkfifo(filepath.Join(dir, NewID()+recordExt), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})

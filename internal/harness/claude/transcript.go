@@ -215,7 +215,7 @@ func scanTranscriptFull(ctx context.Context, path string) (*transcriptScan, erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

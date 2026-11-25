@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -264,7 +263,7 @@ func TestClaudeSettingsEnv(t *testing.T) {
 	g := newFixture(t)
 	fifo := filepath.Join(g.h.Root, ".claude", "settings.local.json")
 	mkdir(t, filepath.Dir(fifo), 0o700)
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := testkit.Mkfifo(fifo, 0o600); err != nil {
 		t.Skip("mkfifo:", err)
 	}
 	done := make(chan []doctor.Finding, 1)

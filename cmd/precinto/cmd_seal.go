@@ -12,11 +12,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/sweep"
@@ -685,7 +685,7 @@ func cmdCat(a *app, args []string) int {
 		if err != nil {
 			return a.fail("cat", err)
 		}
-		out, err = os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		out, err = os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 		if err != nil {
 			if errors.Is(err, os.ErrExist) {
 				a.say(textCatOutExists, a.display(dst))

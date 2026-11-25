@@ -47,7 +47,7 @@ func (x *Index) all() ([]Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(p, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

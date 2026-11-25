@@ -23,6 +23,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/precinto/precinto/internal/config"
+	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/ui"
@@ -124,7 +125,7 @@ func (a *app) readIdentityStub(file, plugin string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fh, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	fh, err := os.OpenFile(abs, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("--identity-stub: %w", err)
 	}
@@ -581,7 +582,7 @@ func (a *app) createRecoveryOut(p string) (*os.File, error) {
 	if a.sys.cloudSynced(target) {
 		return nil, bad("it is inside a cloud-synced folder")
 	}
-	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -805,7 +806,7 @@ type binaryInfo struct {
 // vault.Store.RepinPlugin (owner root or the user, not group- or
 // other-writable) are applied again by the store.
 func (a *app) binaryFacts(path string) (binaryInfo, error) {
-	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	fh, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return binaryInfo{}, err
 	}
@@ -822,8 +823,8 @@ func (a *app) binaryFacts(path string) (binaryInfo, error) {
 		return binaryInfo{}, err
 	}
 	info := binaryInfo{sha: hex.EncodeToString(h.Sum(nil)), owner: "unknown", mtime: st.ModTime()}
-	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-		switch uid := int(sys.Uid); {
+	if own, err := fsx.Fstat(fh); err == nil {
+		switch uid := int(own.UID); {
 		case uid == 0:
 			info.owner = "the system (uid 0)"
 		case uid == a.sys.uid():
@@ -1045,7 +1046,7 @@ func (a *app) readRecoveryKey(keyFile string) (*memguard.LockedBuffer, terminal,
 		if err != nil {
 			return nil, nil, err
 		}
-		fh, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		fh, err := os.OpenFile(abs, os.O_RDONLY|fsx.ONoFollow, 0)
 		if err != nil {
 			return nil, nil, err
 		}

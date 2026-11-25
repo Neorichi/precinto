@@ -270,7 +270,7 @@ func probe(dir, key string) (bool, []Lease, error) {
 // readDescriptions returns the newest description of each holder process
 // found in a lease file (best effort: a torn or foreign line is skipped).
 func readDescriptions(path string) []Lease {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil
 	}

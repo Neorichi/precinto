@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"syscall"
 	"testing"
 	"time"
 
@@ -28,7 +27,7 @@ func procInfo(pid int, start int64) platform.ProcInfo {
 }
 
 // mkfifo creates a FIFO.
-func mkfifo(p string) error { return syscall.Mkfifo(p, 0o600) }
+func mkfifo(p string) error { return testkit.Mkfifo(p, 0o600) }
 
 // tctx is the context of a run in a test: it ends with the test and after
 // 60 s at the latest, so a stuck run fails the test instead of hanging the

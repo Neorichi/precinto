@@ -206,7 +206,7 @@ func (l *Log) lock(shared bool) (*fsx.Lock, error) {
 // terminateTornTail appends a bare newline when the log does not end with
 // one (a crash cut the previous append short).
 func (l *Log) terminateTornTail() error {
-	f, err := os.OpenFile(l.Path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(l.Path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -238,7 +238,7 @@ func (l *Log) terminateTornTail() error {
 // FIFO (O_RDONLY|O_NOFOLLOW|O_NONBLOCK), requires a regular file and at
 // most maxLogBytes; a missing log is empty.
 func readLog(path string) ([]byte, fsx.Stat, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fsx.Stat{}, nil
 	}

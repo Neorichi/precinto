@@ -129,7 +129,7 @@ func (l *Ledger) appendEvent(e Event) error {
 // openNoFollow opens a ledger file for reading without following a final
 // symlink and requires a regular file.
 func openNoFollow(path string) (*os.File, fsx.Stat, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fsx.Stat{}, err
 	}
@@ -618,7 +618,7 @@ func copyLate(f *os.File, off int64, path string) (int64, error) {
 func writeTemp(dir, base string, data []byte) (string, error) {
 	for i := 0; i < 100; i++ {
 		tmp := filepath.Join(dir, fmt.Sprintf(".%s.archive-%d-%d", base, os.Getpid(), i))
-		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}

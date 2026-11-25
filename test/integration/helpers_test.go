@@ -174,7 +174,7 @@ func waitOwnProcesses(d time.Duration) []string {
 			var names []string
 			for _, p := range left {
 				if procs.Alive(p.ID) {
-					_ = syscall.Kill(p.ID.PID, syscall.SIGKILL) // runs a binary these tests built
+					_ = platform.Signal(p.ID, syscall.SIGKILL) // runs a binary these tests built
 				}
 				names = append(names, fmt.Sprintf("%d %s", p.ID.PID, filepath.Base(testkit.ExeOf(p))))
 			}
@@ -214,7 +214,7 @@ func runEnv(t *testing.T, exe string, env []string, dir string, stdin string, ar
 	// A new session without a controlling terminal: the binary can never
 	// prompt on the terminal running the tests (and /dev/tty fails, as in
 	// a hook or a reparented agent process).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = testkit.NewSession()
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	// A worker the binary spawned must not inherit these pipes; if one did,

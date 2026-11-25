@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/precinto/precinto/internal/testkit"
 )
 
 var t0 = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
@@ -176,7 +176,7 @@ func TestListNeverBlocksOnAFIFORequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(dir, "fifo-request.json"), 0o600); err != nil {
+	if err := testkit.Mkfifo(filepath.Join(dir, "fifo-request.json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan []queue.Request)

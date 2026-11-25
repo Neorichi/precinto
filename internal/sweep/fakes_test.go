@@ -217,7 +217,7 @@ func (d *osDir) Open(rel string) (*os.File, fsx.Stat, error) {
 	if err := d.fs.failure("open", p); err != nil {
 		return nil, fsx.Stat{}, &fs.PathError{Op: "open", Path: p, Err: err}
 	}
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(p, os.O_RDONLY|fsx.ONoFollow|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fsx.Stat{}, err
 	}
@@ -344,7 +344,7 @@ func (d *osDir) CreateTemp(dirRel, pattern string) (*os.File, string, error) {
 	if i := strings.LastIndexByte(pattern, '*'); i >= 0 {
 		f, err = os.CreateTemp(dir, pattern[:i]+"*"+pattern[i+1:])
 	} else {
-		f, err = os.OpenFile(filepath.Join(dir, pattern), os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		f, err = os.OpenFile(filepath.Join(dir, pattern), os.O_RDWR|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			err = fmt.Errorf("%w: %s", fsx.ErrExist, pattern)
 		}
@@ -385,7 +385,7 @@ func (d *osDir) appendBounded(rel string, line []byte, max int) error {
 	if err := d.fs.failure("append", p); err != nil {
 		return &fs.PathError{Op: "write", Path: p, Err: err}
 	}
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE|fsx.ONoFollow|syscall.O_NONBLOCK, 0o600)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENXIO) {
 			return fmt.Errorf("%w: not a regular file", fsx.ErrUnsafe)

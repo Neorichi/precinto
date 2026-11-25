@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -294,8 +293,8 @@ func runInteractive(t *testing.T, argv []string, home, fakeBinDir, commands stri
 	cmd.Stdin = strings.NewReader(commands)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // never the test's terminal
-	cmd.WaitDelay = 5 * time.Second                      // a background job holding the pipes cannot stall Wait
+	cmd.SysProcAttr = testkit.NewSession() // never the test's terminal
+	cmd.WaitDelay = 5 * time.Second        // a background job holding the pipes cannot stall Wait
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("%v: %v\nstderr:\n%s", argv, err, errb.String())
 	}

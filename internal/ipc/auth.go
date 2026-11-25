@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"syscall"
 
 	"github.com/precinto/precinto/internal/platform"
 )
@@ -53,11 +52,6 @@ func checkSocket(path string) error {
 		return fmt.Errorf("ipc: socket is owned by another user")
 	}
 	return nil
-}
-
-func ownedByMe(st fs.FileInfo) bool {
-	sys, ok := st.Sys().(*syscall.Stat_t)
-	return ok && int(sys.Uid) == os.Getuid()
 }
 
 // sameExe reports whether pid runs this binary (D6), the daemon's check of

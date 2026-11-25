@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -364,7 +363,7 @@ func TestPendingAndTamperedPolicy(t *testing.T) {
 
 	// A FIFO at the pinned path never blocks doctor.
 	os.Remove(f.h.Layout.PolicyPinned)
-	if err := syscall.Mkfifo(f.h.Layout.PolicyPinned, 0o600); err != nil {
+	if err := testkit.Mkfifo(f.h.Layout.PolicyPinned, 0o600); err != nil {
 		t.Skip("mkfifo:", err)
 	}
 	done := make(chan []doctor.Finding, 1)
