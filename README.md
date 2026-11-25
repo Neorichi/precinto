@@ -311,7 +311,8 @@ Also in v0.2: a large session is re-encrypted in full every time it changes; pro
 | Windows (WSL 2) | a WSL 2 distribution such as Ubuntu 24.04, with Go, `make` and `git` installed inside it: Precinto, Claude Code and Codex all run there, and your projects stay in its Linux file system, not under `/mnt/c`. See [docs/WINDOWS.md](docs/WINDOWS.md) |
 
 ```sh
-cd precinto                    # your checkout
+git clone https://github.com/Neorichi/precinto.git
+cd precinto
 make build                     # builds bin/precinto (CGO disabled, -trimpath)
 sudo install -m 0755 bin/precinto /usr/local/bin/precinto   # or any directory on your PATH
 precinto version
@@ -324,7 +325,7 @@ After you replace the binary, run `precinto agent --restart`: clients refuse to 
 
 - `go.mod` pins `toolchain go1.26.11`, so with the default `GOTOOLCHAIN=auto` the go command downloads and uses Go 1.26.11 the first time you build (this needs network access to the Go module proxy).
 - `make` picks the first working `go` on your `PATH`; use `make GO=/path/to/go` to choose another.
-- There are no prebuilt or signed release archives. `go install` and a Homebrew formula that builds from source are planned for when the repository is public (subject to change). A build from source is not signed or notarized, so on macOS `precinto doctor` reports it as an unhardened build; that is expected.
+- There are no prebuilt or signed release archives and no Homebrew formula yet (planned, subject to change). A build from source is not signed or notarized, so on macOS `precinto doctor` reports it as an unhardened build; that is expected.
 - `pinentry-mac` lets you unlock with a passphrase or a plugin factor from inside a harness. Precinto runs a pinentry only from a location that only root can change (`/usr/bin`, MacPorts' `/opt/local/bin`, GPG Suite), never from Homebrew's prefix, which is writable by you and so by any program running as you; with Homebrew's `pinentry-mac` alone, unlock with a passphrase in a terminal.
 
 </details>
@@ -471,7 +472,7 @@ Precinto refuses WSL 1, folders on Windows drives and a `claude` or `codex` that
 - **Linux partial.** It builds and runs with a passphrase factor (or an age plugin such as a YubiKey); screen lock and idle come from `loginctl`. There is no background service yet (`precinto service install` is macOS-only in v0.2), and machines without logind rely on idle timers and the 8-hour limit.
 - **Windows through WSL 2.** Precinto runs as its Linux build inside a WSL 2 distribution, with Claude Code and Codex in that same distribution and your folders on its Linux file system. It refuses WSL 1, folders on Windows drives and harnesses that would run as Windows programs. Its main limits there: the Windows account is the boundary (any Windows program running as you can become root in the distribution), locking Windows does not lock folders, and you unlock in a terminal. Setup and limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 - **No native Windows.** `precinto.exe` builds, but refuses every operation, so it protects nothing.
-- **Not public yet.** There is no public repository, release or download. The Go module path `github.com/precinto/precinto` is a placeholder.
+- **Public source, no releases yet.** The source is at [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto). There are no prebuilt or signed releases or downloads yet, so you build it from source.
 - **Most decisions are defaults.** The entries of [docs/DECISIONS.md](docs/DECISIONS.md) marked *default* are safe defaults waiting for the project owner's confirmation, and may change; those marked *owner*, such as D155 (Windows through WSL 2) and D158 (CI), are confirmed.
 
 ## Documentation

@@ -73,7 +73,7 @@ make crossgroup        # if your change affects code another area calls
 
 ## Continuous integration
 
-The repository is private, so CI runs on the small amount of GitHub Actions minutes its plan includes each month, and a macOS minute costs about ten Linux minutes, a Windows minute about 1.7 ([D158](docs/DECISIONS.md#added-for-continuous-integration-2026-11-25)). Every change therefore runs on Linux only, and macOS, WSL 2 and the repeated crash matrix run on a schedule:
+Every change runs on Linux only, and macOS, WSL 2 and the repeated crash matrix run on a schedule ([D158](docs/DECISIONS.md#added-for-continuous-integration-2026-11-25)). The owner chose this layout while the repository was private and its Actions minutes were counted (a macOS minute cost about ten Linux minutes, a Windows minute about 1.7); a public repository runs on GitHub-hosted runners at no cost, so the layout may widen:
 
 | Workflow | Runs | What it checks |
 |---|---|---|

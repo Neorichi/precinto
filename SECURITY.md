@@ -15,8 +15,7 @@ Precinto is pre-release (specification v0.2) and has no stable release yet. Only
 
 **Please do not report vulnerabilities in public**: not in issues, discussions, pull requests, commit messages, chats or social media.
 
-- **Once the repository is published**, report through the private vulnerability reporting of the platform that hosts it (a private security advisory). Only you and the maintainers can see that report.
-- **Until then** the repository is private and only invited people can read it. If you are one of them, report the issue privately to the maintainers through the same private channel you were invited through, and never in a shared or public place.
+- Report it through GitHub's private vulnerability reporting: in the repository's **Security** tab choose **Report a vulnerability** ([direct link](https://github.com/Neorichi/precinto/security/advisories/new)). Only you and the maintainers can see that report.
 
 Please include:
 

@@ -231,7 +231,7 @@ D1 per-root keys: key release for root B refused with only A unlocked (G2) · D2
 | E2E-9 | Codex hooks file before freezing `plugins/codex/` (D61): real Codex 0.154 with a synthetic `CODEX_HOME` loads `hooks/codex.json` (`-c hooks.*`, `--dangerously-bypass-hook-trust`) with `SHELL` = sh, bash, zsh and fish; a UserPromptSubmit block fires under each; a variant with `onFailure` on a handler records whether 0.154 accepts the key | G5 |
 
 ## 10. CI gates (G7 owns the workflows)
-The repository is private, so CI spends the included minutes of its GitHub plan (D158): only ubuntu runs on every change, and macOS, WSL 2 and the repeated crash matrix run on a schedule and by hand. Every workflow pins its actions by commit SHA, checks out with `persist-credentials: false`, has only `contents: read` and no secrets, lets a newer run for the same ref cancel an older one, and never sets `PRECINTO_E2E`: §9 runs only on a developer machine.
+Only ubuntu runs on every change, and macOS, WSL 2 and the repeated crash matrix run on a schedule and by hand (D158, chosen while the repository was private and its Actions minutes were counted). Every workflow pins its actions by commit SHA, checks out with `persist-credentials: false`, has only `contents: read` and no secrets, lets a newer run for the same ref cancel an older one, and never sets `PRECINTO_E2E`: §9 runs only on a developer machine.
 
 | Workflow | When | Runner | What runs |
 |---|---|---|---|
