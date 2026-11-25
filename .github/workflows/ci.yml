@@ -1,4 +1,13 @@
-# CI gates of docs/TESTPLAN.md §10 on darwin and linux. Owner: G7.
+# CI gates of docs/TESTPLAN.md §10 on every push to main and every pull
+# request. Owner: G7.
+#
+# Pushes and pull requests run on ubuntu only: the repository is private and
+# spends the plan's included minutes, and a macOS minute costs about ten
+# Linux minutes. macOS runs the same gates twice a month (macos.yml), the
+# crash matrix runs weekly (crash.yml) and WSL 2 on a Windows runner runs
+# weekly (wsl2.yml). The Linux runner still vets the darwin files (make vet)
+# and builds and vets for Windows, so a darwin-only or Windows-only compile
+# error fails the change here.
 #
 # E2E never runs here: the opt-in flows (PRECINTO_E2E=1, `make test-e2e`)
 # need a real, logged-in Claude Code and run only on a developer machine.
@@ -18,30 +27,36 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 env:
   CGO_ENABLED: "0"
   GOTOOLCHAIN: auto
   GOFLAGS: -mod=readonly
 
+# The four gate jobs keep the names of their former ubuntu-latest matrix
+# legs, so status checks that name them keep matching.
 jobs:
   lint:
-    name: lint (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: lint (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: go.mod and go.sum are tidy
         run: go mod tidy -diff
+      # Pinned like the actions: a new release lands by changing these lines.
       - name: Install staticcheck and govulncheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Install shellcheck and fish
         run: sh .github/scripts/install-shells.sh
@@ -50,17 +65,32 @@ jobs:
       # govulncheck, shellcheck of the shims (required: CI is set, so a
       # missing shellcheck fails the target instead of skipping).
       - run: make lint
+      # The darwin results of the former macOS lint leg, on every change.
+      - name: staticcheck for darwin
+        if: ${{ !cancelled() }}
+        env:
+          GOOS: darwin
+        run: staticcheck ./...
+      - name: govulncheck for darwin
+        if: ${{ !cancelled() }}
+        env:
+          GOOS: darwin
+        run: govulncheck ./...
+      # GOOS=windows build for amd64 and arm64, and go vet with the
+      # default, testing, testing+failpoints and testing+crossgroup tags.
+      - name: Windows build and vet
+        if: ${{ !cancelled() }}
+        run: make build-windows vet-windows
 
   build:
-    name: build (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: make build build-testing build-linux
@@ -68,16 +98,14 @@ jobs:
         run: CGO_ENABLED=0 go build ./...
 
   test:
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: test (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # The shim and shell-integration tests run sh/bash/zsh/fish for real
@@ -99,18 +127,16 @@ jobs:
       - run: make codex-plugin-check
 
   crossgroup:
-    name: crossgroup (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: crossgroup (ubuntu-latest)
+    runs-on: ubuntu-latest
     # Each target bounds its test binaries at 8 min with GOTRACEBACK=all,
     # so a hang prints every goroutine's stack before the job limit.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Install shellcheck and fish
@@ -120,14 +146,18 @@ jobs:
       # production build.
       - run: make crossgroup
       # The crossgroup crash rows: failpoints over the real fsx, capsule,
-      # sweep and live packages (TESTPLAN §4, §10).
+      # sweep and live packages (TESTPLAN §4, §10). No file excludes the
+      # crossgroup tag, so this also runs every `make test-crash` test.
       - run: make crossgroup-crash
 
   plugin:
     name: plugin validation
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # `claude plugin validate --strict ./plugin` when claude is available
       # on the runner (it is not installed by CI: no network login, no
       # secrets); the hooks files are also covered by G5's golden tests.

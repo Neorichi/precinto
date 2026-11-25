@@ -1,0 +1,107 @@
+# The CI gates of ci.yml and the crash matrix of crash.yml on macOS, on the
+# 1st and the 15th of each month and on demand. Owner: G7.
+#
+# A macOS minute costs about ten Linux minutes, so pushes and pull requests
+# run on ubuntu only. One job runs every gate in turn, which pays the
+# checkout, toolchain and Homebrew setup once; each gate step runs even
+# when an earlier gate failed, so a single run reports all of them. The
+# step limits keep a hang from spending the job's whole budget.
+name: macos
+
+on:
+  schedule:
+    - cron: "0 5 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: auto
+  GOFLAGS: -mod=readonly
+
+jobs:
+  macos:
+    name: lint, build, test, crossgroup and crash (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go.mod and go.sum are tidy
+        timeout-minutes: 5
+        run: go mod tidy -diff
+      - name: Install staticcheck and govulncheck
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # shellcheck for make lint and the shim tests, fish for the shell
+      # integration tests: with CI set, a missing one fails instead of
+      # skipping (TESTPLAN §10, HOOK-4, D29).
+      - name: Install shellcheck and fish
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 10
+        run: sh .github/scripts/install-shells.sh
+      # gofmt, go vet for {default, testing+failpoints, testing+crossgroup}
+      # × {darwin, linux}, internal/archtest, apidoc -check, staticcheck,
+      # govulncheck, shellcheck of the shims.
+      - name: make lint
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 20
+        run: make lint
+      - name: build
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 15
+        run: |
+          make build build-testing build-linux
+          CGO_ENABLED=0 go build ./...
+      - name: make test
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 30
+        run: make test
+      - name: Race detector
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          CGO_ENABLED: "1"
+        run: make test-race
+      - name: make hygiene
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 10
+        run: make hygiene
+      - name: make codex-plugin-check
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 10
+        run: make codex-plugin-check
+      # Test binaries are bounded at 8 min with GOTRACEBACK=all.
+      - name: make crossgroup
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 30
+        run: make crossgroup
+      - name: make crossgroup-crash
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 15
+        run: make crossgroup-crash
+      # The crash-injection matrix (TESTPLAN §4) that crash.yml runs on
+      # ubuntu.
+      - name: make test-crash
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 15
+        run: make test-crash

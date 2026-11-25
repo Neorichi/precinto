@@ -1,28 +1,27 @@
-# Crash-injection matrix (docs/TESTPLAN.md §4, `make test-crash`): nightly,
-# on demand, and on changes under internal/{fsx,capsule,sweep,live}
-# (TESTPLAN §10). Owner: G7.
+# Crash-injection matrix (docs/TESTPLAN.md §4, `make test-crash`) on
+# ubuntu, weekly and on demand. Owner: G7.
+#
+# Every push and pull request already runs these tests on ubuntu: the
+# crossgroup job of ci.yml runs `make crossgroup-crash` over the same
+# packages with the tags testing,failpoints,crossgroup, and no file
+# excludes crossgroup. macOS runs the matrix in macos.yml.
 name: crash
 
 on:
   schedule:
-    - cron: "23 3 * * *"
+    - cron: "23 3 * * 1" # Mondays, 03:23 UTC
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "internal/fsx/**"
-      - "internal/capsule/**"
-      - "internal/sweep/**"
-      - "internal/live/**"
-  pull_request:
-    paths:
-      - "internal/fsx/**"
-      - "internal/capsule/**"
-      - "internal/sweep/**"
-      - "internal/live/**"
 
 permissions:
   contents: read
+
+concurrency:
+  group: crash-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CGO_ENABLED: "0"
@@ -31,16 +30,14 @@ env:
 
 jobs:
   crash:
-    name: crash matrix (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    name: crash matrix (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: make test-crash
