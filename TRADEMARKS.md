@@ -22,7 +22,7 @@ The [Apache License 2.0](LICENSE) gives you broad rights over the code, but, as 
 - use the name, or a confusingly similar one, for another product, service, company or domain in a way that suggests it is made, endorsed or certified by the Precinto project;
 - suggest that the Precinto project endorses you, your product or your modifications.
 
-If you are unsure whether a use is fine, ask the maintainers through the project's channels once the repository is published.
+If you are unsure whether a use is fine, ask the maintainers, for example in an issue at https://github.com/Neorichi/precinto/issues.
 
 ## Names of other products
 

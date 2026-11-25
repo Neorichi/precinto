@@ -311,12 +311,13 @@ Also in v0.2: a large session is re-encrypted in full every time it changes; pro
 
 ## Download
 
-Pre-release archives are on the [Releases](https://github.com/Neorichi/precinto/releases) page: one for macOS (a single binary for Apple silicon and Intel) and two for Linux (amd64 and arm64), each with `LICENSE` and `NOTICE`, plus a `SHA256SUMS` file. They are not signed or notarized, so check the sum before you install, and on macOS allow the binary once as the release notes explain. Windows has no download of its own: inside WSL 2 you use the Linux one ([docs/WINDOWS.md](docs/WINDOWS.md)).
+Pre-release archives are on the [Releases](https://github.com/Neorichi/precinto/releases) page: one for macOS (a single binary for Apple silicon and Intel) and two for Linux (amd64 and arm64). Each is a folder with the `precinto` binary, `LICENSE`, `NOTICE` and `README.md`, and a `SHA256SUMS` file lists their sums. The macOS binary has only an ad-hoc signature, without a Developer ID or notarization, so check the sum before you install and allow the binary once as the release notes explain. On macOS the default unlock factor, Touch ID, also needs `age-plugin-se` ([Install from source](#install-from-source)); without it, run `precinto init --factor passphrase`. Windows has no download of its own: inside WSL 2 you use the Linux one ([docs/WINDOWS.md](docs/WINDOWS.md)).
 
 ```sh
-shasum -a 256 -c SHA256SUMS --ignore-missing   # on Linux: sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf precinto_*_darwin_universal.tar.gz      # or the linux_amd64 / linux_arm64 archive
-sudo install -m 0755 precinto_*_darwin_universal/precinto /usr/local/bin/precinto
+p=darwin_universal                                 # on Linux: p=linux_amd64 or p=linux_arm64
+grep "_$p.tar.gz" SHA256SUMS | shasum -a 256 -c -   # on Linux: ... | sha256sum -c -
+tar -xzf precinto_*_$p.tar.gz
+sudo install -m 0755 precinto_*_$p/precinto /usr/local/bin/precinto
 precinto version
 ```
 
@@ -342,9 +343,9 @@ After you replace the binary, run `precinto agent --restart`: clients refuse to 
 <details>
 <summary><strong>More about building</strong></summary>
 
-- `go.mod` pins `toolchain go1.26.11`, so with the default `GOTOOLCHAIN=auto` the go command downloads and uses Go 1.26.11 the first time you build (this needs network access to the Go module proxy).
+- `go.mod` pins `toolchain go1.26.11`, so with `GOTOOLCHAIN=auto` (Go's default; some distributions set `local`, so there run `GOTOOLCHAIN=auto make build`) the go command downloads and uses Go 1.26.11 the first time you build (this needs network access to the Go module proxy).
 - `make` picks the first working `go` on your `PATH`; use `make GO=/path/to/go` to choose another.
-- Pre-release archives are on the Releases page ([Download](#download)); they are not signed, and there is no Homebrew formula yet (planned, subject to change). A build from source is not signed or notarized, so on macOS `precinto doctor` reports it as an unhardened build; that is expected.
+- Pre-release archives are on the Releases page ([Download](#download)); their macOS binary has only an ad-hoc signature (no Developer ID or notarization), and there is no Homebrew formula yet (planned, subject to change). A build from source is not signed or notarized, so on macOS `precinto doctor` reports it as an unhardened build; that is expected.
 - `pinentry-mac` lets you unlock with a passphrase or a plugin factor from inside a harness. Precinto runs a pinentry only from a location that only root can change (`/usr/bin`, MacPorts' `/opt/local/bin`, GPG Suite), never from Homebrew's prefix, which is writable by you and so by any program running as you; with Homebrew's `pinentry-mac` alone, unlock with a passphrase in a terminal.
 
 </details>
@@ -486,12 +487,12 @@ Precinto refuses WSL 1, folders on Windows drives and a `claude` or `codex` that
 
 ## Status
 
-- **Pre-release, specification v0.2** (it supersedes v0.1). Every command of the specification is implemented except the deferred `canary`, `scrub`, `rekey` and `import`, which say so and exit 2. Unit, integration, crash and race tests cover it, and the opt-in end-to-end suites pass against Claude Code 2.1.330 and Codex 0.154.0 without calling a model: the hooks, the wrapper, `integrate`, a locked folder and a session sealed when it ends. A real Secure Enclave key (Touch ID) and the background service have each been checked once on a Mac, and the test suites pass on Linux (Ubuntu 22.04, arm64) in a container, without a desktop session. Not tested yet: sessions that call a model, a YubiKey, Linux on a desktop (logind's screen lock and idle, pinentry dialogs), and WSL 2 on a Windows desktop. Expect breaking changes before a first release.
+- **Pre-release, specification v0.2** (it supersedes v0.1). Every command of the specification is implemented except the deferred `canary`, `scrub`, `rekey` and `import`, which say so and exit 2. Unit, integration, crash and race tests cover it, and the opt-in end-to-end suites pass against Claude Code 2.1.330 and Codex 0.154.0 without calling a model: the hooks, the wrapper, `integrate`, a locked folder and a session sealed when it ends. A real Secure Enclave key (Touch ID) and the background service have each been checked once on a Mac, and the test suites pass on Linux (Ubuntu 22.04, arm64) in a container, without a desktop session. Sessions that call a model have been run by hand (the recording above), not in the automated suites. Not tested yet: a YubiKey, Linux on a desktop (logind's screen lock and idle, pinentry dialogs), and WSL 2 on a Windows desktop. Expect breaking changes before a first release.
 - **macOS first.** Secure Enclave factor through `age-plugin-se`, screen-lock, idle and sleep triggers, and an optional background re-seal service (a LaunchAgent).
 - **Linux partial.** It builds and runs with a passphrase factor (or an age plugin such as a YubiKey); screen lock and idle come from `loginctl`. There is no background service yet (`precinto service install` is macOS-only in v0.2), and machines without logind rely on idle timers and the 8-hour limit.
 - **Windows through WSL 2.** Precinto runs as its Linux build inside a WSL 2 distribution, with Claude Code and Codex in that same distribution and your folders on its Linux file system. It refuses WSL 1, folders on Windows drives and harnesses that would run as Windows programs. Its main limits there: the Windows account is the boundary (any Windows program running as you can become root in the distribution), locking Windows does not lock folders, and you unlock in a terminal. Setup and limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 - **No native Windows.** `precinto.exe` builds, but refuses every operation, so it protects nothing.
-- **Public, pre-release.** The source is at [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto), and [Releases](https://github.com/Neorichi/precinto/releases) has pre-release archives for macOS and Linux, not signed or notarized ([Download](#download)).
+- **Public, pre-release.** The source is at [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto), and [Releases](https://github.com/Neorichi/precinto/releases) has pre-release archives for macOS and Linux, without a Developer ID signature or notarization ([Download](#download)).
 - **Most decisions are defaults.** The entries of [docs/DECISIONS.md](docs/DECISIONS.md) marked *default* are safe defaults waiting for the project owner's confirmation, and may change; those marked *owner*, such as D155 (Windows through WSL 2) and D158 (CI), are confirmed.
 
 ## Documentation

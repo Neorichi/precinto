@@ -2,7 +2,7 @@
 
 Thank you for helping. Precinto handles some of the most sensitive files on a developer's machine, so the bar for changes is high: behaviour follows a written specification, every change brings its tests, and no test ever touches real user data.
 
-The repository is not public yet. Until it is, this guide applies to invited contributors; once it is published, it applies to everyone. Security problems are not reported through pull requests or issues: see [SECURITY.md](SECURITY.md).
+This guide applies to everyone who contributes. Security problems are not reported through pull requests or issues: see [SECURITY.md](SECURITY.md).
 
 ## Contents
 

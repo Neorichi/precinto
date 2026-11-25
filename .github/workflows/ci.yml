@@ -1,9 +1,9 @@
 # CI gates of docs/TESTPLAN.md §10 on every push to main and every pull
 # request. Owner: G7.
 #
-# Pushes and pull requests run on ubuntu only: the repository is private and
-# spends the plan's included minutes, and a macOS minute costs about ten
-# Linux minutes. macOS runs the same gates twice a month (macos.yml), the
+# Pushes and pull requests run on ubuntu only, a layout chosen while the
+# repository was private and spent the plan's included minutes (a macOS
+# minute cost about ten Linux minutes). macOS runs the same gates twice a month (macos.yml), the
 # crash matrix runs repeated weekly to find flaky rows (crash.yml), WSL 2 on
 # a Windows runner runs weekly and on demand (wsl2.yml), and the secret
 # scan runs on every push to any branch or tag and on pull requests

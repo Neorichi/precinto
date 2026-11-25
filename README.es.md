@@ -311,12 +311,13 @@ Y en la v0.2, además: una sesión grande se vuelve a cifrar entera cada vez que
 
 ## Descarga
 
-En la página de [Releases](https://github.com/Neorichi/precinto/releases) están los archivos de la versión preliminar: uno para macOS (un único binario para Apple silicon e Intel) y dos para Linux (amd64 y arm64), cada uno con `LICENSE` y `NOTICE`, y además un archivo `SHA256SUMS`. No están firmados ni notarizados: comprueba la suma antes de instalar y, en macOS, permite el binario una vez como explican las notas de la versión. Windows no tiene descarga propia: dentro de WSL 2 se usa la de Linux ([docs/WINDOWS.md](docs/WINDOWS.md)).
+En la página de [Releases](https://github.com/Neorichi/precinto/releases) están los archivos de la versión preliminar: uno para macOS (un único binario para Apple silicon e Intel) y dos para Linux (amd64 y arm64). Cada uno es una carpeta con el binario `precinto`, `LICENSE`, `NOTICE` y `README.md`, y un archivo `SHA256SUMS` recoge sus sumas. El binario de macOS solo lleva una firma ad hoc, sin Developer ID ni notarización: comprueba la suma antes de instalar y permite el binario una vez como explican las notas de la versión. En macOS, el método de desbloqueo por defecto, Touch ID, necesita además `age-plugin-se` ([Instalación desde el código fuente](#instalación-desde-el-código-fuente)); sin él, ejecuta `precinto init --factor passphrase`. Windows no tiene descarga propia: dentro de WSL 2 se usa la de Linux ([docs/WINDOWS.md](docs/WINDOWS.md)).
 
 ```sh
-shasum -a 256 -c SHA256SUMS --ignore-missing   # en Linux: sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf precinto_*_darwin_universal.tar.gz      # o el archivo linux_amd64 / linux_arm64
-sudo install -m 0755 precinto_*_darwin_universal/precinto /usr/local/bin/precinto
+p=darwin_universal                                 # en Linux: p=linux_amd64 o p=linux_arm64
+grep "_$p.tar.gz" SHA256SUMS | shasum -a 256 -c -   # en Linux: ... | sha256sum -c -
+tar -xzf precinto_*_$p.tar.gz
+sudo install -m 0755 precinto_*_$p/precinto /usr/local/bin/precinto
 precinto version
 ```
 
@@ -342,9 +343,9 @@ Cada vez que sustituyas el binario, ejecuta `precinto agent --restart`: los clie
 <details>
 <summary><strong>Más sobre la compilación</strong></summary>
 
-- `go.mod` fija `toolchain go1.26.11`, así que, con el valor por defecto `GOTOOLCHAIN=auto`, el comando go descarga y usa Go 1.26.11 la primera vez que compilas (para eso necesita acceso de red al proxy de módulos de Go).
+- `go.mod` fija `toolchain go1.26.11`, así que, con `GOTOOLCHAIN=auto` (el valor por defecto de Go; algunas distribuciones lo cambian a `local`, y allí hay que usar `GOTOOLCHAIN=auto make build`), el comando go descarga y usa Go 1.26.11 la primera vez que compilas (para eso necesita acceso de red al proxy de módulos de Go).
 - `make` usa el primer `go` de tu `PATH` que funcione; con `make GO=/ruta/a/go` eliges otro.
-- Hay archivos de la versión preliminar en Releases ([Descarga](#descarga)); no están firmados, y aún no hay fórmula de Homebrew (está prevista; puede cambiar). Una compilación propia no está firmada ni notarizada, así que en macOS `precinto doctor` la señala como no endurecida (*unhardened build*); es lo normal.
+- Hay archivos de la versión preliminar en Releases ([Descarga](#descarga)); su binario de macOS solo lleva una firma ad hoc (sin Developer ID ni notarización), y aún no hay fórmula de Homebrew (está prevista; puede cambiar). Una compilación propia no está firmada ni notarizada, así que en macOS `precinto doctor` la señala como no endurecida (*unhardened build*); es lo normal.
 - `pinentry-mac` permite desbloquear con una frase de paso o con un plugin desde dentro de un harness. Precinto solo ejecuta un pinentry instalado en una ubicación que solo root puede cambiar (`/usr/bin`, `/opt/local/bin` de MacPorts, GPG Suite), nunca desde el prefijo de Homebrew, en el que puedes escribir tú y, por tanto, cualquier programa que se ejecute con tu usuario; si solo tienes el `pinentry-mac` de Homebrew, desbloquea con la frase de paso en una terminal.
 
 </details>
@@ -486,12 +487,12 @@ Precinto rechaza WSL 1, las carpetas en unidades de Windows y un `claude` o un `
 
 ## Estado del proyecto
 
-- **Versión preliminar, especificación v0.2** (sustituye a la v0.1). Están implementados todos los comandos de la especificación salvo los aplazados (`canary`, `scrub`, `rekey` e `import`, que lo indican y terminan con el código 2). Las pruebas unitarias, de integración, de caídas y de carreras lo cubren, y las pruebas de extremo a extremo opcionales pasan con Claude Code 2.1.330 y Codex 0.154.0 sin llamar a ningún modelo: los hooks, el lanzador, `integrate`, una carpeta bloqueada y una sesión sellada al terminar. Una clave real del Secure Enclave (Touch ID) y el servicio en segundo plano se han comprobado una vez en un Mac, y las pruebas pasan en Linux (Ubuntu 22.04, arm64) dentro de un contenedor, sin sesión de escritorio. Falta probar sesiones que llamen a un modelo, una YubiKey, Linux en un escritorio (el bloqueo de pantalla y la inactividad de logind, los diálogos de pinentry) y WSL 2 en un escritorio de Windows. Puede haber cambios incompatibles antes de la primera versión.
+- **Versión preliminar, especificación v0.2** (sustituye a la v0.1). Están implementados todos los comandos de la especificación salvo los aplazados (`canary`, `scrub`, `rekey` e `import`, que lo indican y terminan con el código 2). Las pruebas unitarias, de integración, de caídas y de carreras lo cubren, y las pruebas de extremo a extremo opcionales pasan con Claude Code 2.1.330 y Codex 0.154.0 sin llamar a ningún modelo: los hooks, el lanzador, `integrate`, una carpeta bloqueada y una sesión sellada al terminar. Una clave real del Secure Enclave (Touch ID) y el servicio en segundo plano se han comprobado una vez en un Mac, y las pruebas pasan en Linux (Ubuntu 22.04, arm64) dentro de un contenedor, sin sesión de escritorio. Las sesiones que llaman a un modelo solo se han probado a mano (la grabación de arriba), no en las pruebas automáticas. Falta probar una YubiKey, Linux en un escritorio (el bloqueo de pantalla y la inactividad de logind, los diálogos de pinentry) y WSL 2 en un escritorio de Windows. Puede haber cambios incompatibles antes de la primera versión.
 - **Primero macOS**: factor del Secure Enclave mediante `age-plugin-se`, disparadores por bloqueo de pantalla, inactividad y reposo, y un servicio opcional de resellado en segundo plano (un LaunchAgent).
 - **Linux, en parte**: compila y funciona con una frase de paso como factor (o con un plugin de age, como una YubiKey), y lee el bloqueo de pantalla y la inactividad de `loginctl`. Todavía no hay servicio en segundo plano (`precinto service install` solo existe en macOS en la v0.2), y en las máquinas sin logind solo cuentan los temporizadores de inactividad y el límite de 8 horas.
 - **Windows, a través de WSL 2**: Precinto se ejecuta como la versión de Linux dentro de una distribución de WSL 2, con Claude Code y Codex en esa misma distribución y tus carpetas en su sistema de archivos de Linux. Rechaza WSL 1, las carpetas en unidades de Windows y los harnesses que se ejecutarían como programas de Windows. Sus límites principales ahí: la frontera es la cuenta de Windows (cualquier programa de Windows que se ejecute con tu usuario puede hacerse root en la distribución), bloquear Windows no bloquea las carpetas y el desbloqueo se hace en una terminal. Instalación y límites, en inglés: [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Windows nativo, no**: `precinto.exe` compila, pero rechaza cualquier operación, así que no protege nada.
-- **Público, versión preliminar**: el código está en [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto), y en [Releases](https://github.com/Neorichi/precinto/releases) hay archivos de la versión preliminar para macOS y Linux, sin firmar ni notarizar ([Descarga](#descarga)).
+- **Público, versión preliminar**: el código está en [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto), y en [Releases](https://github.com/Neorichi/precinto/releases) hay archivos de la versión preliminar para macOS y Linux, sin firma de Developer ID ni notarización ([Descarga](#descarga)).
 - **Casi todas las decisiones son provisionales**: las entradas de [docs/DECISIONS.md](docs/DECISIONS.md) marcadas *default* son valores por defecto prudentes a la espera de que los confirme el responsable del proyecto, y pueden cambiar; las marcadas *owner*, como D155 (Windows a través de WSL 2) y D158 (CI), ya están confirmadas.
 
 ## Documentación

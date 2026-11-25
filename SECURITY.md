@@ -4,7 +4,7 @@ Precinto exists to protect sensitive data, so security reports come before any o
 
 ## Supported versions
 
-Precinto is pre-release (specification v0.2) and has no stable release yet. Only the current state of the default development branch receives security fixes. Once there are releases, this table will say which of them are supported.
+Precinto is pre-release (specification v0.2) and has no stable release yet. Only the current state of the default development branch receives security fixes. Pre-release archives such as v0.2.0-alpha.1 get their fixes through the default branch and the next pre-release. Once there are stable releases, this table will say which of them are supported.
 
 | Version | Supported |
 |---|---|
@@ -51,7 +51,7 @@ When in doubt, report it: we would rather triage a report than miss one.
 
 ## Disclosure timeline
 
-These are targets. Like every policy of this pre-release project, they are subject to change before the first public release.
+These are targets. Like every policy of this pre-release project, they are subject to change before the first stable release.
 
 | Step | Target |
 |---|---|
