@@ -1428,6 +1428,20 @@ func CloudSynced(path string) bool
 // distribution's virtual disk cannot be read (D156).
 func DiskEncryption(ctx context.Context) (on, known bool, err error)
 
+// EarliestStartTime is StartTime with, on linux, the earliest btime seen
+// for the current boot instead of the current one (D157): the smallest of
+// the current reading, this process's earlier readings and the value
+// NoteBootTime recorded in runDir/boottime (read only, and only while
+// runDir is a private directory; runDir "" uses this process's readings
+// alone). It never writes, so read-only commands may call it.
+// The result is never later than the real start, so a comparison with a
+// harness's wall time (D18: start ≤ registry startedAt + 2 s) errs toward
+// "alive": use it for liveness evidence, never to decide a signal. A
+// recorded value later than the current btime is ignored; an earlier one,
+// even a forged one, only makes more registry entries match, which keeps
+// more units live. darwin's start is wall time already: StartTime.
+func EarliestStartTime(id ProcID, runDir string) time.Time
+
 // ExcludeFromBackup adds a sticky Time Machine exclusion (`tmutil
 // addexclusion`, no root needed); no-op on linux.
 func ExcludeFromBackup(ctx context.Context, path string) error
@@ -1442,6 +1456,13 @@ func Executable() (path string, dev, ino uint64, err error)
 // or prctl(PR_SET_DUMPABLE, 0) (linux) (SPEC §4.6, S15).
 func Harden() error
 
+// NoteBootTime records the current btime in runDir/boottime when it is the
+// earliest seen for this boot (D157), so that a process started after a
+// WSL 2 host sleep, such as a sealing worker, still knows the btime the
+// processes measured before it had. The daemon calls it at start and at
+// every tick; a no-op off linux.
+func NoteBootTime(runDir string)
+
 // SameExecutable reports whether pid runs the same file (dev+inode) as the
 // current binary (D6 mutual authentication).
 func SameExecutable(pid int) (bool, error)
@@ -1450,6 +1471,14 @@ func SameExecutable(pid int) (bool, error)
 // uid) and writes the reset sequence of SPEC §15.4, then runs `stty sane`
 // on it (darwin -f, linux -F).
 func ScrubTTY(tty string, o ScrubOptions) error
+
+// SetBootTimeForTest makes linux read the boot time from fn instead of
+// /proc/stat btime until restore is called (StartTime, EarliestStartTime
+// and NoteBootTime read it; nil fn reads /proc/stat again): crossgroup
+// tests move it forward by hours, as a WSL 2 host sleep does (D157). Only
+// -tags testing builds have it; darwin measures process starts in wall
+// time and reads no boot time.
+func SetBootTimeForTest(fn func() (int64, error)) (restore func())
 
 // Signal sends sig to id after re-verifying (pid, start time) immediately
 // before kill(2) (linux: pidfd_send_signal). ErrNotSame if the process
@@ -1476,7 +1505,10 @@ func SpotlightIndexed(ctx context.Context, path string) (indexed, known bool, er
 // StartUS as is; on linux the current btime is added to a ProcID measured
 // on this boot (one with a BootID; a ProcID without one, such as a test
 // fake, is taken as wall time). It is the zero time when btime cannot be
-// read. See D66.
+// read. See D66. Inside WSL 2 btime moves forward after the host sleeps,
+// so this start can be later than the real one, never earlier: use it
+// where a match must be proven (whether a process may be signalled), and
+// EarliestStartTime for liveness evidence (D157).
 func StartTime(id ProcID) time.Time
 
 // WaitExit blocks until id has exited (zombie counts as exited) or ctx ends;

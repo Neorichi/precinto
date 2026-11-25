@@ -73,9 +73,15 @@ func (p *prober) registry() ([]RegistryEntry, error) {
 
 // registryMatches applies D18: the live pid started no later than
 // startedAt + 2 s (else the pid was reused); without startedAt the file
-// must have been written after the process started (LIVE-5).
-func registryMatches(r RegistryEntry, info platform.ProcInfo) bool {
-	start := platform.StartTime(info.ID) // wall clock, comparable with the registry (D66)
+// must have been written after the process started (LIVE-5). The start is
+// measured with the earliest btime of this boot (D157): inside WSL 2 btime
+// jumps forward after the host sleeps, and the current one would make a
+// live session's own entry look written before its process started. A
+// match is liveness evidence only, so erring toward an earlier start errs
+// toward alive. runDir is the layout's run directory, where that btime is
+// recorded.
+func registryMatches(r RegistryEntry, info platform.ProcInfo, runDir string) bool {
+	start := platform.EarliestStartTime(info.ID, runDir) // wall clock, comparable with the registry (D66, D157)
 	if start.IsZero() {
 		return true // unknown start: the pid is alive, so the entry may be its own (fail live)
 	}
@@ -99,7 +105,7 @@ func (p *prober) liveSessions() []string {
 				continue
 			}
 			info, err := p.e.Procs.Lookup(r.PID)
-			if err != nil || info.State == platform.StateZombie || !registryMatches(r, info) {
+			if err != nil || info.State == platform.StateZombie || !registryMatches(r, info, p.e.Layout.RunDir) {
 				continue
 			}
 			if sid, ok := sidOf(r.SessionID); ok && len(r.SessionID) == uuidLen {
@@ -158,7 +164,7 @@ func (p *prober) session() {
 		}
 		weak := !p.a.inv.MatchProcess(info)
 		if r.Valid {
-			if strings.EqualFold(r.SessionID, sid) && registryMatches(r, info) {
+			if strings.EqualFold(r.SessionID, sid) && registryMatches(r, info, p.e.Layout.RunDir) {
 				p.add(live.Evidence{Reason: live.ReasonRegistry, Proc: info.ID, Path: r.Path, Detail: "registry names the session", Weak: weak})
 			}
 			continue
@@ -241,7 +247,7 @@ func (p *prober) warm(sid string, reg []RegistryEntry) {
 	if !moved {
 		for _, r := range reg {
 			if r.Valid && r.PID == proc.PID && !strings.EqualFold(r.SessionID, sid) {
-				if info, err := p.e.Procs.Lookup(r.PID); err == nil && info.ID == proc && registryMatches(r, info) {
+				if info, err := p.e.Procs.Lookup(r.PID); err == nil && info.ID == proc && registryMatches(r, info, p.e.Layout.RunDir) {
 					moved = true
 				}
 			}

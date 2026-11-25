@@ -79,13 +79,13 @@ func sysBootID() string {
 	return boot.id
 }
 
-// bootTimeUS returns the boot time in µs since the epoch (/proc/stat
-// btime). Identities never use it (StartUS is µs since boot, D66): a
-// wall-clock step moves btime by up to a second, which would make one
-// process measured before and after look like two. Only StartTime adds it.
-var bootTimeFn = bootTimeUS
-
-func bootTimeUS() (int64, error) {
+// sysBootTimeUS returns the boot time in µs since the epoch (/proc/stat
+// btime; tests replace it through bootTimeNow). Identities never use it
+// (StartUS is µs since boot, D66): a wall-clock step moves btime, by up to
+// a second on bare metal and by the length of a host sleep inside WSL 2
+// (D157), which would make one process measured before and after look
+// like two. Only StartTime and EarliestStartTime add it.
+func sysBootTimeUS() (int64, error) {
 	b, err := readSmall("/proc/stat")
 	if err != nil {
 		return 0, err
@@ -186,11 +186,40 @@ func startTime(id ProcID) time.Time {
 	if id.BootID == "" {
 		return time.UnixMicro(id.StartUS)
 	}
-	bt, err := bootTimeFn()
+	bt, err := bootTimeNow()
 	if err != nil {
 		return time.Time{}
 	}
 	return time.UnixMicro(bt + id.StartUS)
+}
+
+// earliestStartTime implements EarliestStartTime (D157): like startTime,
+// with the earliest btime seen for this boot (floor.lowest) for a ProcID
+// of the current boot; another boot's ProcID gets the current btime, as in
+// startTime.
+func earliestStartTime(id ProcID, runDir string) time.Time {
+	if id.BootID == "" {
+		return time.UnixMicro(id.StartUS)
+	}
+	bt, err := bootTimeNow()
+	if err != nil || bt <= 0 {
+		return time.Time{}
+	}
+	if boot := sysBootID(); boot != "" && id.BootID == boot {
+		bt = floor.lowest(boot, bt, runDir, false)
+	}
+	return time.UnixMicro(bt + id.StartUS)
+}
+
+// noteBootTime implements NoteBootTime.
+func noteBootTime(runDir string) {
+	boot := sysBootID()
+	if boot == "" {
+		return
+	}
+	if bt, err := bootTimeNow(); err == nil && bt > 0 {
+		floor.lowest(boot, bt, runDir, true)
+	}
 }
 
 func sysIdentifyState(pid int) (ProcID, ProcState, error) {

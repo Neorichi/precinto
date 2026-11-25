@@ -40,8 +40,32 @@ type ProcID struct {
 // StartUS as is; on linux the current btime is added to a ProcID measured
 // on this boot (one with a BootID; a ProcID without one, such as a test
 // fake, is taken as wall time). It is the zero time when btime cannot be
-// read. See D66.
+// read. See D66. Inside WSL 2 btime moves forward after the host sleeps,
+// so this start can be later than the real one, never earlier: use it
+// where a match must be proven (whether a process may be signalled), and
+// EarliestStartTime for liveness evidence (D157).
 func StartTime(id ProcID) time.Time { return startTime(id) }
+
+// EarliestStartTime is StartTime with, on linux, the earliest btime seen
+// for the current boot instead of the current one (D157): the smallest of
+// the current reading, this process's earlier readings and the value
+// NoteBootTime recorded in runDir/boottime (read only, and only while
+// runDir is a private directory; runDir "" uses this process's readings
+// alone). It never writes, so read-only commands may call it.
+// The result is never later than the real start, so a comparison with a
+// harness's wall time (D18: start ≤ registry startedAt + 2 s) errs toward
+// "alive": use it for liveness evidence, never to decide a signal. A
+// recorded value later than the current btime is ignored; an earlier one,
+// even a forged one, only makes more registry entries match, which keeps
+// more units live. darwin's start is wall time already: StartTime.
+func EarliestStartTime(id ProcID, runDir string) time.Time { return earliestStartTime(id, runDir) }
+
+// NoteBootTime records the current btime in runDir/boottime when it is the
+// earliest seen for this boot (D157), so that a process started after a
+// WSL 2 host sleep, such as a sealing worker, still knows the btime the
+// processes measured before it had. The daemon calls it at start and at
+// every tick; a no-op off linux.
+func NoteBootTime(runDir string) { noteBootTime(runDir) }
 
 // IsZero reports whether id is unset. Implemented in the scaffold.
 func (id ProcID) IsZero() bool { return id.PID == 0 && id.StartUS == 0 && id.BootID == "" }

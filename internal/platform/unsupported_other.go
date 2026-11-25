@@ -45,6 +45,12 @@ func signalGroup(ProcID, syscall.Signal) error { return ErrUnsupported }
 
 func startTime(id ProcID) time.Time { return time.UnixMicro(id.StartUS) }
 
+func earliestStartTime(id ProcID, _ string) time.Time { return startTime(id) }
+
+func noteBootTime(string) {}
+
+func sysBootTimeUS() (int64, error) { return 0, ErrUnsupported }
+
 func backupExcluded(context.Context, string) (bool, bool, error) { return false, false, nil }
 
 func waitExit(context.Context, ProcID) error { return ErrUnsupported }

@@ -78,6 +78,15 @@ func cloudRoots(home string) []string {
 // startTime: darwin's p_starttime is wall-clock µs already.
 func startTime(id ProcID) time.Time { return time.UnixMicro(id.StartUS) }
 
+// earliestStartTime: a wall-clock start needs no boot time (D157).
+func earliestStartTime(id ProcID, _ string) time.Time { return startTime(id) }
+
+// noteBootTime: darwin keeps no boot time.
+func noteBootTime(string) {}
+
+// sysBootTimeUS: darwin measures starts in wall time and never reads it.
+func sysBootTimeUS() (int64, error) { return 0, ErrUnsupported }
+
 // tmutilPath is Time Machine's command-line tool.
 const tmutilPath = "/usr/bin/tmutil"
 

@@ -247,7 +247,10 @@ func (d *daemon) interactiveClaude(p platform.ProcInfo, e claude.RegistryEntry, 
 	}
 	// The entry belongs to this incarnation: the process started no later
 	// than startedAt + 2 s (E2), so a stale file of a reused pid never
-	// qualifies.
+	// qualifies. This decides a signal, so the start stays the strict one
+	// (the current btime: after a WSL 2 host sleep a later start, never an
+	// earlier one), not D157's earliest: a session it no longer matches is
+	// reported, never signalled.
 	start := platform.StartTime(p.ID) // wall clock, comparable with startedAt (D66)
 	if e.StartedAt.IsZero() || start.IsZero() || start.After(e.StartedAt.Add(registryStartSlack)) {
 		return false

@@ -594,7 +594,13 @@ func (e *sweepEngine) ChildSessions(ctx context.Context, h harness.ID, configDir
 	if err != nil {
 		return nil, err
 	}
-	start := platform.StartTime(child)
+	// D157: the child's start with the earliest btime of this boot, never
+	// later than the real one: inside WSL 2 the current btime has moved
+	// forward by every host sleep since the child started, and its own
+	// entry would look written before it. Erring toward "the child's"
+	// only records sessions as the child's, which keeps them live while it
+	// runs; the seal after its exit checks liveness again.
+	start := platform.EarliestStartTime(child, e.layout.RunDir)
 	var out []string
 	for _, r := range entries {
 		if r.PID != child.PID || !r.Valid {

@@ -12,17 +12,16 @@ import (
 // D66: a wall-clock step moves /proc/stat btime, but a measured identity
 // never changes; StartTime follows the current btime.
 func TestStartUSIgnoresBtime(t *testing.T) {
-	old := bootTimeFn
-	defer func() { bootTimeFn = old }()
 	a, _, err := sysIdentifyState(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	bt, err := old()
+	bt, err := sysBootTimeUS()
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootTimeFn = func() (int64, error) { return bt + 1_000_000, nil } // a 1 s step
+	restore := setBootTime(func() (int64, error) { return bt + 1_000_000, nil }) // a 1 s step
+	defer restore()
 	b, _, err := sysIdentifyState(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +32,7 @@ func TestStartUSIgnoresBtime(t *testing.T) {
 	if got, want := startTime(b), time.UnixMicro(bt+1_000_000+b.StartUS); !got.Equal(want) {
 		t.Fatalf("StartTime = %v, want %v", got, want)
 	}
-	bootTimeFn = func() (int64, error) { return 0, errors.New("no btime") }
+	setBootTime(func() (int64, error) { return 0, errors.New("no btime") })
 	if !startTime(b).IsZero() {
 		t.Fatal("StartTime without btime is not the zero time")
 	}

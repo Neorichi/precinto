@@ -331,6 +331,7 @@ func (d *daemon) serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d.ctx = ctx
+	d.noteBootTime()
 	d.cleanRepairScratch()
 	d.writeRootsList()
 	for _, id := range vaultIDs(d.effective()) {
@@ -640,6 +641,7 @@ func (d *daemon) tickLoop(ctx context.Context, stop context.CancelFunc) {
 			return
 		case <-t.C:
 		}
+		d.noteBootTime()
 		d.reloadPolicy(ctx)
 		d.pollScreen(ctx)
 		d.refreshSessions(ctx)
@@ -658,6 +660,17 @@ func (d *daemon) tickLoop(ctx context.Context, stop context.CancelFunc) {
 		} else {
 			idleSince = nil
 		}
+	}
+}
+
+// noteBootTime records this boot's btime in the run directory while it is
+// the earliest seen (D157): the daemon runs whenever a folder is unlocked,
+// so the btime before a WSL 2 host sleep is there for the sealing workers
+// started after it. Only over the kernel's process table: a test's fake
+// one writes nothing.
+func (d *daemon) noteBootTime() {
+	if d.real {
+		platform.NoteBootTime(d.l.RunDir)
 	}
 }
 

@@ -380,7 +380,7 @@ func (a *adapter) openElsewhere(e harness.Env, h home, sid string) (int, bool) {
 			continue
 		}
 		info, err := e.Procs.Lookup(r.PID)
-		if err == nil && info.State != platform.StateZombie && registryMatches(r, info) {
+		if err == nil && info.State != platform.StateZombie && registryMatches(r, info, e.Layout.RunDir) {
 			return r.PID, true
 		}
 	}
