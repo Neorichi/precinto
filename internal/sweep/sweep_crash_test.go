@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -26,8 +25,12 @@ import (
 	"github.com/precinto/precinto/internal/testkit"
 )
 
+// kill ends this process at once, as the failpoint package's crash does
+// (SIGKILL on darwin and linux): no deferred function runs.
 func kill() {
-	_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+	if p, err := os.FindProcess(os.Getpid()); err == nil {
+		_ = p.Kill()
+	}
 	select {}
 }
 

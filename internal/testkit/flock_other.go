@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strconv"
 	"syscall"
 )
 
@@ -24,3 +25,15 @@ func mkfifo(string, uint32) error {
 
 // newSession: no setsid here; the child keeps the test's console.
 func newSession() *syscall.SysProcAttr { return nil }
+
+// killGroup: no process groups here; the process alone is killed.
+func killGroup(pid int) error {
+	if pid < 2 {
+		return errors.New("testkit: refusing to kill process " + strconv.Itoa(pid))
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return p.Kill()
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strconv"
 	"syscall"
 )
 
@@ -44,3 +45,10 @@ func ownedByMe(fi fs.FileInfo) bool {
 func mkfifo(path string, perm uint32) error { return syscall.Mkfifo(path, perm) }
 
 func newSession() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }
+
+func killGroup(pid int) error {
+	if pid < 2 {
+		return errors.New("testkit: refusing to kill process group " + strconv.Itoa(pid))
+	}
+	return syscall.Kill(-pid, syscall.SIGKILL)
+}

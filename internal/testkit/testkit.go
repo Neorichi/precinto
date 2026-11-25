@@ -153,6 +153,14 @@ func Mkfifo(path string, perm uint32) error { return mkfifo(path, perm) }
 // terminal running the tests; nil where precinto does not run (D34).
 func NewSession() *syscall.SysProcAttr { return newSession() }
 
+// KillGroup sends SIGKILL to every process of the process group pid leads
+// (a child started with NewSession, or by pty.Start, leads its own session
+// and group), so its descendants end with it. Where precinto does not run
+// (D34) there is no such group: it kills the process pid alone. A pid
+// below 2 is refused: kill(2) would read it as "every process" or as the
+// caller's own group. A test only kills groups it started.
+func KillGroup(pid int) error { return killGroup(pid) }
+
 // Marker returns a unique marker string for leak greps.
 func Marker(t testing.TB) string {
 	t.Helper()

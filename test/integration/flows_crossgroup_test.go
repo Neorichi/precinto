@@ -59,7 +59,7 @@ func startDaemon(t *testing.T, exe string, env []string, socket string) (stop fu
 	cmd := exec.Command(exe, "agent", "--foreground")
 	cmd.Env = env
 	cmd.Dir = "/"
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = testkit.NewSession()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

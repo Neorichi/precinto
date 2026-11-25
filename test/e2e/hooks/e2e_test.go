@@ -316,7 +316,7 @@ func (s *sandbox) run(dir string, timeout time.Duration, extra []string, argv ..
 	cmd.Stdin = strings.NewReader("")
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = testkit.NewSession()
 	cmd.WaitDelay = 10 * time.Second // a straggler holding the output pipe cannot stall Wait
 	err := cmd.Run()
 	code := 0
@@ -350,7 +350,7 @@ func (s *sandbox) startAgent() {
 		s.t.Fatal(err)
 	}
 	cmd.Stdout, cmd.Stderr = log, log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = testkit.NewSession()
 	if err := cmd.Start(); err != nil {
 		s.t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func (s *sandbox) pty(dir string, argv ...string) *ptySession {
 		select {
 		case <-p.done:
 		default:
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // the session pty.Start created
+			_ = testkit.KillGroup(cmd.Process.Pid) // the session pty.Start created
 			<-p.done
 		}
 		_ = f.Close()
@@ -573,7 +573,7 @@ func (s *sandbox) answer(o answerOptions, dir string, timeout time.Duration, arg
 		if first >= 0 {
 			q := qs[first]
 			if q.fail != "" {
-				_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+				_ = testkit.KillGroup(p.cmd.Process.Pid)
 				s.t.Fatalf("%v: %s:\n%s", argv, q.fail, tail(p.text()))
 			}
 			reply := q.reply
@@ -599,7 +599,7 @@ func (s *sandbox) answer(o answerOptions, dir string, timeout time.Duration, arg
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+	_ = testkit.KillGroup(p.cmd.Process.Pid)
 	s.t.Fatalf("%v did not finish within %v:\n%s", argv, timeout, tail(p.text()))
 	return ""
 }

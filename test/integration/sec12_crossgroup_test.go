@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -97,7 +96,7 @@ func TestSEC12ProductionBuildIgnoresOverrides(t *testing.T) {
 		cmd := exec.CommandContext(ctx, exe, "status", "--json")
 		cmd.Env = env
 		cmd.Dir = home
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.SysProcAttr = testkit.NewSession()
 		cmd.WaitDelay = 10 * time.Second
 		out, err := cmd.Output()
 		if err != nil {

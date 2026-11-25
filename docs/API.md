@@ -6398,6 +6398,14 @@ func GrepTree(t testing.TB, dir, marker string, exclude ...string) []string
 // tokens, or UUIDs that are not fixtures (S13).
 func Hygiene(t testing.TB, dir string)
 
+// KillGroup sends SIGKILL to every process of the process group pid leads
+// (a child started with NewSession, or by pty.Start, leads its own session
+// and group), so its descendants end with it. Where precinto does not run
+// (D34) there is no such group: it kills the process pid alone. A pid
+// below 2 is refused: kill(2) would read it as "every process" or as the
+// caller's own group. A test only kills groups it started.
+func KillGroup(pid int) error
+
 // Leftovers describes ("pid name args…") the live processes, other than
 // this one, that run bin or name a path below dirs in their arguments: what
 // a test's installation left running.
