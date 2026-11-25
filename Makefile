@@ -165,5 +165,5 @@ codex-plugin-check:
 clean:
 	rm -rf bin
 
-## ci: everything CI runs on every change (E2E never runs by default)
+## ci: the main gates CI runs on every change (ci.yml also runs test-race, crossgroup and crossgroup-crash; E2E never runs by default)
 ci: lint build-windows vet-windows build build-linux build-testing test hygiene codex-plugin-check

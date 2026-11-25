@@ -119,7 +119,8 @@ type statusPlaintext struct {
 	ByReason map[string]int `json:"by_reason"`
 	// Incomplete: the counts may miss files, because config.toml does not
 	// load (they were counted with the settings standing in for it) or the
-	// folder could not be scanned; --check never passes on them (UX-09).
+	// folder could not be scanned; --check does not pass while such a
+	// folder is not unlocked (UX-09).
 	Incomplete bool `json:"incomplete,omitempty"`
 }
 
@@ -453,7 +454,8 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 	if claudeGap {
 		// D156: a Claude folder on a Windows drive is never scanned, so
 		// the plaintext of the folders that protect Claude cannot be
-		// counted whole: --check never passes on them.
+		// counted whole: --check does not pass while one of them is not
+		// unlocked.
 		for i := range s.Folders {
 			if hs := s.Folders[i].Harnesses; len(hs) == 0 || slices.Contains(hs, string(harness.ClaudeCode)) {
 				s.Folders[i].Unencrypted.Incomplete = true

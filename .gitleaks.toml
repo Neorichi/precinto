@@ -1,6 +1,6 @@
 # gitleaks configuration: the default rules plus narrow exceptions for
 # synthetic test fixtures. CI runs it over the full history and over the
-# working tree (.github/workflows/ci.yml, job "secrets"). Owner: G7.
+# working tree (.github/workflows/secrets.yml). Owner: G7.
 #
 # Every exception names one rule, one set of files and the exact fixture
 # value, and needs all three to match (condition = "AND"): the same file

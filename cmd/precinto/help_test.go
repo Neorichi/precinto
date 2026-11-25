@@ -106,7 +106,7 @@ func TestReadmeCommandsUseRealFlags(t *testing.T) {
 			t.Fatal(err)
 		}
 		n := 0
-		for _, span := range regexp.MustCompile("`[^`\\n]*`|(?s)```.*?```").FindAllString(string(b), -1) {
+		for _, span := range regexp.MustCompile("(?s)```.*?```|`[^`\\n]*`").FindAllString(string(b), -1) {
 			for _, m := range cmdRE.FindAllStringSubmatch(span, -1) {
 				c, ok := lookup(m[1])
 				if !ok || c.hidden {
