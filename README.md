@@ -53,7 +53,7 @@ Claude Code edits a file in `~/acme`, a protected folder. When it exits, Precint
 - [Compaction, explained](#compaction-explained)
 - [Supported harnesses](#supported-harnesses)
 - [What Precinto protects, and what it does not](#what-precinto-protects-and-what-it-does-not)
-- [Install from source](#install-from-source)
+- [Download](#download) · [Install from source](#install-from-source)
 - [Configuration](#configuration)
 - [FAQ](#faq)
 - [Status](#status)
@@ -309,6 +309,17 @@ Also in v0.2: a large session is re-encrypted in full every time it changes; pro
 
 </details>
 
+## Download
+
+Pre-release archives are on the [Releases](https://github.com/Neorichi/precinto/releases) page: one for macOS (a single binary for Apple silicon and Intel) and two for Linux (amd64 and arm64), each with `LICENSE` and `NOTICE`, plus a `SHA256SUMS` file. They are not signed or notarized, so check the sum before you install, and on macOS allow the binary once as the release notes explain. Windows has no download of its own: inside WSL 2 you use the Linux one ([docs/WINDOWS.md](docs/WINDOWS.md)).
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing   # on Linux: sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf precinto_*_darwin_universal.tar.gz      # or the linux_amd64 / linux_arm64 archive
+sudo install -m 0755 precinto /usr/local/bin/precinto
+precinto version
+```
+
 ## Install from source
 
 | | You need |
@@ -333,7 +344,7 @@ After you replace the binary, run `precinto agent --restart`: clients refuse to 
 
 - `go.mod` pins `toolchain go1.26.11`, so with the default `GOTOOLCHAIN=auto` the go command downloads and uses Go 1.26.11 the first time you build (this needs network access to the Go module proxy).
 - `make` picks the first working `go` on your `PATH`; use `make GO=/path/to/go` to choose another.
-- There are no prebuilt or signed release archives and no Homebrew formula yet (planned, subject to change). A build from source is not signed or notarized, so on macOS `precinto doctor` reports it as an unhardened build; that is expected.
+- Pre-release archives are on the Releases page ([Download](#download)); they are not signed, and there is no Homebrew formula yet (planned, subject to change). A build from source is not signed or notarized, so on macOS `precinto doctor` reports it as an unhardened build; that is expected.
 - `pinentry-mac` lets you unlock with a passphrase or a plugin factor from inside a harness. Precinto runs a pinentry only from a location that only root can change (`/usr/bin`, MacPorts' `/opt/local/bin`, GPG Suite), never from Homebrew's prefix, which is writable by you and so by any program running as you; with Homebrew's `pinentry-mac` alone, unlock with a passphrase in a terminal.
 
 </details>
@@ -480,7 +491,7 @@ Precinto refuses WSL 1, folders on Windows drives and a `claude` or `codex` that
 - **Linux partial.** It builds and runs with a passphrase factor (or an age plugin such as a YubiKey); screen lock and idle come from `loginctl`. There is no background service yet (`precinto service install` is macOS-only in v0.2), and machines without logind rely on idle timers and the 8-hour limit.
 - **Windows through WSL 2.** Precinto runs as its Linux build inside a WSL 2 distribution, with Claude Code and Codex in that same distribution and your folders on its Linux file system. It refuses WSL 1, folders on Windows drives and harnesses that would run as Windows programs. Its main limits there: the Windows account is the boundary (any Windows program running as you can become root in the distribution), locking Windows does not lock folders, and you unlock in a terminal. Setup and limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 - **No native Windows.** `precinto.exe` builds, but refuses every operation, so it protects nothing.
-- **Public source, no releases yet.** The source is at [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto). There are no prebuilt or signed releases or downloads yet, so you build it from source.
+- **Public, pre-release.** The source is at [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto), and [Releases](https://github.com/Neorichi/precinto/releases) has pre-release archives for macOS and Linux, not signed or notarized ([Download](#download)).
 - **Most decisions are defaults.** The entries of [docs/DECISIONS.md](docs/DECISIONS.md) marked *default* are safe defaults waiting for the project owner's confirmation, and may change; those marked *owner*, such as D155 (Windows through WSL 2) and D158 (CI), are confirmed.
 
 ## Documentation

@@ -63,7 +63,7 @@ Then work on the copy in `~/work/acme`, not on the original. For a git repositor
 
 ### 3. Build and install Precinto
 
-There are no downloads yet, so you build Precinto from its source, inside Ubuntu, as in [Install from source](../README.md#install-from-source). Put the source in the Linux file system too. If your copy is on the Windows side, clone it first with `git clone /mnt/c/path/to/precinto ~/src/precinto`. Then:
+Inside Ubuntu, either download the Linux build for your machine (`linux_amd64` on most PCs) from [Releases](https://github.com/Neorichi/precinto/releases) and check it against `SHA256SUMS`, as in [Download](../README.md#download), or build Precinto from its source as in [Install from source](../README.md#install-from-source). Put the source in the Linux file system too. If your copy is on the Windows side, clone it first with `git clone /mnt/c/path/to/precinto ~/src/precinto`. Then:
 
 ```sh
 sudo apt update && sudo apt install -y golang-go make git

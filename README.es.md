@@ -53,7 +53,7 @@ Claude Code edita un archivo en `~/acme`, una carpeta protegida. Al salir, Preci
 - [La compactación, explicada](#la-compactación-explicada)
 - [Herramientas compatibles](#herramientas-compatibles)
 - [Qué protege Precinto y qué no](#qué-protege-precinto-y-qué-no)
-- [Instalación desde el código fuente](#instalación-desde-el-código-fuente)
+- [Descarga](#descarga) · [Instalación desde el código fuente](#instalación-desde-el-código-fuente)
 - [Configuración](#configuración)
 - [Preguntas frecuentes](#preguntas-frecuentes)
 - [Estado del proyecto](#estado-del-proyecto)
@@ -309,6 +309,17 @@ Y en la v0.2, además: una sesión grande se vuelve a cifrar entera cada vez que
 
 </details>
 
+## Descarga
+
+En la página de [Releases](https://github.com/Neorichi/precinto/releases) están los archivos de la versión preliminar: uno para macOS (un único binario para Apple silicon e Intel) y dos para Linux (amd64 y arm64), cada uno con `LICENSE` y `NOTICE`, y además un archivo `SHA256SUMS`. No están firmados ni notarizados: comprueba la suma antes de instalar y, en macOS, permite el binario una vez como explican las notas de la versión. Windows no tiene descarga propia: dentro de WSL 2 se usa la de Linux ([docs/WINDOWS.md](docs/WINDOWS.md)).
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing   # en Linux: sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf precinto_*_darwin_universal.tar.gz      # o el archivo linux_amd64 / linux_arm64
+sudo install -m 0755 precinto /usr/local/bin/precinto
+precinto version
+```
+
 ## Instalación desde el código fuente
 
 | | Necesitas |
@@ -333,7 +344,7 @@ Cada vez que sustituyas el binario, ejecuta `precinto agent --restart`: los clie
 
 - `go.mod` fija `toolchain go1.26.11`, así que, con el valor por defecto `GOTOOLCHAIN=auto`, el comando go descarga y usa Go 1.26.11 la primera vez que compilas (para eso necesita acceso de red al proxy de módulos de Go).
 - `make` usa el primer `go` de tu `PATH` que funcione; con `make GO=/ruta/a/go` eliges otro.
-- Todavía no hay paquetes precompilados ni firmados, ni fórmula de Homebrew (están previstos; puede cambiar). Una compilación propia no está firmada ni notarizada, así que en macOS `precinto doctor` la señala como no endurecida (*unhardened build*); es lo normal.
+- Hay archivos de la versión preliminar en Releases ([Descarga](#descarga)); no están firmados, y aún no hay fórmula de Homebrew (está prevista; puede cambiar). Una compilación propia no está firmada ni notarizada, así que en macOS `precinto doctor` la señala como no endurecida (*unhardened build*); es lo normal.
 - `pinentry-mac` permite desbloquear con una frase de paso o con un plugin desde dentro de un harness. Precinto solo ejecuta un pinentry instalado en una ubicación que solo root puede cambiar (`/usr/bin`, `/opt/local/bin` de MacPorts, GPG Suite), nunca desde el prefijo de Homebrew, en el que puedes escribir tú y, por tanto, cualquier programa que se ejecute con tu usuario; si solo tienes el `pinentry-mac` de Homebrew, desbloquea con la frase de paso en una terminal.
 
 </details>
@@ -480,7 +491,7 @@ Precinto rechaza WSL 1, las carpetas en unidades de Windows y un `claude` o un `
 - **Linux, en parte**: compila y funciona con una frase de paso como factor (o con un plugin de age, como una YubiKey), y lee el bloqueo de pantalla y la inactividad de `loginctl`. Todavía no hay servicio en segundo plano (`precinto service install` solo existe en macOS en la v0.2), y en las máquinas sin logind solo cuentan los temporizadores de inactividad y el límite de 8 horas.
 - **Windows, a través de WSL 2**: Precinto se ejecuta como la versión de Linux dentro de una distribución de WSL 2, con Claude Code y Codex en esa misma distribución y tus carpetas en su sistema de archivos de Linux. Rechaza WSL 1, las carpetas en unidades de Windows y los harnesses que se ejecutarían como programas de Windows. Sus límites principales ahí: la frontera es la cuenta de Windows (cualquier programa de Windows que se ejecute con tu usuario puede hacerse root en la distribución), bloquear Windows no bloquea las carpetas y el desbloqueo se hace en una terminal. Instalación y límites, en inglés: [docs/WINDOWS.md](docs/WINDOWS.md).
 - **Windows nativo, no**: `precinto.exe` compila, pero rechaza cualquier operación, así que no protege nada.
-- **Código público, sin versiones todavía**: el código está en [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto). Aún no hay versiones compiladas ni firmadas, ni descargas, así que se compila desde el código fuente.
+- **Público, versión preliminar**: el código está en [github.com/Neorichi/precinto](https://github.com/Neorichi/precinto), y en [Releases](https://github.com/Neorichi/precinto/releases) hay archivos de la versión preliminar para macOS y Linux, sin firmar ni notarizar ([Descarga](#descarga)).
 - **Casi todas las decisiones son provisionales**: las entradas de [docs/DECISIONS.md](docs/DECISIONS.md) marcadas *default* son valores por defecto prudentes a la espera de que los confirme el responsable del proyecto, y pueden cambiar; las marcadas *owner*, como D155 (Windows a través de WSL 2) y D158 (CI), ya están confirmadas.
 
 ## Documentación
