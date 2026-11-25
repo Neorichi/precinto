@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // This file holds the OS-independent part of the implementation. Every

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/codex/codextest"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/codex/codextest"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // SEAL-4 and SEC-10 (sweep side): a corrupted temporary or a header with

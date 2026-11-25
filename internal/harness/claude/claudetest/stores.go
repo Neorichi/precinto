@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/harness/claude"
 )
 
 // writeRegistry writes $CC/sessions/<pid>.json. A valid entry is replaced

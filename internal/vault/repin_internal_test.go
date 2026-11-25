@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // The D75 rule for a binary to re-pin: a regular file owned by root or the

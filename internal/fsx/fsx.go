@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // Errors. Callers test them with errors.Is.

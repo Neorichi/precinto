@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 func TestVaultTampered(t *testing.T) {

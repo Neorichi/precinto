@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // shortDir returns a fresh, symlink-free directory with a short path: the

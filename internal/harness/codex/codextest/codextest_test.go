@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/codex/codextest"
+	"github.com/Neorichi/precinto/internal/harness/codex/codextest"
 )
 
 const marker = "CODEXTEST-MARKER-41c9"

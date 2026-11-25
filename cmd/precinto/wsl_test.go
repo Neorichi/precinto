@@ -9,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 var (

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // geminiInventory is an experimental inventory with a verified range.

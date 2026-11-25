@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 func TestSetErrInjectsAndClears(t *testing.T) {

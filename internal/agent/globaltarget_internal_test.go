@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // D152: a fix command the agent builds names the global vault with

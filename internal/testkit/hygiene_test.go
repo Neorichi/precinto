@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // Secret-looking samples are assembled at run time so that no literal in

@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Exit codes (SPEC §16.2).

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/codex/codextest"
+	"github.com/Neorichi/precinto/internal/harness/codex/codextest"
 )
 
 const probeArg = "codextest-flock-probe"

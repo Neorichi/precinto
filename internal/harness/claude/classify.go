@@ -3,7 +3,7 @@ package claude
 import (
 	"strings"
 
-	"github.com/precinto/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/capsule"
 )
 
 // sidSearchDepth is how deep below $CC (and $TMP) sid-named entries are

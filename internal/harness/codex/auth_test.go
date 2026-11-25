@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/codex"
+	"github.com/Neorichi/precinto/internal/harness/codex"
 )
 
 // authHomes is a user home with auth.json and a per-root home seeded from

@@ -3,7 +3,7 @@ package fsx
 import (
 	"os"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // note reports a mutating operation to failpoint observers (power-loss

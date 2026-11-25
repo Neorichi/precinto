@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Agent, background-sweep and permission checks (SPEC §6.1, §10.1, §13;

@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // The table of docs/API.md §5 (SPEC §16.2).

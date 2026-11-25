@@ -2,7 +2,7 @@
 
 This is the frozen exported API that eight groups implement in parallel. The second half of this file is **generated** from the scaffold (`go run ./internal/archtest/apidoc -splice docs/API.md`; `make api-check` fails on drift), so the code and this document cannot disagree. Semantics are normative together with `docs/SPEC.md`; wire formats with `docs/HOOKS-IO.md`; tests with `docs/TESTPLAN.md`; file ownership with `docs/OWNERSHIP.md`.
 
-Module `github.com/precinto/precinto` · `go 1.26.0` (the go command rejects a bare `go 1.26` as untidy) · `toolchain go1.26.11` · `CGO_ENABLED=0` must build · dependencies are pinned in `go.mod`/`go.sum` (owned by G7; implementers never add dependencies) · darwin first, linux builds (D34).
+Module `github.com/Neorichi/precinto` · `go 1.26.0` (the go command rejects a bare `go 1.26` as untidy) · `toolchain go1.26.11` · `CGO_ENABLED=0` must build · dependencies are pinned in `go.mod`/`go.sum` (owned by G7; implementers never add dependencies) · darwin first, linux builds (D34).
 
 ## 1. Rules of the contract
 1. **Exported identifiers are frozen.** Implementers fill function bodies (currently `panic("unimplemented: <pkg>.<Func>")`; the leaf helpers listed in docs/OWNERSHIP.md §4 are already implemented, with tests), may add unexported code and new files in their own directories, and may change unexported fields of their own types. They MUST NOT change exported signatures, exported struct fields, constants or another group's files. If a change is needed, implement an adapter in your own package and report the request to the lead (docs/OWNERSHIP.md §3).
@@ -4874,7 +4874,7 @@ type UnitResult struct {
 
 ## G5 hooks & packaging
 
-### `github.com/precinto/precinto` (module root)
+### `github.com/Neorichi/precinto` (module root)
 
 - Owner: **G5 hooks & packaging** · layer 0 · production
 - May import (module): none
@@ -6761,7 +6761,7 @@ const (
 )
 
 // Module is the module path.
-const Module = "github.com/precinto/precinto"
+const Module = "github.com/Neorichi/precinto"
 
 // Packages is the whole contract, in layer order.
 // (Value elided here: it is rendered as the per-package headers of docs/API.md.)

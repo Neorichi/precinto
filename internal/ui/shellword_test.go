@@ -3,7 +3,7 @@ package ui_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // D113: a folder in a command a message tells the user to run is one shell

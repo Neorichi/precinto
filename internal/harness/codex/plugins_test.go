@@ -10,7 +10,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/precinto/precinto/internal/harness/codex"
+	"github.com/Neorichi/precinto/internal/harness/codex"
 )
 
 // strictTOML fails unless cfg is valid TOML for a strict parser (duplicate

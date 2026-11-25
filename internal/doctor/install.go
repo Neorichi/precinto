@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Harness versions are read without running the harness: from the path of

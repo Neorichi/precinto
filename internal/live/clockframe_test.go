@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // TestDecisionsFollowTheInjectedClock (D77, TESTPLAN §1.4): every time the

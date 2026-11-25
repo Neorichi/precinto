@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // unlockDeadline bounds one unlock request (presence prompts included).

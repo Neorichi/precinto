@@ -14,9 +14,9 @@ import (
 	"filippo.io/age"
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/vault"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 func TestMarkAudited(t *testing.T) {

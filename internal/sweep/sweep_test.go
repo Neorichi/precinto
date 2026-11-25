@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // testCtx is the context of an exported call in a test: it ends with the

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 // SPEC §15.4, byte for byte.

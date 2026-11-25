@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/sweep/journal"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/sweep/journal"
 )
 
 // errNoLayout: Options.Layout is the zero value (or not absolute), so no

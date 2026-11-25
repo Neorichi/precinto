@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // lockedGate is the daemon's answer for a locked folder.

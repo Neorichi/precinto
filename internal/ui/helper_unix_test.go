@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // helperEnv selects a helper mode when the test binary re-executes itself

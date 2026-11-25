@@ -16,8 +16,8 @@ import (
 	"filippo.io/age/plugin"
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/vault"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // The fake plugins (testdata/fakeplugin) stand in for age-plugin-se and a

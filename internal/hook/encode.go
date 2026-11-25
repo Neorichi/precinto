@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // maxMessage bounds a block text taken from the daemon (it is rendered

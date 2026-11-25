@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/harness/claude/claudetest"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/journal"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/harness/claude/claudetest"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/journal"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // nativeClaude installs a fake native Claude (…/claude/versions/<v>, with

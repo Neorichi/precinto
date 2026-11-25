@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // directChild is a child run without a PTY (SPEC §15.1 step 6, D57): it

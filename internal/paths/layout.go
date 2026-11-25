@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // newLayout implements NewLayout for an explicit GOOS and override decision.

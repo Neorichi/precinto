@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude/claudetest"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude/claudetest"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // kill ends this process at once, as the failpoint package's crash does

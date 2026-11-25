@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // diskEncryption is a best-effort check that the home directory lives on an

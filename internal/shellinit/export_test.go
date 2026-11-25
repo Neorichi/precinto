@@ -6,8 +6,8 @@ package shellinit
 import (
 	"context"
 
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // StatusFunc answers the daemon status query of OnEnter in tests.

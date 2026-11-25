@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
 )
 
 // fakeLedger is an in-memory hook.Ledger with a minimal fold of the rules

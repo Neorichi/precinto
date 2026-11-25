@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // InFolder reports whether p lies inside the folder dir by the rule

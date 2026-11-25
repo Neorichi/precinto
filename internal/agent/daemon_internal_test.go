@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 const (

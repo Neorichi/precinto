@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // D148 (S6-7, D6-4): when the second rename of a marketplace swap fails

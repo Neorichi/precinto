@@ -5,7 +5,7 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // promptUI is the terminal the wrapper prompts on before the launch

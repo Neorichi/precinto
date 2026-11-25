@@ -16,8 +16,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 func TestSealRoundTrip(t *testing.T) {

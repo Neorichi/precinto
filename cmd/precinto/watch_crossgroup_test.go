@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/agent/agenttest"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/agent/agenttest"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // D153 over a real daemon: a lock during an operation aborts it (REST-8)

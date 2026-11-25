@@ -11,10 +11,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness/codex"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness/codex"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Decode errors. They never carry payload bytes: a json error can quote

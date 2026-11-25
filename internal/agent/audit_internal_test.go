@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 func (x *td) audited(id string) (time.Time, bool) {

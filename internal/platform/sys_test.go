@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 func TestPeerOfSocketpair(t *testing.T) {

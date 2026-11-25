@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
 )
 
 // lookingLive mimics the engine's two-look stability (D63): the first

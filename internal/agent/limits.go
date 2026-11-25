@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // clampTTL implements ClampTTL. A policy without a positive max_unlock

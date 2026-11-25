@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/config"
 )
 
 func write(t *testing.T, s string) string {

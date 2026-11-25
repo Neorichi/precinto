@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // D96 (SEC-F3): a re-pointed plugin link whose target's path carries

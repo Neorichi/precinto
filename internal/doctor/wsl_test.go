@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 var wslCodes = []string{doctor.CheckWSL, doctor.CheckWSLInterop, doctor.CheckWSLIdle, doctor.CheckWindowsDrive, doctor.CheckWindowsHarnessData}

@@ -5,8 +5,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // main arms PRECINTO_CRASHPOINT through internal/paths in -tags failpoints

@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // errNotExist reports a missing run directory or socket (no daemon).

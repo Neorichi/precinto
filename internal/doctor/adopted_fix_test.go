@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/sweep"
 )
 
 // UX-17, D113 (group w): sweeps never seal sessions found only by their

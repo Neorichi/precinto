@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/precinto/precinto"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // pluginRef is precinto's plugin in its marketplace, both named

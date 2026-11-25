@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Hygiene rules (S13; docs/TESTPLAN.md §1.2, SEC-22). A file fails when its

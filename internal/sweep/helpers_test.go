@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // logEntryFor is a synthetic log entry of a Claude session generation.

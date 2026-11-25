@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // system is what Main takes from the process besides Deps; tests replace

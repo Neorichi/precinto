@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // TestDetectHost covers HOOKS-IO §0.7 / D56 (HOOK-2): first match wins, a

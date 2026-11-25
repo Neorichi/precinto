@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/harness/claude/claudetest"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/harness/claude/claudetest"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep"
 )
 
 // D132 (D6-3): the units a launch restores beside its target — the

@@ -3,7 +3,7 @@ package generic
 import (
 	"io/fs"
 
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // New returns an adapter for one inventory.

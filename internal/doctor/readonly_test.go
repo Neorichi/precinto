@@ -20,21 +20,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude/claudetest"
-	"github.com/precinto/precinto/internal/harness/codex/codextest"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/sweep/journal"
-	"github.com/precinto/precinto/internal/sweep/queue"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude/claudetest"
+	"github.com/Neorichi/precinto/internal/harness/codex/codextest"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/sweep/journal"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // snapshot records every entry below the given roots: type and mode,
@@ -287,19 +287,19 @@ var forbiddenCalls = map[string][]string{
 	"os": {"WriteFile", "Create", "CreateTemp", "Mkdir", "MkdirAll", "MkdirTemp", "Remove", "RemoveAll", "Rename",
 		"Chmod", "Chown", "Lchown", "Chtimes", "Symlink", "Link", "Truncate", "Setenv", "Unsetenv", "Clearenv", "StartProcess", "FindProcess"},
 	"syscall": {"Kill", "Unlink", "Rmdir", "Mkdir", "Rename", "Chmod", "Flock", "Mkfifo", "Write", "Truncate", "Exec", "ForkExec", "Open"},
-	"github.com/precinto/precinto/internal/fsx": {"WriteFileAtomic", "AppendLine", "MkdirPrivate", "TryLock", "WaitLock", "ProbeHeld",
+	"github.com/Neorichi/precinto/internal/fsx": {"WriteFileAtomic", "AppendLine", "MkdirPrivate", "TryLock", "WaitLock", "ProbeHeld",
 		"NewStaging", "OpenStaging", "SyncDir", "FullSync"},
-	"github.com/precinto/precinto/internal/config":   {"Save", "SavePinned", "WriteRootsList"},
-	"github.com/precinto/precinto/internal/capsule":  {"Seal", "LoadSalt", "Extract"},
-	"github.com/precinto/precinto/internal/platform": {"Signal", "SignalGroup", "Spawn", "ScrubTTY", "ExcludeFromBackup", "Harden"},
-	"github.com/precinto/precinto/internal/sweep": {"Seal", "Sweep", "Restore", "RestoreMarkdown", "SealMarkdown", "Prune", "Forget",
+	"github.com/Neorichi/precinto/internal/config":   {"Save", "SavePinned", "WriteRootsList"},
+	"github.com/Neorichi/precinto/internal/capsule":  {"Seal", "LoadSalt", "Extract"},
+	"github.com/Neorichi/precinto/internal/platform": {"Signal", "SignalGroup", "Spawn", "ScrubTTY", "ExcludeFromBackup", "Harden"},
+	"github.com/Neorichi/precinto/internal/sweep": {"Seal", "Sweep", "Restore", "RestoreMarkdown", "SealMarkdown", "Prune", "Forget",
 		"Quarantine", "Recover", "Resolve", "RotateHistory", "MergeHistory", "OpenNotes", "CatNote", "ReconcileCodex", "DrainQueue", "NextGen"},
-	"github.com/precinto/precinto/internal/sweep/queue":   {"Enqueue", "Update", "Remove"},
-	"github.com/precinto/precinto/internal/live":          {"Acquire"},
-	"github.com/precinto/precinto/internal/harness/codex": {"PrepareHome", "SyncAuthBack"},
-	"github.com/precinto/precinto/internal/ui":            {"OpenTTY"},
-	"github.com/precinto/precinto/internal/ipc":           {"Listen"},
-	"github.com/precinto/precinto/internal/harness":       {"Register"},
+	"github.com/Neorichi/precinto/internal/sweep/queue":   {"Enqueue", "Update", "Remove"},
+	"github.com/Neorichi/precinto/internal/live":          {"Acquire"},
+	"github.com/Neorichi/precinto/internal/harness/codex": {"PrepareHome", "SyncAuthBack"},
+	"github.com/Neorichi/precinto/internal/ui":            {"OpenTTY"},
+	"github.com/Neorichi/precinto/internal/ipc":           {"Listen"},
+	"github.com/Neorichi/precinto/internal/harness":       {"Register"},
 }
 
 // forbiddenMethods are method names that mutate state on the types doctor

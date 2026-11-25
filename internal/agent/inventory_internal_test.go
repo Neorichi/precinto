@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // CC-12: the embedded inventories load, and each built-in adapter has one.

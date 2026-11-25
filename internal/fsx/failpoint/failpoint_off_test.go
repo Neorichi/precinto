@@ -5,7 +5,7 @@ package failpoint_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 func TestCompiledOut(t *testing.T) {

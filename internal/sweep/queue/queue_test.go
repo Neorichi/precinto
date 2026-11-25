@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/queue"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 var t0 = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)

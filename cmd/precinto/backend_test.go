@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 func testBackend(t *testing.T) (*env, *backend) {

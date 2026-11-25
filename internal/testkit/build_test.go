@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // TestBuildBinary builds the real cmd/precinto (the whole module must
@@ -30,7 +30,7 @@ func TestBuildBinary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Path != "github.com/precinto/precinto/cmd/precinto" {
+		if info.Path != "github.com/Neorichi/precinto/cmd/precinto" {
 			t.Errorf("%s builds %s", path, info.Path)
 		}
 		settings := map[string]string{}

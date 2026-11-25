@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
 )
 
 // TestSealedProvenanceRoundTrip needs G4's capslog: a committed capsule's

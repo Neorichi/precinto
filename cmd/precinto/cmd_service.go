@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // serviceLabel is the LaunchAgent label, paths.ServiceLabel (SPEC §13.1:

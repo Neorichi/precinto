@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/agent/agenttest"
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/agent/agenttest"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // realHome is a testkit home whose clock follows the real one

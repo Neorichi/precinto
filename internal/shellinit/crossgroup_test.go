@@ -8,10 +8,10 @@ package shellinit_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/agent/agenttest"
-	"github.com/precinto/precinto/internal/shellinit"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/agent/agenttest"
+	"github.com/Neorichi/precinto/internal/shellinit"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // TestCrossgroupOnEnterAgent: a fresh daemon holds no key, so entering the

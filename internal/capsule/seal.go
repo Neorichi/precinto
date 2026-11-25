@@ -19,8 +19,8 @@ import (
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // familyX25519 is the only recipient family of v0.1 (D2); it prefixes the

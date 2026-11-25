@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // TestWalkHazards (TESTPLAN SEC-7, fsx part): a symlinked directory pointing

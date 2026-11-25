@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // KillGroup ends the process group a NewSession child leads, the child

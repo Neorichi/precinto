@@ -12,8 +12,8 @@ import (
 	"sort"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/inventories"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/inventories"
 )
 
 // Every file access of doctor goes through these helpers: reads only, at a

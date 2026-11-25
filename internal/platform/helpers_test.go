@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Helper processes of these tests are the test binary itself (or a copy)

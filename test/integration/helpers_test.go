@@ -23,9 +23,9 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // binTimeout bounds one invocation of the binary.

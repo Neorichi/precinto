@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // fakeProcs is a minimal platform.ProcTable keyed by pid.

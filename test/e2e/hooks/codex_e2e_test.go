@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // codexHome prepares a synthetic CODEX_HOME (never ~/.codex) with

@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/agent/agenttest"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/agent/agenttest"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 func init() {

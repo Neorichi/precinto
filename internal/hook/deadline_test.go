@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // deadlineDaemon answers a locked, unlock-eligible gate, then allows, and

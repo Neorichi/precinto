@@ -5,7 +5,7 @@ package paths_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // TestTestingBuild: -tags testing builds honour the overrides even in an

@@ -24,18 +24,18 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/harness/claude/claudetest"
-	"github.com/precinto/precinto/internal/harness/codex"
-	"github.com/precinto/precinto/internal/harness/codex/codextest"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/harness/claude/claudetest"
+	"github.com/Neorichi/precinto/internal/harness/codex"
+	"github.com/Neorichi/precinto/internal/harness/codex/codextest"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // perfScale is 1 for the TESTPLAN sizes; PRECINTO_PERF_SCALE divides them.

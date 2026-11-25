@@ -11,11 +11,11 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/agent"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/agent"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 // Agent is a running in-process daemon.

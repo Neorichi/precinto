@@ -5,7 +5,7 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // errNoTTY answers relayed prompts that need a terminal: hooks run without

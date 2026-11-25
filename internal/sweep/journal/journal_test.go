@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/sweep/journal"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/sweep/journal"
 )
 
 func newJournal(t *testing.T) *journal.Journal {

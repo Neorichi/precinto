@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/config"
 )
 
 const (

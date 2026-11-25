@@ -17,14 +17,14 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/agent/agenttest"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/vault"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/agent/agenttest"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // sec26Pass is the passphrase of the SEC-26 vaults (scrypt logN 10: test

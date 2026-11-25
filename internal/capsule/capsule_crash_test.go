@@ -19,9 +19,9 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // Crash-matrix rows owned by capsule (TESTPLAN §4: capsule.tmp_written,

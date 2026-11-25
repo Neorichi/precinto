@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // UX-08: the refusal that follows a cancelled or mistyped unlock (the

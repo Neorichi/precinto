@@ -4,8 +4,8 @@ package claude
 // only; the external tests in package claude_test use it).
 
 import (
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // StandInForWSL makes the adapter's WSL checks (D156) answer with drive

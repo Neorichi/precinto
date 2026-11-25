@@ -17,12 +17,12 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // TestE2E5UnwrappedClaudeEndedAtHardLock is the unwrapped part of E2E-5

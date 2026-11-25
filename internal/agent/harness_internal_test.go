@@ -16,13 +16,13 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/capslog"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // fakeVaults is an in-memory vaultOps: each vault's identity is a fixed

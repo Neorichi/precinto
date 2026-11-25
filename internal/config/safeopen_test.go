@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // guard runs f and fails if it takes longer than 2 s (a FIFO must never

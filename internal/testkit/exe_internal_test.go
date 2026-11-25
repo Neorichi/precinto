@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // D154: on Linux a hardened precinto hides its /proc/<pid>/exe (D65), so

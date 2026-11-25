@@ -17,7 +17,7 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Synthetic test values only (TESTPLAN §1).

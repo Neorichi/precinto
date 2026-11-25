@@ -13,8 +13,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // maxMetaLine bounds what is read of a rollout: the first line only, at

@@ -3,8 +3,8 @@ package agent
 import (
 	"os"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // recordedRoots returns the folders the root vaults record (vault.toml

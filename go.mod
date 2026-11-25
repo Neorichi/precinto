@@ -1,4 +1,4 @@
-module github.com/precinto/precinto
+module github.com/Neorichi/precinto
 
 go 1.26.0
 

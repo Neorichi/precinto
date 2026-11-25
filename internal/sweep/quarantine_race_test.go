@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // openHookFS runs hook once, the first time the capsule store is opened

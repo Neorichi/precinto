@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 func TestFrameRoundTrip(t *testing.T) {

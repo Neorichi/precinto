@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/sweep/queue"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // fileLedger writes every appended event as a JSON line below the layout,

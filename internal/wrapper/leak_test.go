@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 // probeEnv makes a probe run of this test binary start helpers and fail at

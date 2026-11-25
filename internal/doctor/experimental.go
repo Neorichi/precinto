@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // Experimental (data-driven) harnesses: SPEC §7.3, D33.

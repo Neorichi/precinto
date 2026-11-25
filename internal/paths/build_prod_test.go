@@ -5,7 +5,7 @@ package paths_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // TestProductionBuild: without -tags testing the overrides need PRECINTO_DEV=1

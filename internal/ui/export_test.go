@@ -6,8 +6,8 @@ package ui
 import (
 	"os"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // NewTestTTY returns a TTY over in and out that Close does not close. With

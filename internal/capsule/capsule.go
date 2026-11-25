@@ -15,7 +15,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // Format constants (SPEC §5).

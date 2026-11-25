@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // uuidLen is the length of the canonical 8-4-4-4-12 form.

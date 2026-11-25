@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // CC-17: a keys request names at most ipc.MaxKeysPerRequest capsules; a

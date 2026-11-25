@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/live"
 )
 
 // D84 (DATA-4): placement asks the adapter about the unit it restores,

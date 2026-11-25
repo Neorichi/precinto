@@ -10,8 +10,8 @@ import (
 
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/sweep"
 )
 
 // keySource implements sweep.KeySource over the daemon's keys operation

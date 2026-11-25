@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // writeRegistry writes Claude's live-session registry entry

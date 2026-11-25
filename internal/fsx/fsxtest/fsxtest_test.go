@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
-	"github.com/precinto/precinto/internal/fsx/fsxtest"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/fsxtest"
 )
 
 func realTemp(t *testing.T) string {

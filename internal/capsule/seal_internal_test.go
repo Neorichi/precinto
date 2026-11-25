@@ -16,7 +16,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // TestSealRemovesTheTemporaryOnErrHeader covers the ErrHeader error path of

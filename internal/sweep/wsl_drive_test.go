@@ -7,9 +7,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // driveAdapter is the fake Claude adapter once its home lies on a Windows

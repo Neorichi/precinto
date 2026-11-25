@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
 )
 
 // D131: a run that holds state/locks/sweep.lock is the only process that

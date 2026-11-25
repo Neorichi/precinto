@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // TestSecretReappliesRawModeAfterStop stops the helper mid-prompt, lets

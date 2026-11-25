@@ -5,10 +5,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/inventories"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/inventories"
 )
 
 // The daemon recognizes harness processes with the embedded inventories

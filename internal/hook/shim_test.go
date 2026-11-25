@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Shim tests (HOOK-4, HOOKS-IO §5): the POSIX shim run by several shells,

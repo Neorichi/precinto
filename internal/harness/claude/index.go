@@ -5,9 +5,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ledger"
 )
 
 // recordProjects writes to the project index (state/projects/claude-code.json)

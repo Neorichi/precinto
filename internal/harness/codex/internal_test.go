@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/config"
 )
 
 func TestParseTOMLForms(t *testing.T) {

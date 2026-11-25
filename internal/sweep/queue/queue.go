@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Version is the request format.

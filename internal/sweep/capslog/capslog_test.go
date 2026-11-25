@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
 )
 
 var t0 = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)

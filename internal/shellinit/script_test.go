@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/shellinit"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/shellinit"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 const goldenExe = "/opt/precinto/bin/precinto"

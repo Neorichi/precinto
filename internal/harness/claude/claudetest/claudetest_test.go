@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/claude/claudetest"
+	"github.com/Neorichi/precinto/internal/harness/claude/claudetest"
 )
 
 const (

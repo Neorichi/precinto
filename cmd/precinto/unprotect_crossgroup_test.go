@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/agent/agenttest"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/vault"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/agent/agenttest"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // D146 (U6-1), with the real agent over ipc: `precinto unprotect DIR` in a

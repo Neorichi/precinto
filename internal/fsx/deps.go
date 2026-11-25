@@ -5,5 +5,5 @@ package fsx
 import (
 	_ "golang.org/x/sys/unix"
 
-	_ "github.com/precinto/precinto/internal/fsx/failpoint"
+	_ "github.com/Neorichi/precinto/internal/fsx/failpoint"
 )

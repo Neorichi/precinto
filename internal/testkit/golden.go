@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Golden files are rewritten when the test binary runs with -update

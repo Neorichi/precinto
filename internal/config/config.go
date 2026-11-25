@@ -18,8 +18,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // SchemaVersion is the config.toml format version.

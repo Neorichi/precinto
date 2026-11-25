@@ -3,8 +3,8 @@ package wrapper
 import (
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Seams: package-level indirections that tests replace (export_test.go) so

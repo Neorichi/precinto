@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // The subcommands of SPEC §16.1 with their usage lines, as the binary

@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // note writes a Markdown file in the root (mtime outside the quiet

@@ -10,7 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // metaLockWait bounds how long a vault.toml rewrite waits for another one.

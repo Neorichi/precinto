@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // ErrWindowsProgram marks a harness executable precinto refuses under WSL

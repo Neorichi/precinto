@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 func TestStagingSameDevice(t *testing.T) {

@@ -3,9 +3,9 @@ package sweep
 import (
 	"context"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // A run decides from the folders' state as it is when it seals, not as it

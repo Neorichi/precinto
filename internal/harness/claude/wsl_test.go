@@ -8,10 +8,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // onDrives is a stand-in for paths.CheckDrive under WSL: the listed

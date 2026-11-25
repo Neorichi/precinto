@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // interpreters are the executables whose first argument names the program

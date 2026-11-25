@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // D139 (S6-5, SEC-45): a hook runs in an agent context whose environment

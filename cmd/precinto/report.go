@@ -7,13 +7,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Report helpers. They read Report.Units directly (content-free unit

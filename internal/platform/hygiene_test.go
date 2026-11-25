@@ -3,7 +3,7 @@ package platform_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // TestFixtureHygiene: the console-tool fixtures are synthetic (no real

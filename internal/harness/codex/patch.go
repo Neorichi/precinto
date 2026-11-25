@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // apply_patch headers that name a file the patch writes (HA25).

@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // D136: RelInFolder cuts a path at the folder whichever spelling it uses

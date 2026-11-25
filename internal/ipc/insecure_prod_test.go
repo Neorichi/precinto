@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // TestInsecureIgnoredInProductionBuilds: DialOptions.Insecure has no

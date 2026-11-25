@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // weakened is config.toml after a one-shot writer weakened it: idle_soft

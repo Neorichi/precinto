@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // ctlConn is the wrapper's request connection to the daemon (register,

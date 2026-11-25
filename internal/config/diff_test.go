@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/config"
 )
 
 func dur(d time.Duration) config.Duration { return config.Duration(d) }

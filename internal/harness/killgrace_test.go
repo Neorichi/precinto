@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // SPEC §12.7: max(8 s, SessionEnd budget + 6 s), capped at 70 s.

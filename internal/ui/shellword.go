@@ -3,7 +3,7 @@ package ui
 import (
 	"strings"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // ShellWord renders the path p as one shell word for a command a message

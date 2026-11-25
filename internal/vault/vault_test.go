@@ -19,9 +19,9 @@ import (
 	"filippo.io/age"
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/vault"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 // pass is a test passphrase that satisfies the D3 policy.

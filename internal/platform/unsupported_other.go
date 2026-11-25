@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Unsupported platforms (D34): every OS-specific function returns

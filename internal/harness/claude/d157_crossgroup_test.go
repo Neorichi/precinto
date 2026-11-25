@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // d157Child marks the helper run of this test binary: a process started

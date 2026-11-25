@@ -4,9 +4,9 @@ import (
 	"errors"
 	"path/filepath"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Windows through WSL 2 (D155, D156). These checks find nothing outside

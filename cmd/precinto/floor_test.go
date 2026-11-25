@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // TestFloorPolicy (D76, D55, D68): the floor every seal and restore keeps

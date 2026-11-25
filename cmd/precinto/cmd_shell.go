@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/shellinit"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/shellinit"
 )
 
 func cmdShellInit(a *app, args []string) int {

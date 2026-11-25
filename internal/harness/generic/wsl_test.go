@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/generic"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/generic"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // D156: under WSL an experimental harness that would run as a Windows

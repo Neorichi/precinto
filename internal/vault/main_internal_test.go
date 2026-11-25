@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // The fake age plugin (testdata/fakeplugin) is built once per test binary

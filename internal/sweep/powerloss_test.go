@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx/fsxtest"
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/fsx/fsxtest"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // imagesPerRow bounds the images each row checks (strict, full and random

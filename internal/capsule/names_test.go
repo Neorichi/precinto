@@ -3,7 +3,7 @@ package capsule_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/capsule"
 )
 
 // Test vectors for D45 (also listed in docs/TESTPLAN.md §8); computed

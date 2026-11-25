@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Additional coverage of the scaffold-implemented message helpers (their

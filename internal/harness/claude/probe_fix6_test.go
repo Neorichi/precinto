@@ -6,10 +6,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // D136 (H6-3): the project unit of a folder whose name holds an accent is

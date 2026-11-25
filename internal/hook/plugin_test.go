@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/testkit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // repo is the repository root seen from internal/hook.

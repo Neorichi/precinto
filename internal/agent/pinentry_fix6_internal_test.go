@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 // D139 (S6-5, SEC-45): the pinentry gets a dialog endpoint only in the form

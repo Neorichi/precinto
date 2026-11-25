@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // integrate claude-code: version check (≥ 2.1.295, D22), <base>/bin/precinto

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
 )
 
 // unlockedRoot is Env.Grants with the test folder unlocked.

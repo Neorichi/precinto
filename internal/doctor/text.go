@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Message rules (SPEC §16.3): one line; content-free (paths, counts, names

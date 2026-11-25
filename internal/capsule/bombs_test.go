@@ -20,7 +20,7 @@ import (
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/precinto/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/capsule"
 )
 
 // craft builds a capsule by hand: age(magic || zstd(whatever build writes)).

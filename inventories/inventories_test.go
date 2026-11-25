@@ -7,9 +7,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/inventories"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/inventories"
 )
 
 // Every embedded inventory decodes strictly into harness.Inventory (no key

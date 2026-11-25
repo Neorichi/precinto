@@ -3,7 +3,7 @@ package wrapper_test
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 // TestHumanInputFilterTable is the UX15/D37 filter: what terminals send on

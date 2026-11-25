@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // freshInstall is a td option: `precinto init` ran (the global vault

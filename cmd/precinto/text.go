@@ -3,7 +3,7 @@ package main
 import (
 	"sort"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // User-facing text. Every message the catalog of internal/ui defines is

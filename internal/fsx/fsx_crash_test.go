@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // Crash-injection rows for fsx (TESTPLAN §4 registry: fsx.write, fsx.fsync,

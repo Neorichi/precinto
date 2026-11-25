@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/agent"
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/agent"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 var epoch = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 // withBin points the fixture's claude at a stub executable.

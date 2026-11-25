@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Mirrors of the Codex 0.154 output schemas

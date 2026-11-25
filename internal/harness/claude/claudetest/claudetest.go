@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/harness/claude"
 )
 
 // Layout is a fake Claude installation.

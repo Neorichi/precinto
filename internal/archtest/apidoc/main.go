@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/archtest"
+	"github.com/Neorichi/precinto/internal/archtest"
 )
 
 // Markers delimiting the generated part of docs/API.md.

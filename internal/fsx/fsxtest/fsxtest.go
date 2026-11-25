@@ -35,8 +35,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // Bounds on what a recording keeps in memory.

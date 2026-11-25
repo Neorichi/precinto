@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Compile-time checks of the seams (docs/API.md §4).

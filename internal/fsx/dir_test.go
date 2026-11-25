@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 func TestOpenBaseRules(t *testing.T) {

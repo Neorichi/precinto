@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/precinto/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/doctor"
 )
 
 // Code-signature fixtures: minimal Mach-O files with an LC_CODE_SIGNATURE

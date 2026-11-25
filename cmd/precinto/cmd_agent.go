@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/precinto/precinto/internal/agent"
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/agent"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/ipc"
 )
 
 // shutdownWait bounds how long `agent --stop` and `agent --restart` wait

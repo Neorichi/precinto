@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // D156: inside WSL logind does not see the Windows desktop: the screen

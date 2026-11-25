@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // folderStatus is the part of `precinto status --json` (schema v1, SPEC

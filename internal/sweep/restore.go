@@ -16,11 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/ledger"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/ledger"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
 )
 
 // Restore restores units unit-atomically through staging (SPEC §11.5): for

@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // Errors of HooksTrusted for the states that are known but not "trusted".

@@ -3,7 +3,7 @@ package archtest
 import "strings"
 
 // Module is the module path.
-const Module = "github.com/precinto/precinto"
+const Module = "github.com/Neorichi/precinto"
 
 // ImportPath returns the import path of the contract path rel ("." is the
 // module root package).

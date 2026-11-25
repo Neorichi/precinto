@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 func TestNormalizeTags(t *testing.T) {
@@ -75,7 +75,7 @@ func TestModuleRoot(t *testing.T) {
 		t.Errorf("module root %s: %v", root, err)
 	}
 	for in, want := range map[string]string{
-		"module github.com/precinto/precinto\n\ngo 1.26.0\n": module,
+		"module github.com/Neorichi/precinto\n\ngo 1.26.0\n": module,
 		"// c\nmodule \"example.test/x\" // why\n":           "example.test/x",
 		"modules x\n": "",
 		"go 1.26\n":   "",

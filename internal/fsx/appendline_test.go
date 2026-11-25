@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // TestDirAppendLine covers the handle-relative append (CC-05): creation

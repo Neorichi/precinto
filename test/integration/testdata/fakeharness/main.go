@@ -43,7 +43,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // runLimit bounds a run-mode child.

@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // defaultQuiet is the stability window used when an Engine has none

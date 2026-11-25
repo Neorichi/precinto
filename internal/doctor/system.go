@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/config"
 )
 
 // System checks: config.toml, disk encryption, the binary's hardening, the

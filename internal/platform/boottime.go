@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // The earliest boot time of this boot (D157, amending D66). On linux a

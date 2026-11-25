@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 func feed(m *wrapper.Modes, parts ...string) {

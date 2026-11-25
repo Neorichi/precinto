@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // settleQuietScans is how many process-table scans in a row must find no

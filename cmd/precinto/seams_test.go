@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/sweep"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/sweep"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // TestMarkerMirrorsCatalog keeps the marker written by internal/sweep and

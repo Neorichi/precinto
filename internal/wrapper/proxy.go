@@ -14,8 +14,8 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/term"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Errors of the proxy.

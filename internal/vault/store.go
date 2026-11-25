@@ -18,7 +18,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 const (

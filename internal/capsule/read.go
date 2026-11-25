@@ -18,7 +18,7 @@ import (
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // fileKeySize is the size of an age file key.

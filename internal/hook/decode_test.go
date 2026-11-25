@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/hook"
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/hook"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 const (

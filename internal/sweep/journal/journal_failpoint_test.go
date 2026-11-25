@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
-	"github.com/precinto/precinto/internal/sweep/journal"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/sweep/journal"
 )
 
 // TestAdvanceFailureKeepsThePreviousMilestone: a phase is persisted only

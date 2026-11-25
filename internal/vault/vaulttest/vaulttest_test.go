@@ -8,8 +8,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/vault"
-	"github.com/precinto/precinto/internal/vault/vaulttest"
+	"github.com/Neorichi/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault/vaulttest"
 )
 
 func TestFixture(t *testing.T) {

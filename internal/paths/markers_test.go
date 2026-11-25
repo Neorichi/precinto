@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 func TestAgentMarkers(t *testing.T) {

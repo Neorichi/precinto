@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 const (

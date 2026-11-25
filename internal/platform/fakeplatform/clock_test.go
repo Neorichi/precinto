@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 var epoch = time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)

@@ -15,7 +15,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // stanzaRecorder is an age.Identity that unwraps nothing and records the

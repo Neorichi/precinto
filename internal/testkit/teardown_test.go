@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // D129: StopInstallation ends the agent of a test's installation with

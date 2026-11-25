@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // UX-09, SEC-43: a config.toml that does not load never makes `status

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // table is a minimal fake process table for the scaffold-implemented walks

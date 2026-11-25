@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 func TestErrnoAtNthHit(t *testing.T) {

@@ -1,6 +1,6 @@
 package live
 
-import "github.com/precinto/precinto/internal/fsx"
+import "github.com/Neorichi/precinto/internal/fsx"
 
 // SetProbeHeld replaces how lease files are probed (fsx.ProbeHeld): ENOTSUP
 // and swapped-file answers. Tests that use it must not run in parallel.

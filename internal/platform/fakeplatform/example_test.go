@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/platform/fakeplatform"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform/fakeplatform"
 )
 
 // A system sleep moves the wall clock but not the monotonic one, which is

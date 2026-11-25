@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
-	"github.com/precinto/precinto/internal/ui"
-	"github.com/precinto/precinto/internal/wrapper"
+	"github.com/Neorichi/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/wrapper"
 )
 
 // proxyRig runs the scripted child on a PTY behind a test terminal.

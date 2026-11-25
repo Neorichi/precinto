@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // Every process these tests signal is a child the test started itself

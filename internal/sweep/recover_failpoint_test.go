@@ -5,7 +5,7 @@ package sweep
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // SEAL-7 in-process: the commit fails right after the capsule-log append

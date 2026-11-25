@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/ipc"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/ipc"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // D145 (SEC-48, S6-1): a pin whose only MAC is a well-formed "global"

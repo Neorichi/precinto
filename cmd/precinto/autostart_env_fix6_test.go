@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // D139 (S6-5, SEC-45; CROSS from group a): a daemon the CLI autostarts

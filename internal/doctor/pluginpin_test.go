@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // plugin-pin (D75): a pinned plugin that changed fails and names factor

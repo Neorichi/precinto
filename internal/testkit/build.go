@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // BuildBinary builds into <TMPDIR>/precinto-testbin-<random>/<tags>/, one
@@ -25,7 +25,7 @@ import (
 // same uid whose lock it can take. A directory is renamed to its final name
 // only once its lock is held, so a sweeper never sees one half made.
 const (
-	module        = "github.com/precinto/precinto"
+	module        = "github.com/Neorichi/precinto"
 	binDirPrefix  = "precinto-testbin-"
 	binTempPrefix = ".precinto-testbin-new-"
 	binLockName   = "owner.lock"

@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/claude"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/claude"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // Claude Code checks (HOOKS-IO §2, §6; SPEC §7.1; D14, D22, D32, D56).

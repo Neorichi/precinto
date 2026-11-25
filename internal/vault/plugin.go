@@ -20,7 +20,7 @@ import (
 	"filippo.io/age/plugin"
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/fsx"
 )
 
 // Plugin-backed factors (se and plugin) run their age plugin through this

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto"
+	"github.com/Neorichi/precinto"
 )
 
 // repoFiles lists the files precinto ships as plugins, at their repository

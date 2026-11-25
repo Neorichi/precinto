@@ -17,8 +17,8 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/precinto/precinto/internal/shellinit"
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/shellinit"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // hostileName is a folder name made of everything a shell could take for

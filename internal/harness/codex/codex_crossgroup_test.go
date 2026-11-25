@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/harness/codex/codextest"
-	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/harness/codex/codextest"
+	"github.com/Neorichi/precinto/internal/live"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // A process holding a rollout open in the per-root home keeps the home

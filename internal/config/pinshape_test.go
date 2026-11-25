@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/config"
 )
 
 // D91: the forged shapes of a decodable pin; D145: settings that name

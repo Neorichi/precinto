@@ -3,8 +3,8 @@ package shellinit
 import (
 	"context"
 
-	"github.com/precinto/precinto/internal/config"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/config"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Shells.

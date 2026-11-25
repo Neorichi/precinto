@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/shellinit"
+	"github.com/Neorichi/precinto/internal/shellinit"
 )
 
 func TestShellInitScript(t *testing.T) {

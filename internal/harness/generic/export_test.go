@@ -4,8 +4,8 @@ package generic
 // only; the external tests in package generic_test use it).
 
 import (
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // StandInForWSL makes the WSL program check (D156) answer with program

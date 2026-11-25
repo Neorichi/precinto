@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/harness"
 )
 
 func TestUnitKeyForMatchesSpecParts(t *testing.T) {

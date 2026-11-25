@@ -1,6 +1,6 @@
 package doctor
 
-import "github.com/precinto/precinto/internal/harness"
+import "github.com/Neorichi/precinto/internal/harness"
 
 // check is one entry of the registry. Run evaluates the entries in this
 // order, Codes lists their codes in it, and findings are reported in it.

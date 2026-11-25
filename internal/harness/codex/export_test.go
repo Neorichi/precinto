@@ -3,8 +3,8 @@ package codex
 import (
 	"testing"
 
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // GoldenTrust exposes the pinned Codex 0.154 trust hashes of precinto's

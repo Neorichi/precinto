@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // Host markers in the hook environment (HOOKS-IO §0.7, D56, D92). Codex

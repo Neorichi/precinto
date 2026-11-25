@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // sampleFindings is a fixed list covering every severity, a fix and an

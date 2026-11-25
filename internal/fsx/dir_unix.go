@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/precinto/precinto/internal/fsx/failpoint"
+	"github.com/Neorichi/precinto/internal/fsx/failpoint"
 )
 
 // Directory handles are opened read-only, as directories, never through a

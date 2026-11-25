@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // sealedNoteWithoutWriter seals a note, then forgets its writer: the

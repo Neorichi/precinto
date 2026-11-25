@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/sweep/queue"
+	"github.com/Neorichi/precinto/internal/sweep/queue"
 )
 
 // CONC-1 (R19, FX-G4-17): ten SessionEnd sealers (seal --queue), three

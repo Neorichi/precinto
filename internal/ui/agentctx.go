@@ -6,8 +6,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/precinto/precinto/internal/paths"
-	"github.com/precinto/precinto/internal/platform"
+	"github.com/Neorichi/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/platform"
 )
 
 // maxAncestors bounds the ancestry walk of AgentContext.

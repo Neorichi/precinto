@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/doctor"
-	"github.com/precinto/precinto/internal/harness/codex"
+	"github.com/Neorichi/precinto/internal/doctor"
+	"github.com/Neorichi/precinto/internal/harness/codex"
 )
 
 // D99, D98 (M2, M3): doctor names why Codex runs none of precinto's hooks.

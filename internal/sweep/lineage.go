@@ -1,10 +1,10 @@
 package sweep
 
 import (
-	"github.com/precinto/precinto/internal/capsule"
-	"github.com/precinto/precinto/internal/fsx"
-	"github.com/precinto/precinto/internal/harness"
-	"github.com/precinto/precinto/internal/sweep/capslog"
+	"github.com/Neorichi/precinto/internal/capsule"
+	"github.com/Neorichi/precinto/internal/fsx"
+	"github.com/Neorichi/precinto/internal/harness"
+	"github.com/Neorichi/precinto/internal/sweep/capslog"
 )
 
 // fileClass is how one plaintext file relates to its receipt (SPEC §10.4).

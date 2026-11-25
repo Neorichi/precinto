@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 // moduleRoot walks up from the package directory (where go test runs) to
@@ -19,7 +19,7 @@ func moduleRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for {
-		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && strings.Contains(string(b), "module github.com/precinto/precinto\n") {
+		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && strings.Contains(string(b), "module github.com/Neorichi/precinto\n") {
 			return dir
 		}
 		parent := filepath.Dir(dir)

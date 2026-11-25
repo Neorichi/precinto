@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // waitTimeout bounds every wait of these tests, so a broken prompt fails

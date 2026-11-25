@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/harness/codex"
-	"github.com/precinto/precinto/internal/paths"
+	"github.com/Neorichi/precinto/internal/harness/codex"
+	"github.com/Neorichi/precinto/internal/paths"
 )
 
 // recordHomes returns the user homes the per-root home's auth record has

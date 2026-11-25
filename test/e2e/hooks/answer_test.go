@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/precinto/precinto/internal/ui"
+	"github.com/Neorichi/precinto/internal/ui"
 )
 
 // TestAnswererRepliesToCatalogPrompts runs without PRECINTO_E2E: a fake CLI

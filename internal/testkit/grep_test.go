@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/precinto/precinto/internal/testkit"
+	"github.com/Neorichi/precinto/internal/testkit"
 )
 
 func TestMarker(t *testing.T) {

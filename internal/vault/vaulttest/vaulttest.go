@@ -13,7 +13,7 @@ import (
 	"filippo.io/age"
 	"github.com/awnumar/memguard"
 
-	"github.com/precinto/precinto/internal/vault"
+	"github.com/Neorichi/precinto/internal/vault"
 )
 
 // Fixture is an initialized store with one root vault.
