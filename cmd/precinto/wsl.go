@@ -26,7 +26,8 @@ import (
 // distribution runs under WSL 1, which emulates linux in the Windows
 // kernel (no real /proc for the holders check, no pidfd, Windows writers
 // to every file): it prints E.wsl1 with the conversion command. init,
-// protect, unlock, run (and resume), integrate and the agent call it.
+// protect, unlock, run (and resume), integrate, the agent, and seal and
+// sweep, which delete plaintext after a liveness check, call it.
 func (a *app) refuseWSL1() bool {
 	if a.sys.wsl().Version != 1 {
 		return false

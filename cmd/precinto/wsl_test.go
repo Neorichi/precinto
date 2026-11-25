@@ -23,7 +23,9 @@ var (
 )
 
 // D156: under WSL 1 every command that would set up or rely on protection
-// refuses, naming the conversion command; locking and stopping still work.
+// refuses, naming the conversion command, and so do seal and sweep, which
+// delete plaintext after a liveness check WSL 1's emulated /proc cannot
+// back; locking and stopping still work.
 func TestWSL1Refused(t *testing.T) {
 	for _, args := range [][]string{
 		{"init"},
@@ -33,6 +35,10 @@ func TestWSL1Refused(t *testing.T) {
 		{"resume", "--last"},
 		{"integrate", "claude-code"},
 		{"agent", "--foreground"},
+		{"seal"},
+		{"seal", "--queue"},
+		{"sweep"},
+		{"sweep", "--dry-run"},
 	} {
 		e := newEnv(t)
 		e.wsl = wsl1

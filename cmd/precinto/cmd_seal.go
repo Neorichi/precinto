@@ -51,6 +51,12 @@ func cmdSeal(a *app, args []string) int {
 	if *queued && (*session != "" || *dormant != "" || *rootDir != "") {
 		return a.usageFail(f, "--queue drains the queue; it takes no other selection")
 	}
+	// D155: a seal deletes plaintext after a liveness check that reads
+	// /proc, which WSL 1 only emulates, and Windows programs write every
+	// file there; the detached --queue worker refuses too.
+	if a.refuseWSL1() {
+		return exitError
+	}
 	if err := a.sys.harden(); err != nil {
 		return a.fail("seal", err)
 	}
@@ -179,6 +185,9 @@ func cmdSweep(a *app, args []string) int {
 	}
 	if len(pos) > 0 {
 		return a.usageFail(f, "unexpected argument "+pos[0])
+	}
+	if a.refuseWSL1() { // D155: as seal
+		return exitError
 	}
 	if err := a.sys.harden(); err != nil {
 		return a.fail("sweep", err)
