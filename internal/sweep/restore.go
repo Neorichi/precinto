@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -907,9 +906,6 @@ func firstBase(bases map[capsule.BaseID]string) string {
 	}
 	return ""
 }
-
-// errRolledBack marks a unit rolled back by an abort before staging.
-var errRolledBack = errors.New("sweep: restore rolled back before staging")
 
 // Results of an optional unit that is live at restore (D132): in use
 // elsewhere with its plaintext on disk (left as it is), in use elsewhere

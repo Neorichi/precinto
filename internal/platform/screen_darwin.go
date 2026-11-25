@@ -12,7 +12,6 @@ import (
 )
 
 // darwin screen-lock, HID-idle and UI-context detection are implemented here by G2.
-const screenImpl = "darwin"
 
 // ioregPath is the fixed system location of ioreg (never looked up in PATH).
 const ioregPath = "/usr/sbin/ioreg"

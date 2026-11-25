@@ -59,13 +59,14 @@ jobs:
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         timeout-minutes: 10
         run: sh .github/scripts/install-shells.sh
-      # gofmt, go vet for {default, testing+failpoints, testing+crossgroup}
-      # × {darwin, linux}, internal/archtest, apidoc -check, staticcheck,
-      # govulncheck, shellcheck of the shims.
+      # gofmt, go vet for {default, testing+failpoints, testing+crossgroup,
+      # testing+failpoints+crossgroup} × {darwin, linux}, internal/archtest,
+      # apidoc -check, staticcheck's build matrix, govulncheck, shellcheck
+      # of the shims; -k runs every gate even when one fails.
       - name: make lint
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         timeout-minutes: 20
-        run: make lint
+        run: make -k lint
       - name: build
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         timeout-minutes: 15

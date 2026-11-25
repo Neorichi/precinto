@@ -172,9 +172,6 @@ const (
 // line prints a catalog message on stderr.
 func (a *app) line(id ui.MsgID, v ui.Vars) { ui.Writer{W: a.err}.Line(id, v) }
 
-// lineOut prints a catalog message on stdout.
-func (a *app) lineOut(id ui.MsgID, v ui.Vars) { ui.Writer{W: a.out}.Line(id, v) }
-
 func sortedStrings(s []string) []string {
 	out := append([]string(nil), s...)
 	sort.Strings(out)

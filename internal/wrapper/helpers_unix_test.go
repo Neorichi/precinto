@@ -620,13 +620,6 @@ func (s *fakeServer) setState(root, reason string) {
 	}
 }
 
-// setFactors sets the factor kinds the initial events of root carry.
-func (s *fakeServer) setFactors(root string, kinds ...string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.factors[root] = kinds
-}
-
 // initial returns the events a subscription to roots starts with (D71).
 func (s *fakeServer) initial(roots []string) []ipc.Event {
 	s.mu.Lock()
@@ -862,7 +855,6 @@ type fakeBackend struct {
 	sealArchives bool
 	launched     platform.ProcID
 	sealed       platform.ProcID
-	finishCode   atomic.Int64
 }
 
 var _ wrapper.Backend = (*fakeBackend)(nil)

@@ -34,10 +34,8 @@ type winsize struct {
 }
 
 type waitResult struct {
-	exited   bool
-	stopped  bool
-	code     int
-	stopSign syscall.Signal
+	stopped bool
+	code    int
 }
 
 func fdOf(*os.File) (int, error)                    { return -1, errUnsupported }

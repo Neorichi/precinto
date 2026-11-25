@@ -18,7 +18,6 @@ import (
 
 // darwin process identity, process table, open-file holders, waits and signals
 // are implemented here by G2 (see doc.go for the mechanisms).
-const procImpl = "darwin"
 
 // ioctlReadTermios is tcgetattr's request (isTerminal).
 const ioctlReadTermios = unix.TIOCGETA
@@ -65,6 +64,7 @@ func procInfo(call, pid, flavor int, arg uint64, buf []byte) (int, error) {
 	if len(buf) == 0 {
 		return 0, syscall.EINVAL
 	}
+	//lint:ignore SA1019 x/sys/unix wraps no proc_info(2) call this package needs
 	r1, _, e := unix.Syscall6(unix.SYS_PROC_INFO, uintptr(call), uintptr(pid), uintptr(flavor),
 		uintptr(arg), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if e != 0 {

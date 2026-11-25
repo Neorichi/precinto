@@ -18,7 +18,6 @@ import (
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/harness/claude/claudetest"
 	"github.com/precinto/precinto/internal/live"
-	"github.com/precinto/precinto/internal/sweep/capslog"
 	"github.com/precinto/precinto/internal/testkit"
 )
 
@@ -334,14 +333,6 @@ func TestMergeHistoryWhileAppending(t *testing.T) {
 
 func decodeB64(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
-}
-
-// historyEntries is a test helper listing the log entries of a key.
-func historyEntries(t *testing.T, l *capslog.Log, key string) []capslog.Entry {
-	t.Helper()
-	en, err := l.Unit(key)
-	mustNoErr(t, err)
-	return en
 }
 
 // SPEC §7.1.1: stale shell snapshots (older than a day, not open) are

@@ -16,7 +16,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.2.
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN     := bin/precinto
 
-.PHONY: all build build-testing build-linux build-windows test test-race test-crash test-e2e test-integration crossgroup crossgroup-crash vet vet-crossgroup vet-windows lint fmt fmt-check arch api-doc api-check hygiene codex-plugin-check clean ci
+.PHONY: all build build-testing build-linux build-windows test test-race test-crash test-e2e test-integration crossgroup crossgroup-crash vet vet-crossgroup vet-windows lint linters fmt fmt-check arch api-doc api-check hygiene codex-plugin-check clean ci
 
 all: build
 
@@ -96,16 +96,36 @@ vet-windows:
 	GOOS=windows $(GO) vet -tags testing,failpoints ./...
 	GOOS=windows $(GO) vet -tags testing,crossgroup ./...
 
-## lint: formatting, vet, architecture contract, API doc drift, optional linters
-lint: fmt-check vet vet-crossgroup arch api-check
-	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; else echo "lint: staticcheck not installed, skipped"; fi
-	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "lint: govulncheck not installed, skipped"; fi
-	@if command -v shellcheck >/dev/null 2>&1; then \
+## lint: formatting, vet, architecture contract, API doc drift, linters;
+## `make -k lint` runs every one of them even when an earlier one fails
+lint: fmt-check vet vet-crossgroup arch api-check linters
+
+# STATICCHECK_MATRIX: the builds staticcheck checks in one run, {darwin,
+# linux, windows} × {default, testing+failpoints+crossgroup}: -matrix
+# reports code as unused only when no build uses it (a helper of tagged
+# tests, a darwin-only function in a shared file).
+STATICCHECK_MATRIX := 'darwin: GOOS=darwin' 'darwintests: GOOS=darwin -tags=testing,failpoints,crossgroup' \
+	'linux: GOOS=linux' 'linuxtests: GOOS=linux -tags=testing,failpoints,crossgroup' \
+	'windows: GOOS=windows' 'windowstests: GOOS=windows -tags=testing,failpoints,crossgroup'
+
+## linters: staticcheck (STATICCHECK_MATRIX), govulncheck and shellcheck of
+## the hook shims; each runs even when another fails, and the target fails
+## when any did. A missing staticcheck or govulncheck is skipped; a missing
+## shellcheck fails in CI (TESTPLAN §10).
+linters:
+	@rc=0; \
+	if command -v staticcheck >/dev/null 2>&1; then \
+		printf '%s\n' $(STATICCHECK_MATRIX) | staticcheck -matrix ./... || rc=1; \
+	else echo "lint: staticcheck not installed, skipped"; fi; \
+	if command -v govulncheck >/dev/null 2>&1; then govulncheck ./... || rc=1; \
+	else echo "lint: govulncheck not installed, skipped"; fi; \
+	if command -v shellcheck >/dev/null 2>&1; then \
 		for f in plugin/scripts/precinto-hook plugins/codex/scripts/precinto-hook; do \
-			if [ -f "$$f" ]; then shellcheck -s sh "$$f" || exit 1; fi; \
+			if [ -f "$$f" ]; then shellcheck -s sh "$$f" || rc=1; fi; \
 		done; \
-	elif [ -n "$$CI" ]; then echo "lint: shellcheck is required in CI (TESTPLAN §10)"; exit 1; \
-	else echo "lint: shellcheck not installed, skipped"; fi
+	elif [ -n "$$CI" ]; then echo "lint: shellcheck is required in CI (TESTPLAN §10)"; rc=1; \
+	else echo "lint: shellcheck not installed, skipped"; fi; \
+	exit $$rc
 
 ## fmt: gofmt -w
 fmt:

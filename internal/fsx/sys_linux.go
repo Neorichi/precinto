@@ -13,7 +13,6 @@ import (
 // linux implementation notes (G1): renameat2(RENAME_NOREPLACE) for NoReplace,
 // openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) when available, fsync for
 // FullSync.
-const osName = "linux"
 
 // privateGroups enables the D67 user-private group exception (upg.go):
 // with umask 002 every directory a harness creates is 0775 and owned by the

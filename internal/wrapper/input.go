@@ -241,11 +241,6 @@ func (e *lineEditor) erase(count int) {
 	}
 }
 
-func (e *lineEditor) wipe() {
-	clear(e.buf)
-	e.n = 0
-}
-
 // humanInput implements HumanInput.
 func humanInput(b []byte) (human, enter bool) {
 	return newInputFilter().feed(b)

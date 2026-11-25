@@ -238,17 +238,17 @@ func TestFolderEntryHookOnATerminal(t *testing.T) {
 			// Enter unlocks the exact folder.
 			m := len(sh.text())
 			sh.send("cd -- \"$HOSTILE_DIR\"\r")
-			m = sh.expect(res.Message+" ", m)
+			sh.expect(res.Message+" ", m)
 			time.Sleep(200 * time.Millisecond) // the key read has started
 			sh.send("\r")
-			calls := waitCalls(t, log, 3)
+			waitCalls(t, log, 3)
 
 			// Any other key skips; the folder and epoch were remembered.
 			sh.send("cd ..\r")
 			waitCalls(t, log, 4)
 			m = len(sh.text())
 			sh.send("cd -- \"$HOSTILE_DIR\"\r")
-			m = sh.expect(res.Message+" ", m)
+			sh.expect(res.Message+" ", m)
 			time.Sleep(200 * time.Millisecond)
 			sh.send("n")
 			waitCalls(t, log, 5)
@@ -268,7 +268,7 @@ func TestFolderEntryHookOnATerminal(t *testing.T) {
 			sh.send("exit\r")
 			sh.wait()
 
-			calls = readCalls(t, log)
+			calls := readCalls(t, log)
 			hook := func(pwd, prev, skip string, first bool) []string {
 				c := []string{"shell-hook", "--shell", r.shell, "--pwd", pwd, "--prev", prev, "--skip", skip}
 				if first {

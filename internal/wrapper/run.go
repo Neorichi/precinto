@@ -43,15 +43,6 @@ func newAbort() *abortCh { return &abortCh{ch: make(chan struct{})} }
 
 func (a *abortCh) fire() { a.once.Do(func() { close(a.ch) }) }
 
-func (a *abortCh) fired() bool {
-	select {
-	case <-a.ch:
-		return true
-	default:
-		return false
-	}
-}
-
 // runner is one `precinto run`.
 type runner struct {
 	o      Options

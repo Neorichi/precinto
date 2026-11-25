@@ -91,7 +91,7 @@ func cmdSeal(a *app, args []string) int {
 	switch {
 	case *queued:
 		o.Reason, o.Quiet = "session-end", true
-		rep, err = eng.DrainQueue(ctx, o)
+		_, err = eng.DrainQueue(ctx, o)
 		if errors.Is(err, sweep.ErrBusy) {
 			return exitOK // the sweep-lock holder drains it (SPEC §10.6)
 		}

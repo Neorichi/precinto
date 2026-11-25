@@ -213,7 +213,7 @@ func TestNewRealClock(t *testing.T) {
 
 	// Advance: both readings move ahead of the real clock by d.
 	c.Advance(2 * time.Minute)
-	if d := c.Now().Sub(time.Now()); d < 2*time.Minute-time.Second || d > 2*time.Minute+time.Second {
+	if d := time.Until(c.Now()); d < 2*time.Minute-time.Second || d > 2*time.Minute+time.Second {
 		t.Errorf("after Advance(2m) Now is %v ahead of the real clock", d)
 	}
 	if m := c.Mono(); m < 2*time.Minute {
@@ -222,7 +222,7 @@ func TestNewRealClock(t *testing.T) {
 	// Sleep: the wall moves, the monotonic reading does not.
 	m := c.Mono()
 	c.Sleep(time.Hour)
-	if d := c.Now().Sub(time.Now()); d < time.Hour+2*time.Minute-time.Second {
+	if d := time.Until(c.Now()); d < time.Hour+2*time.Minute-time.Second {
 		t.Errorf("after Sleep(1h) Now is only %v ahead", d)
 	}
 	if m2 := c.Mono(); m2-m > time.Second {
@@ -230,12 +230,12 @@ func TestNewRealClock(t *testing.T) {
 	}
 	c.Advance(-time.Hour)
 	c.Sleep(-time.Hour)
-	if d := c.Now().Sub(time.Now()); d < time.Hour {
+	if d := time.Until(c.Now()); d < time.Hour {
 		t.Errorf("negative Advance/Sleep moved the clock back: %v ahead", d)
 	}
 	// StepWall may move it behind the real clock (an NTP step back).
 	c.StepWall(-3 * time.Hour)
-	if d := time.Now().Sub(c.Now()); d < 58*time.Minute-time.Second {
+	if d := time.Since(c.Now()); d < 58*time.Minute-time.Second {
 		t.Errorf("after StepWall(-3h) Now is %v behind, want about 58m", d)
 	}
 }

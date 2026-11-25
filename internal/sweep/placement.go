@@ -2,7 +2,6 @@ package sweep
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -318,6 +317,3 @@ func restorePerm(mode uint32) fs.FileMode {
 
 // errAbortLive aborts a unit that became live during placement.
 var errAbortLive = fmt.Errorf("%w: unit became live during restore", ErrLive)
-
-// errPlaceRetry is returned when a target changed while it was evaluated.
-var errPlaceRetry = errors.New("sweep: target changed while placing")

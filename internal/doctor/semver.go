@@ -75,7 +75,7 @@ func inRange(v version, r string) (in, ok bool) {
 	in = true
 	preAllowed := v.pre == ""
 	for _, f := range fields {
-		op := strings.TrimRight(f, "0123456789.-+abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZv")
+		op := strings.TrimRight(f, "0123456789.-+abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 		bound, okb := parseVersion(f[len(op):])
 		if !okb {
 			return false, false

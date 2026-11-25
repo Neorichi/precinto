@@ -5,7 +5,6 @@ package platform
 import "golang.org/x/sys/unix"
 
 // darwin peer credentials and executable identity are implemented here by G2.
-const peerImpl = "darwin"
 
 // sysPeerCred returns the peer's uid (LOCAL_PEERCRED, the credentials at
 // connect time) and pid (LOCAL_PEERPID) of a connected Unix socket.

@@ -11,7 +11,6 @@ import (
 
 // darwin implementation notes (G1): renameatx_np(RENAME_EXCL) for NoReplace,
 // fcntl(F_FULLFSYNC) for FullSync, O_NOFOLLOW_ANY where available.
-const osName = "darwin"
 
 // privateGroups keeps the D67 user-private group exception (upg.go) off:
 // every darwin user's primary group is the shared "staff", so a

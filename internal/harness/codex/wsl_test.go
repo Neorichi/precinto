@@ -33,7 +33,7 @@ func TestPrepareHomeRefusesWindowsDrives(t *testing.T) {
 	user, home := seedFixture(t)
 	ctx := context.Background()
 	restore := codex.StandInForWSL(onDrives(user), noProgram)
-	defer restore()
+	defer func() { restore() }() // the last stand-in's
 	if err := codex.PrepareHome(ctx, codex.Seed{UserHome: user, RootHome: home}); !errors.Is(err, paths.ErrWindowsDrive) {
 		t.Fatalf("user home on a drive: %v", err)
 	}

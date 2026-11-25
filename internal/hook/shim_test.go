@@ -213,6 +213,7 @@ func goPanicBinary(t *testing.T) string {
 	t.Helper()
 	goroot := os.Getenv("GOROOT")
 	if goroot == "" {
+		//lint:ignore SA1019 the test binary runs where it was built, so its GOROOT is the toolchain's
 		goroot = runtime.GOROOT()
 	}
 	out := filepath.Join(t.TempDir(), "precinto")

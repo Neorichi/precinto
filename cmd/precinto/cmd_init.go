@@ -460,10 +460,12 @@ func (a *app) seKeygen(ctx context.Context) (vault.FactorSpec, error) {
 		Timeout: 2 * time.Minute,
 	})
 	if err != nil {
+		//lint:ignore ST1005 textNoSEPlugin is a sentence printed as it is
 		return vault.FactorSpec{}, fmt.Errorf(textNoSEPlugin, "keygen failed")
 	}
 	recipient, stub := parseSEKeygen(outb)
 	if recipient == "" || stub == "" {
+		//lint:ignore ST1005 textNoSEPlugin is a sentence printed as it is
 		return vault.FactorSpec{}, fmt.Errorf(textNoSEPlugin, "unexpected output")
 	}
 	return vault.FactorSpec{

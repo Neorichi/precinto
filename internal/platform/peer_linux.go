@@ -5,7 +5,6 @@ package platform
 import "golang.org/x/sys/unix"
 
 // linux peer credentials and executable identity are implemented here by G2.
-const peerImpl = "linux"
 
 // sysPeerCred returns the peer's uid and pid of a connected Unix socket
 // (SO_PEERCRED: the credentials at connect time).

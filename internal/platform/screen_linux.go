@@ -13,7 +13,6 @@ import (
 )
 
 // linux screen-lock, HID-idle and UI-context detection are implemented here by G2.
-const screenImpl = "linux"
 
 // loginctlPath returns the first system loginctl, or "".
 func loginctlPath() string {

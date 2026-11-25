@@ -11,7 +11,6 @@ import (
 
 // Other platforms are unsupported in v0.1 (D34); the package still compiles so
 // that `go vet` works everywhere.
-const osName = "unsupported"
 
 const oNonblock = 0 // oNoFollow: nofollow_windows.go, nofollow_other.go
 
