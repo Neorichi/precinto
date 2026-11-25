@@ -55,6 +55,11 @@ type deps struct {
 	// VolumeRoot returns the mount point of the file system holding path,
 	// as fsx chooses <volume>/.precinto-staging ("" when unknown).
 	VolumeRoot func(path string) string
+	// WSL is what precinto knows of the WSL instance it runs in (zero
+	// outside WSL), and CheckDrive refuses a location on a Windows drive
+	// under WSL (paths.DetectWSL, paths.CheckDrive; D155, D156).
+	WSL        func() paths.WSL
+	CheckDrive func(p string) error
 	Executable func() (string, error)
 	// SystemBins are directories searched for harness executables after
 	// PATH and the per-user install locations.
@@ -119,6 +124,8 @@ func defaultDeps(o Options) *deps {
 		SpotlightIndexed: platform.SpotlightIndexed,
 		BackupExcluded:   platform.BackupExcluded,
 		VolumeRoot:       volumeRoot,
+		WSL:              paths.DetectWSL,
+		CheckDrive:       paths.CheckDrive,
 		Executable:       os.Executable,
 		SystemBins:       []string{"/opt/homebrew/bin", "/usr/local/bin"},
 		RunShell:         runLoginShell,

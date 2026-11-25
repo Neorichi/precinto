@@ -37,6 +37,10 @@ func checkDiskEncryption(e *env) []Finding {
 		what = "disk encryption"
 	}
 	switch {
+	case (err != nil || !known) && e.d.WSL().Version != 0:
+		// D156: the distribution's disk is a virtual disk file on a
+		// Windows drive; whether BitLocker covers it cannot be read here.
+		return []Finding{info(CheckDiskEncryption, wslDiskText, wslDiskFix)}
 	case err != nil || !known:
 		return []Finding{info(CheckDiskEncryption, "could not tell whether "+what+" is on", fix)}
 	case !on:

@@ -20,6 +20,13 @@ import (
 // encrypted file system: ecryptfs, or a device-mapper device that is, or
 // sits on, a dm-crypt target. known=false when it cannot tell.
 func diskEncryption(context.Context) (on, known bool, err error) {
+	// D156: under WSL the distribution's disk is a virtual disk file on a
+	// Windows drive, and BitLocker (or Device Encryption) of that drive
+	// cannot be read from inside; the virtual disk itself never shows a
+	// dm-crypt layer. Unknown, never "off".
+	if detectWSL().Version != 0 {
+		return false, false, nil
+	}
 	home, err := paths.UserHome(paths.FromOS())
 	if err != nil {
 		return false, false, nil

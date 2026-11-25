@@ -38,6 +38,10 @@ type statusV1 struct {
 	Folders   []statusFolder  `json:"folders"`
 	Harnesses []statusHarness `json:"harnesses"`
 	Attention []ipc.Attention `json:"attention"`
+	// WSL is set under WSL only (D155): the generation, whether Windows
+	// interoperability is on ("on", "off", "unknown") and where the
+	// Windows drives are mounted.
+	WSL *statusWSL `json:"wsl,omitempty"`
 
 	// policy is the policy in force (floorPolicy: config.toml merged with
 	// the confirmed settings, as the agent enforces it) that the human
@@ -52,6 +56,12 @@ type statusV1 struct {
 	// stand-in settings); plainNote: why it did not.
 	plainScanned bool
 	plainNote    string
+}
+
+type statusWSL struct {
+	Version   int    `json:"version"`
+	Interop   string `json:"interop"`
+	MountRoot string `json:"mount_root"`
 }
 
 type statusVault struct {
@@ -186,7 +196,9 @@ func (a *app) checkStatus(s statusV1) int {
 func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 	s := statusV1{V: statusVersion, Folders: []statusFolder{}, Harnesses: []statusHarness{}, Attention: []ipc.Attention{}}
 	s.Vault.Factors = []string{}
-	l, err := a.layout()
+	// D156: a folder of precinto on a Windows drive is an attention item
+	// (windows-drive, below), not a reason to stop.
+	l, onDrive, err := a.reportLayout()
 	if err != nil {
 		return s, err
 	}
@@ -273,7 +285,9 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 	var units []sweep.UnitInfo
 	var wrongHome map[string]int
 	s.plainNote = textPlainNotSetUp
-	if s.Vault.Initialized {
+	if onDrive != nil {
+		s.plainNote = textPlainOnDrive
+	} else if s.Vault.Initialized {
 		// The engine is built from the folders listed below: config.toml's
 		// (or the stand-in settings' when it does not load, UX-09) and
 		// those the agent enforces (D142), so that each is scanned.
@@ -433,6 +447,7 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 		s.Harnesses = append(s.Harnesses, sh)
 	}
 
+	s.WSL, local = a.wslStatus(cfg, l, local)
 	s.Attention = mergeAttention(stAttention(st), local)
 	return s, nil
 }
@@ -602,6 +617,13 @@ func (a *app) printStatus(w io.Writer, s statusV1) {
 		fmt.Fprintf(w, "agent    running (pid %d) · screen-lock watch %s · background re-seal: %s\n", s.Agent.PID, watch, a.sweepAge(s.Agent))
 	} else {
 		fmt.Fprintf(w, "agent    not running (every folder is locked) · background re-seal: %s\n", a.sweepAge(s.Agent))
+	}
+	if s.WSL != nil {
+		line := fmt.Sprintf(textWSLLine, s.WSL.Version, s.WSL.Interop, s.WSL.MountRoot)
+		if s.WSL.Version == 2 {
+			line += textWSLIdle
+		}
+		fmt.Fprintln(w, line)
 	}
 	fmt.Fprintln(w, "\nFOLDERS")
 	if len(s.Folders) == 0 {

@@ -9,6 +9,12 @@
 // variables. Unit tests do not need the tag: they build a Layout
 // explicitly with LayoutAt.
 //
+// It also tells whether precinto runs under WSL (DetectWSL: the WSL
+// generation, interop and the drives' mount root, read from the kernel
+// and WSL's own files) and refuses, there, locations on a Windows drive
+// (CheckDrive), precinto's own included (NewLayout): the lowest layer
+// every caller of those checks imports (D155, D156).
+//
 // The scaffold implements the leaf helpers every group needs from day one
 // (Env, UserHome, DefaultBase, LayoutAt, Within, Clean, Tilde and the
 // Layout path helpers); NewLayout, AgentMarkers, OverridesAllowed and

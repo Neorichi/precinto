@@ -255,7 +255,8 @@ type ScreenState struct {
 
 // ReadScreen polls the console once (darwin: `/usr/sbin/ioreg -n Root -d1`
 // IOConsoleLocked and IOHIDSystem HIDIdleTime, ~25 ms; linux: loginctl
-// LockedHint and IdleSinceHint).
+// LockedHint and IdleSinceHint). Under WSL both stay unknown: logind does
+// not see the Windows desktop (D156).
 func ReadScreen(ctx context.Context) (ScreenState, error) { return readScreen(ctx) }
 
 // Jump is a detected wall-vs-monotonic discontinuity (sleep/wake or clock
@@ -299,7 +300,9 @@ type ScrubOptions struct {
 func ScrubTTY(tty string, o ScrubOptions) error { return scrubTTY(tty, o) }
 
 // DiskEncryption reports FileVault (darwin `fdesetup status`) or an
-// encrypted home (linux, best effort); known=false if undeterminable.
+// encrypted home (linux, best effort); known=false if undeterminable, and
+// always under WSL, where BitLocker of the Windows drive holding the
+// distribution's virtual disk cannot be read (D156).
 func DiskEncryption(ctx context.Context) (on, known bool, err error) {
 	return diskEncryption(ctx)
 }
@@ -321,7 +324,9 @@ func BackupExcluded(ctx context.Context, path string) (excluded, known bool, err
 
 // CloudSynced reports whether path is inside a known cloud-synced location
 // (~/Library/Mobile Documents, ~/Library/CloudStorage, iCloud Desktop &
-// Documents, Dropbox, OneDrive).
+// Documents, Dropbox, OneDrive), and under WSL whether it lies in the
+// Users folder of a Windows drive, which OneDrive and its Known Folder
+// Move sync (paths.WSL.UsersFolder, D156).
 func CloudSynced(path string) bool { return cloudSynced(path) }
 
 // SpotlightIndexed reports whether Spotlight indexes path (`mdfind -onlyin

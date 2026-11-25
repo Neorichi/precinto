@@ -30,6 +30,15 @@ func loginctlPath() string {
 // logind (headless, containers) both facts are unknown.
 func sysReadScreen(ctx context.Context) (ScreenState, error) {
 	now := time.Now().Round(0)
+	// D156: inside WSL logind sees no Windows desktop. Neither the Windows
+	// lock screen nor its keyboard and mouse reach it, and a WSL terminal
+	// session it may elect as the display reports a constant "not locked"
+	// and an idle time of its own: both stay unknown, so no screen-lock
+	// watch is claimed and no prompt counts as human by its idle time
+	// (D37, D54).
+	if detectWSL().Version != 0 {
+		return ScreenState{At: now}, nil
+	}
 	lc := loginctlPath()
 	if lc == "" {
 		return ScreenState{At: now}, nil

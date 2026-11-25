@@ -275,11 +275,23 @@ func defaultBaseFor(e Env, goos string) (string, error) {
 
 // NewLayout derives the Layout for e, honouring overrides only when
 // OverridesAllowed(e). It fails if the socket path is 104 bytes or longer.
-func NewLayout(e Env) (Layout, error) { return newLayout(e, runtime.GOOS, OverridesAllowed(e)) }
+// Under WSL it also refuses a base or run directory on a Windows drive
+// (CheckDrive, D156): the error is then a *DriveError and the Layout is
+// returned complete, so that status and doctor can still report where it
+// lies; every other caller stops on the error.
+func NewLayout(e Env) (Layout, error) {
+	l, err := newLayout(e, runtime.GOOS, OverridesAllowed(e))
+	if err != nil {
+		return l, err
+	}
+	return l, checkLayoutDrives(l, CheckDrive)
+}
 
 // HookLayout returns the default base and run dir for e, never honouring
 // PRECINTO_* overrides (hook mode, D6/D56), in every build; it fails like
-// NewLayout when the socket path is too long (ErrSocketPath).
+// NewLayout when the socket path is too long (ErrSocketPath). It does not
+// check drives: on a layout NewLayout refuses, the daemon does not start,
+// so a hook's gates fail closed in the protected folders (D156).
 func HookLayout(e Env) (Layout, error) { return newLayout(e, runtime.GOOS, false) }
 
 // LayoutAt derives a Layout for an explicit base and run directory (tests,

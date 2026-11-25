@@ -246,6 +246,9 @@ func cmdInit(a *app, args []string) int {
 	if err := plugin.check(specs); err != nil {
 		return a.usageFail(f, err.Error())
 	}
+	if a.refuseWSL1() {
+		return exitError
+	}
 	// D7: the recovery key is shown or written only to a human: no agent
 	// context, and stdin and stdout are terminals.
 	if err := a.refuseAgent(refusal{init: true}); err != nil {
@@ -579,8 +582,28 @@ func (a *app) createRecoveryOut(p string) (*os.File, error) {
 	if l, err := a.layout(); err == nil && paths.Within(l.Base, target) {
 		return nil, bad("it is inside precinto's data folder")
 	}
+	// D156: under WSL the Users folder of a Windows drive is synced by
+	// OneDrive and its Known Folder Move: refused like any synced folder.
+	// Another Windows drive is only a warning (Windows programs, and the
+	// backups and sync of that drive, can read the file); one precinto
+	// cannot place is refused.
+	onDrive := false
+	if a.sys.wsl().Version != 0 {
+		if a.sys.wsl().UsersFolder(target) {
+			return nil, bad(textRecoveryUsers)
+		}
+		var de *paths.DriveError
+		if err := a.sys.checkDrive(target); errors.As(err, &de) && de.Unknown {
+			return nil, bad(textRecoveryDriveUnsure)
+		} else if err != nil {
+			onDrive = true
+		}
+	}
 	if a.sys.cloudSynced(target) {
 		return nil, bad("it is inside a cloud-synced folder")
+	}
+	if onDrive {
+		a.say(textRecoveryOnDrive, a.display(target))
 	}
 	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 	if err != nil {

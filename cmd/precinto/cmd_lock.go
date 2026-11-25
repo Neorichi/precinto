@@ -39,6 +39,9 @@ func cmdUnlock(a *app, args []string) int {
 	if *dur < 0 {
 		return a.usageFail(f, "--for must be positive")
 	}
+	if a.refuseWSL1() {
+		return exitError
+	}
 	if err := a.sys.harden(); err != nil {
 		return a.fail("unlock", err)
 	}

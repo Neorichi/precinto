@@ -347,6 +347,10 @@ const (
 	MsgAgentDownAll       MsgID = "E.agentdown"        // the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock
 	MsgNeedTerminal       MsgID = "E.needtty"          // {command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.
 	MsgHomeUnregistered   MsgID = "E.unregistered"     // precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code
+	MsgWSL1               MsgID = "E.wsl1"             // precinto: this Linux distribution runs under WSL 1, where precinto can't protect folders: it needs WSL 2. Convert the distribution in Windows with: {command}
+	MsgWindowsDrive       MsgID = "E.windrive"         // precinto: {folder} is on a Windows drive, where Windows programs change files without precinto seeing them, so precinto won't seal, restore or keep files there. Use a folder in the Linux file system of this WSL distribution (for example under /home), then try again.
+	MsgWindowsDriveUnsure MsgID = "E.windrive.unsure"  // precinto: precinto could not tell whether {folder} is on a Windows drive, so it won't seal, restore or keep files there. Check that /proc/self/mountinfo can be read, then try again.
+	MsgWindowsProgram     MsgID = "E.winprogram"       // precinto: {file} would run as a Windows program ({cause}), which precinto can't see or seal from WSL. Install {harness} inside this WSL distribution, then try again.
 	MsgShimFailed         MsgID = "D.shim"             // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
 )
 
@@ -450,6 +454,10 @@ var catalog = map[MsgID]string{
 	MsgAgentDownAll:       "the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock",
 	MsgNeedTerminal:       "{command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.",
 	MsgHomeUnregistered:   "precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code",
+	MsgWSL1:               "precinto: this Linux distribution runs under WSL 1, where precinto can't protect folders: it needs WSL 2. Convert the distribution in Windows with: {command}",
+	MsgWindowsDrive:       "precinto: {folder} is on a Windows drive, where Windows programs change files without precinto seeing them, so precinto won't seal, restore or keep files there. Use a folder in the Linux file system of this WSL distribution (for example under /home), then try again.",
+	MsgWindowsDriveUnsure: "precinto: precinto could not tell whether {folder} is on a Windows drive, so it won't seal, restore or keep files there. Check that /proc/self/mountinfo can be read, then try again.",
+	MsgWindowsProgram:     "precinto: {file} would run as a Windows program ({cause}), which precinto can't see or seal from WSL. Install {harness} inside this WSL distribution, then try again.",
 	MsgShimFailed:         "precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor",
 }
 

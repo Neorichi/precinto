@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/paths"
 )
 
@@ -87,6 +88,28 @@ func ensureHome(dir string) error {
 	return nil
 }
 
+// The WSL checks of D156, as variables so that tests stand in for WSL.
+var (
+	checkDrive   = paths.CheckDrive
+	checkProgram = harness.CheckProgram
+)
+
+// checkHomes refuses, under WSL, a per-folder home or a user Codex home
+// on a Windows drive, or one precinto cannot place (D156): Windows
+// programs (a Windows Codex sharing CODEX_HOME) would write it unseen, and
+// seeding would link its plugins and copy its auth.json across.
+func checkHomes(homes ...string) error {
+	for _, h := range homes {
+		if !filepath.IsAbs(h) {
+			continue // none, or refused below as not absolute
+		}
+		if err := checkDrive(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // prepareHome implements PrepareHome (D31, D44).
 func prepareHome(ctx context.Context, s Seed) error {
 	if err := ctx.Err(); err != nil {
@@ -94,6 +117,9 @@ func prepareHome(ctx context.Context, s Seed) error {
 	}
 	if !filepath.IsAbs(s.RootHome) {
 		return fmt.Errorf("%w: %q is not absolute", errUnsafeHome, s.RootHome)
+	}
+	if err := checkHomes(s.RootHome, s.UserHome); err != nil {
+		return err
 	}
 	home := filepath.Clean(s.RootHome)
 	if err := ensureHome(home); err != nil {

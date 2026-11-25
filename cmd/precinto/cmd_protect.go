@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -57,6 +56,9 @@ func cmdProtect(a *app, args []string) int {
 	if err := oneOfFlag("on-enter", *onEnter, config.OnEnterPrompt, config.OnEnterNotify, config.OnEnterOff); err != nil {
 		return a.usageFail(f, err.Error())
 	}
+	if a.refuseWSL1() {
+		return exitError
+	}
 	// SPEC §4.6 (D95): vault_create relays the install passphrase to this
 	// terminal, so protect hardens (no core dumps, no debugger, never as
 	// root) before it opens the terminal or dials the daemon.
@@ -65,6 +67,11 @@ func cmdProtect(a *app, args []string) int {
 	}
 	dir, err := a.resolveDir(pos[0])
 	if err != nil {
+		return a.fail("protect", err)
+	}
+	// D156: under WSL a folder on a Windows drive cannot be protected:
+	// Windows programs write it without precinto seeing them.
+	if err := a.sys.checkDrive(dir); err != nil {
 		return a.fail("protect", err)
 	}
 	cfg, err := a.config()
@@ -146,6 +153,12 @@ func cmdProtect(a *app, args []string) int {
 			if !consent {
 				harnesses = slices.DeleteFunc(harnesses, func(h string) bool { return h == string(harness.Codex) })
 			}
+		}
+		// D156: under WSL the homes the folder's harnesses would write
+		// (Claude's folders, the Codex home a sealed home is seeded from)
+		// must not be on a Windows drive either.
+		if err := a.checkHarnessDrives(harnesses); err != nil {
+			return a.fail("protect", err)
 		}
 		// D74: a folder protected before keeps its id, so its retired
 		// vault and every capsule sealed for it serve again.
@@ -398,49 +411,29 @@ func addHome(m map[string]config.Harness, id string, h config.Home) {
 }
 
 // claudeHomeFromEnv resolves the Claude home of this environment (SPEC
-// §7.0): CLAUDE_CONFIG_DIR or ~/.claude, its tmp dir (CLAUDE_CODE_TMPDIR or
-// /private/tmp/claude-<uid>) and its cache, realpath'd once. A home that
-// does not exist yet is not registered.
+// §7.0, claudeEnvDirs): CLAUDE_CONFIG_DIR or ~/.claude, its tmp dir
+// (CLAUDE_CODE_TMPDIR, else claude.TmpBase: /private/tmp/claude-<uid> on
+// darwin, <os.tmpdir()>/claude-<uid> elsewhere) and its cache, realpath'd
+// once. A home that does not exist yet is not registered, and under WSL
+// neither is one on a Windows drive, nor a tmp or cache folder there
+// (D156: protect and integrate refuse such homes first).
 func (a *app) claudeHomeFromEnv() (config.Home, bool) {
-	home := a.home()
-	dir := a.env.Get(paths.EnvClaudeConfigDir)
-	def := dir == ""
-	if def {
-		if home == "" {
-			return config.Home{}, false
-		}
-		dir = filepath.Join(home, ".claude")
-	}
-	if !filepath.IsAbs(dir) {
+	dir, tmp, cache, def := a.claudeEnvDirs()
+	if dir == "" {
 		return config.Home{}, false
 	}
-	real, err := a.sys.realpath(filepath.Clean(dir))
-	if err != nil {
+	real, err := a.sys.realpath(dir)
+	if err != nil || a.sys.checkDrive(real) != nil {
 		return config.Home{}, false
 	}
 	h := config.Home{Dir: real, SeenAt: a.now().UTC(), Default: def}
-	tmp := a.env.Get(paths.EnvClaudeTmpDir)
-	if !filepath.IsAbs(tmp) {
-		tmp = "/tmp/claude-" + strconv.Itoa(a.sys.uid())
-		if a.sys.goos == "darwin" {
-			tmp = "/private" + tmp
+	if tmp != "" {
+		if r, err := a.sys.realpath(tmp); err == nil && a.sys.checkDrive(r) == nil {
+			h.Tmp = r
 		}
-	}
-	if r, err := a.sys.realpath(filepath.Clean(tmp)); err == nil {
-		h.Tmp = r
-	}
-	var cache string
-	if a.sys.goos == "darwin" {
-		if home != "" {
-			cache = filepath.Join(home, "Library", "Caches", "claude-cli-nodejs")
-		}
-	} else if x := a.env.Get("XDG_CACHE_HOME"); filepath.IsAbs(x) {
-		cache = filepath.Join(filepath.Clean(x), "claude-cli-nodejs")
-	} else if home != "" {
-		cache = filepath.Join(home, ".cache", "claude-cli-nodejs")
 	}
 	if cache != "" {
-		if r, err := a.sys.realpath(cache); err == nil {
+		if r, err := a.sys.realpath(cache); err == nil && a.sys.checkDrive(r) == nil {
 			h.Cache = r
 		}
 	}

@@ -45,6 +45,12 @@ func cmdAgent(a *app, args []string) int {
 		}
 		return exitOK
 	}
+	// D156: under WSL 1 the daemon does not start (keys are never
+	// unwrapped there); a hook that finds no daemon keeps its folder
+	// locked. A base on a Windows drive stops it below (NewLayout).
+	if a.refuseWSL1() {
+		return exitError
+	}
 	l, err := a.layout()
 	if err != nil {
 		return a.fail("agent", err)
@@ -146,7 +152,9 @@ func cmdDoctor(a *app, args []string) int {
 	if len(pos) > 1 {
 		return a.usageFail(f, "doctor takes at most one harness")
 	}
-	l, err := a.layout()
+	// D156: a folder of precinto on a Windows drive is a finding of its
+	// own (windows-drive), not a reason to stop.
+	l, _, err := a.reportLayout()
 	if err != nil {
 		return a.fail("doctor", err)
 	}

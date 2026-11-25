@@ -18,6 +18,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
@@ -79,6 +80,13 @@ type system struct {
 	uiContext    func(paths.Env) platform.UIContext
 	cloudSynced  func(string) bool
 	realpath     func(string) (string, error)
+	// WSL (D155, D156): the facts of this system (paths.DetectWSL), the
+	// refusal of a location on a Windows drive (paths.CheckDrive) and of a
+	// harness executable that would run as a Windows program
+	// (harness.CheckProgram). Tests fake all three.
+	wsl          func() paths.WSL
+	checkDrive   func(p string) error
+	checkProgram func(e paths.Env, h harness.ID, exe string) error
 
 	exec      func(ctx context.Context, c execSpec) ([]byte, error)
 	launchctl func(ctx context.Context, args []string) error // never runs in testing builds
@@ -178,6 +186,24 @@ func (a *app) layout() (paths.Layout, error) {
 		a.layDone = true
 	}
 	return a.lay, a.layErr
+}
+
+// reportLayout is layout for status and doctor, which report a location
+// on a Windows drive (D156) instead of stopping on it: paths.NewLayout
+// returns the layout complete with its *paths.DriveError, which comes back
+// as onDrive, and from then on this invocation's layout and config accept
+// the layout, since these commands only read (status then builds no
+// engine, which would create directories there). Any other error stops
+// them as before.
+func (a *app) reportLayout() (l paths.Layout, onDrive *paths.DriveError, err error) {
+	l, err = a.layout()
+	if errors.As(err, &onDrive) && l.Base != "" {
+		a.mu.Lock()
+		a.layErr = nil
+		a.mu.Unlock()
+		return l, onDrive, nil
+	}
+	return l, nil, err
 }
 
 // config loads config.toml once (a missing file yields the defaults).

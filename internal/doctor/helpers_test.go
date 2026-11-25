@@ -215,6 +215,8 @@ func safeDeps(at time.Time) *doctor.Deps {
 		SpotlightIndexed: func(context.Context, string) (bool, bool, error) { return false, true, nil },
 		BackupExcluded:   func(context.Context, string) (bool, bool, error) { return true, true, nil },
 		VolumeRoot:       func(string) string { return "" }, // no volume outside the test's own tree
+		WSL:              func() paths.WSL { return paths.WSL{} },
+		CheckDrive:       func(string) error { return nil },
 		Executable:       func() (string, error) { return "", errors.New("no executable in unit tests") },
 		RunShell: func(context.Context, string, []string, string) (int, time.Duration, error) {
 			return 0, 10 * time.Millisecond, nil

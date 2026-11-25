@@ -41,6 +41,11 @@ func (a *adapter) Targets(ctx context.Context, e harness.Env, ref harness.UnitRe
 		return harness.TargetRules{}, harness.ErrUnregistered
 	}
 	cc := h.configDir()
+	// D156: under WSL nothing is restored into a home on a Windows drive,
+	// where Windows programs could read or change it unseen.
+	if err := checkDrive(cc); err != nil {
+		return harness.TargetRules{}, err
+	}
 	bases := map[capsule.BaseID]string{capsule.BaseClaudeConfig: cc}
 	// $TMP and $CACHE receive files only while they are safe (S7) and
 	// exist; otherwise their entries are skipped and reported and the rest

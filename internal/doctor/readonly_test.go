@@ -222,6 +222,20 @@ func TestReadOnly(t *testing.T) {
 	}
 	f.d.CleanupPeriodDays = func(string) (int, error) { return 1, nil }
 	f.d.DaemonStatus = func(context.Context) (ipc.StatusResp, error) { return ipc.StatusResp{}, ipc.ErrNoDaemon }
+	// WSL 2 with interop on (D155, D156): Windows drives mounted in the
+	// tree, one holding a Windows account's Claude data, and the USB
+	// folder on a Windows drive.
+	drives := mkdir(t, filepath.Join(h.Dir, "drives"), 0o700)
+	mkdir(t, filepath.Join(drives, "c", "Users", "someone", ".claude"), 0o700)
+	f.d.WSL = func() paths.WSL {
+		return paths.WSL{Version: 2, Interop: true, InteropKnown: true, MountRoot: drives + "/"}
+	}
+	f.d.CheckDrive = func(p string) error {
+		if paths.Within(vol, p) || paths.Within(drives, p) {
+			return &paths.DriveError{Path: p}
+		}
+		return nil
+	}
 
 	before := snapshot(t, h.Dir, h.RunDir)
 	fs := f.run()

@@ -83,6 +83,24 @@ const (
 	// CheckExperimentalVersion: an installed harness version outside an
 	// experimental inventory's verified_versions (SPEC §7.3).
 	CheckExperimentalVersion = "experimental-version"
+	// CheckWSL: precinto runs under WSL 1, which it refuses (fail), or
+	// under WSL 2; no finding outside WSL (D155, D156).
+	CheckWSL = "wsl"
+	// CheckWSLInterop: under WSL, Windows interoperability is on, so a
+	// program of the distribution can become its superuser through
+	// wsl.exe and read the agent's memory (warn, D155).
+	CheckWSLInterop = "wsl-interop"
+	// CheckWSLIdle: under WSL 2, the distribution stops after
+	// instanceIdleTimeout, and the agent with it, so sealing waits for the
+	// next precinto start (info, D155).
+	CheckWSLIdle = "wsl-idle-shutdown"
+	// CheckWindowsDrive: under WSL, a protected folder, a harness folder or
+	// a folder of precinto is on a Windows drive, or precinto cannot tell
+	// (fail, D156).
+	CheckWindowsDrive = "windows-drive"
+	// CheckWindowsHarnessData (--leaks): Claude Code or Codex data of a
+	// Windows account in <mount root><drive>/Users/<name> (warn, D156).
+	CheckWindowsHarnessData = "windows-harness-data"
 )
 
 // Finding is one result.

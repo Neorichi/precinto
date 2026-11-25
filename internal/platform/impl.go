@@ -255,8 +255,14 @@ func detectUIContext(e paths.Env, stdin, stdout *os.File) UIContext {
 	return u
 }
 
+// detectWSL is paths.DetectWSL; tests stand in for WSL through it.
+var detectWSL = paths.DetectWSL
+
 // cloudSynced implements CloudSynced for the current user.
 func cloudSynced(path string) bool {
+	if wslSynced(detectWSL(), path) {
+		return true
+	}
 	home, err := paths.UserHome(paths.FromOS())
 	if err != nil {
 		// Without a home the synced locations are unknown: report the
@@ -283,6 +289,21 @@ func cloudSyncedIn(home, path string) bool {
 		}
 	}
 	return false
+}
+
+// wslSynced reports whether path, as given or with its symlinks resolved,
+// lies in the Users folder of a Windows drive mounted into WSL (D156):
+// OneDrive syncs its folder there and, with Known Folder Move, Desktop and
+// Documents too, and the home of a WSL distribution never shows them.
+func wslSynced(w paths.WSL, path string) bool {
+	if w.Version == 0 || !filepath.IsAbs(path) {
+		return false
+	}
+	if w.UsersFolder(filepath.Clean(path)) {
+		return true
+	}
+	r, err := filepath.EvalSymlinks(path)
+	return err == nil && w.UsersFolder(r)
 }
 
 // commonCloudRoots are synced folders that client apps create directly in

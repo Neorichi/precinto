@@ -9,6 +9,7 @@ import (
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/sweep/capslog"
@@ -183,6 +184,17 @@ func (a *app) sayErr(name string, err error) {
 	}
 	if errors.Is(err, ipc.ErrNoDaemon) {
 		a.line(ui.MsgAgentDownAll, ui.Vars{})
+		return
+	}
+	// D156: a location on a Windows drive, a Windows program.
+	var de *paths.DriveError
+	if errors.As(err, &de) {
+		a.sayDrive(de)
+		return
+	}
+	var pe *harness.ProgramError
+	if errors.As(err, &pe) {
+		a.sayProgram(pe)
 		return
 	}
 	if isBadSecret(err) {

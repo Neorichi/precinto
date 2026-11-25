@@ -14,11 +14,24 @@ import (
 // "soft" or "hard" (the --root flag excepted; text_test.go enforces it).
 // They are candidates for catalog ids (reported to the lead).
 const (
-	textDeferred          = "this command is planned for a later version of precinto."
-	textNotConfirmed      = "not confirmed; nothing was changed."
-	textNothingToDo       = "nothing to do."
-	textAlreadyInit       = "precinto is already set up. Add another way to unlock with: precinto factor add"
-	textRecoveryOutBad    = "refusing to write the recovery key to %s: %s"
+	textDeferred       = "this command is planned for a later version of precinto."
+	textNotConfirmed   = "not confirmed; nothing was changed."
+	textNothingToDo    = "nothing to do."
+	textAlreadyInit    = "precinto is already set up. Add another way to unlock with: precinto factor add"
+	textRecoveryOutBad = "refusing to write the recovery key to %s: %s"
+	textRecoveryUsers  = "it is inside the Users folder of a Windows drive, which OneDrive can sync"
+	// textRecoveryDriveUnsure: a reason of textRecoveryOutBad (D156).
+	textRecoveryDriveUnsure = "precinto could not tell whether it is on a Windows drive"
+	textRecoveryOnDrive     = "note: %s is on a Windows drive: Windows programs, and backups or sync of that drive, can read it. Move the recovery key offline as soon as you can."
+	// Status under WSL (D155, D156): attention details and fixes, and the
+	// summary line.
+	textWSL1Detail        = "this distribution runs under WSL 1, where precinto does not protect folders"
+	textInteropDetail     = "Windows interoperability is on: a program of this distribution, an agent included, can become its superuser through wsl.exe and read the keys of unlocked folders"
+	textInteropFix        = "set enabled=false under [interop] in /etc/wsl.conf, then run wsl --shutdown in Windows"
+	textDriveDetail       = "on a Windows drive: precinto does not seal, restore or keep files there"
+	textDriveUnsure       = "precinto could not tell whether it is on a Windows drive, so it does not seal, restore or keep files there"
+	textWSLLine           = "wsl      WSL %d · Windows interop %s · Windows drives in %s"
+	textWSLIdle           = " · the distribution stops about 15 s after its last terminal closes, and the agent with it, unless .wslconfig sets instanceIdleTimeout=-1"
 	textInitDone          = "set up. Protect a folder with: precinto protect DIR"
 	textInitNotConfirmed  = "init stopped before you confirmed the recovery key, so nothing was set up. Run precinto init again when you can write the key down."
 	textInitCancelled     = "init cancelled; nothing was set up. Run precinto init again when you are ready."
@@ -64,6 +77,7 @@ const (
 	textCheckUnscanned     = "status --check cannot tell whether every locked folder is sealed: %s. Run precinto doctor."
 	textPlainUnscanned     = "the folders could not be scanned"
 	textPlainNotSetUp      = "precinto is not set up"
+	textPlainOnDrive       = "precinto's data folder is on a Windows drive"
 	textStandInPinned      = "the settings confirmed last"
 	textStandInDefaults    = "the default settings"
 	textLockedNone         = "every folder is locked."

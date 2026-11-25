@@ -5,12 +5,22 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/fsx"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/paths"
+)
+
+// The WSL checks of D156, as variables so that tests stand in for WSL:
+// under WSL a Claude home on a Windows drive is never scanned, sealed or
+// restored into, a launch with one is refused, and a Claude executable
+// that would run as a Windows program is refused.
+var (
+	checkDrive   = paths.CheckDrive
+	checkProgram = harness.CheckProgram
 )
 
 // home is a resolved Claude home plus whether config registers it (only
@@ -36,16 +46,44 @@ func newHome(dir, tmp, cache string, def, registered bool) home {
 }
 
 // defaultTmp is Claude's tmp base for env (SPEC §7.0): CLAUDE_CODE_TMPDIR,
-// else /private/tmp/claude-<uid> (darwin) or /tmp/claude-<uid>.
+// else TmpBase's default.
 func defaultTmp(e paths.Env) string {
 	if v := e.Get(paths.EnvClaudeTmpDir); filepath.IsAbs(v) {
 		return realpath(v)
 	}
-	uid := strconv.Itoa(os.Getuid())
-	if runtime.GOOS == "darwin" {
-		return "/private/tmp/claude-" + uid
+	if t := TmpBase(e, runtime.GOOS, os.Getuid()); t != "" {
+		return realpath(t)
 	}
-	return "/tmp/claude-" + uid
+	return ""
+}
+
+// TmpBase is where Claude Code keeps its temporary files for env when
+// CLAUDE_CODE_TMPDIR does not say: <temp>/claude-<uid>, with <temp> /tmp
+// on darwin (realpath'd to /private/tmp) and, elsewhere, what Node's and
+// Bun's os.tmpdir() return: the first non-empty of TMPDIR, TMP and TEMP,
+// else /tmp (Claude Code's documentation of CLAUDE_CODE_TMPDIR: "Default:
+// /tmp on macOS, os.tmpdir() on Linux"). It is "" when that variable is
+// not an absolute path, which Claude would resolve against its own working
+// directory: precinto then knows no tmp base (nothing is scanned there).
+func TmpBase(e paths.Env, goos string, uid int) string {
+	suffix := "claude-" + strconv.Itoa(uid)
+	if goos == "darwin" {
+		return "/private/tmp/" + suffix
+	}
+	tmp := "/tmp"
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if v := e.Get(k); v != "" {
+			tmp = v
+			break
+		}
+	}
+	if len(tmp) > 1 {
+		tmp = strings.TrimSuffix(tmp, "/")
+	}
+	if !filepath.IsAbs(tmp) {
+		return ""
+	}
+	return filepath.Join(filepath.Clean(tmp), suffix)
 }
 
 // defaultCache is Claude's MCP-log cache base for env.
@@ -91,7 +129,9 @@ func homes(e harness.Env) []home {
 			return
 		}
 		seen[dir] = true
-		out = append(out, h)
+		if h, ok := offDrives(h); ok {
+			out = append(out, h)
+		}
 	}
 	for _, h := range e.Cfg.Harness[string(harness.ClaudeCode)].Homes {
 		addHome(registeredHome(h))
@@ -123,6 +163,37 @@ func homes(e harness.Env) []home {
 	return out
 }
 
+// offDrives applies D156 to a home: under WSL a config folder on a
+// Windows drive, or one precinto cannot place, drops the whole home
+// (nothing of it is scanned, sealed or probed: Windows programs may write
+// it unseen), and a tmp or cache base there leaves the home. Outside WSL
+// every home is kept as it is.
+func offDrives(h home) (home, bool) {
+	if checkDrive(h.configDir()) != nil {
+		return home{}, false
+	}
+	for _, b := range []capsule.BaseID{capsule.BaseClaudeTmp, capsule.BaseClaudeCache} {
+		if d := h.Bases[b]; d != "" && checkDrive(d) != nil {
+			delete(h.Bases, b)
+		}
+	}
+	return h, true
+}
+
+// checkHomeDrives refuses, under WSL, a home whose config, tmp or cache
+// folder is on a Windows drive (D156): the *paths.DriveError of the first.
+func checkHomeDrives(h home) error {
+	for _, d := range []string{h.configDir(), h.tmpDir(), h.cacheDir()} {
+		if d == "" {
+			continue
+		}
+		if err := checkDrive(d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // registeredHome turns a config [harness.claude-code].homes entry into a
 // home. Registered paths were realpath'd at registration and are used as
 // they are, so a home's id never changes.
@@ -152,10 +223,11 @@ func registeredHomes(c config.Config) []home {
 // Reasons a secondary base (Claude's $TMP or $CACHE) cannot receive
 // restored files now (harness.TargetRules.Skip): short and content-free.
 const (
-	skipTmpUnsafe   = "unsafe tmp"   // not a directory owned by the user with mode 0700 (S7)
-	skipTmpMissing  = "no tmp dir"   // absent (e.g. after a reboot): precinto never creates it
-	skipCacheUnsafe = "unsafe cache" // not a real directory owned by the user
-	skipCacheGone   = "no cache dir" // absent: precinto never creates it
+	skipTmpUnsafe   = "unsafe tmp"         // not a directory owned by the user with mode 0700 (S7)
+	skipTmpMissing  = "no tmp dir"         // absent (e.g. after a reboot): precinto never creates it
+	skipCacheUnsafe = "unsafe cache"       // not a real directory owned by the user
+	skipCacheGone   = "no cache dir"       // absent: precinto never creates it
+	skipOnDrive     = "on a Windows drive" // under WSL, on a Windows drive or not placed (D156)
 )
 
 // tmpUnsafe returns why the tmp base dir cannot receive restored files now,
@@ -171,6 +243,9 @@ func tmpUnsafe(dir string) string {
 	}
 	if err != nil || !st.IsDir() || int(st.UID) != os.Getuid() || st.Mode&0o077 != 0 {
 		return skipTmpUnsafe
+	}
+	if checkDrive(dir) != nil {
+		return skipOnDrive
 	}
 	return ""
 }
@@ -188,6 +263,9 @@ func cacheUnsafe(dir string) string {
 	}
 	if err != nil || !st.IsDir() || int(st.UID) != os.Getuid() {
 		return skipCacheUnsafe
+	}
+	if checkDrive(dir) != nil {
+		return skipOnDrive
 	}
 	return ""
 }

@@ -1417,11 +1417,15 @@ func CheckLoaderEnv(environ []string) error
 
 // CloudSynced reports whether path is inside a known cloud-synced location
 // (~/Library/Mobile Documents, ~/Library/CloudStorage, iCloud Desktop &
-// Documents, Dropbox, OneDrive).
+// Documents, Dropbox, OneDrive), and under WSL whether it lies in the
+// Users folder of a Windows drive, which OneDrive and its Known Folder
+// Move sync (paths.WSL.UsersFolder, D156).
 func CloudSynced(path string) bool
 
 // DiskEncryption reports FileVault (darwin `fdesetup status`) or an
-// encrypted home (linux, best effort); known=false if undeterminable.
+// encrypted home (linux, best effort); known=false if undeterminable, and
+// always under WSL, where BitLocker of the Windows drive holding the
+// distribution's virtual disk cannot be read (D156).
 func DiskEncryption(ctx context.Context) (on, known bool, err error)
 
 // ExcludeFromBackup adds a sticky Time Machine exclusion (`tmutil
@@ -1631,7 +1635,8 @@ type ScreenState struct {
 
 // ReadScreen polls the console once (darwin: `/usr/sbin/ioreg -n Root -d1`
 // IOConsoleLocked and IOHIDSystem HIDIdleTime, ~25 ms; linux: loginctl
-// LockedHint and IdleSinceHint).
+// LockedHint and IdleSinceHint). Under WSL both stay unknown: logind does
+// not see the Windows desktop (D156).
 func ReadScreen(ctx context.Context) (ScreenState, error)
 
 // ScrubOptions controls TTY scrubbing after a harness has exited.
@@ -3279,6 +3284,25 @@ var (
 	ErrUnitKey        = errors.New("harness: unit key parts missing or malformed")
 )
 
+// ErrWindowsProgram marks a harness executable precinto refuses under WSL
+// because it would run as a Windows program (D156): WSL appends the
+// Windows PATH to the Linux one by default, so `claude` or `codex` can
+// resolve to a Windows install, whose processes and files precinto can
+// neither see nor seal.
+var ErrWindowsProgram = errors.New("harness: a Windows program")
+
+// CheckProgram refuses, under WSL, the executable exe (absolute) of
+// harness h when it would run as a Windows program (D156): exe or the
+// file it links to lies on a Windows drive, it is a Windows executable (it
+// starts with the PE header "MZ"), or the interpreter of its "#!" line
+// does or is, a "#!/usr/bin/env CMD" line naming CMD as found in the PATH
+// of e (an npm install runs `#!/usr/bin/env node`, and Windows's node.exe
+// can be first in that PATH). It returns nil outside WSL without reading
+// anything, and a *ProgramError (errors.Is ErrWindowsProgram) otherwise;
+// an executable that exists but cannot be read is refused too, a missing
+// one is left to fail at exec as it always did.
+func CheckProgram(e paths.Env, h ID, exe string) error
+
 // InFolder reports whether p lies inside the folder dir by the rule
 // config.RootsFor applies to protected folders (D93): component by
 // component (paths.Within), and on darwin, for a folder whose path holds
@@ -3551,6 +3575,19 @@ type ProcessMatch struct {
 	ArgvRegex    []string `toml:"argv_regex"` // node/python CLIs
 }
 
+// ProgramError is CheckProgram's refusal of an executable.
+type ProgramError struct {
+	Harness ID     // the harness the executable was to run
+	Exe     string // the executable, absolute, as resolved for the launch
+	Why     string // short and content-free: what makes it a Windows program
+	Unknown bool   // precinto could not tell (refused all the same)
+}
+
+func (e *ProgramError) Error() string
+
+// Is makes errors.Is(err, ErrWindowsProgram) hold for every ProgramError.
+func (e *ProgramError) Is(target error) bool
+
 // Resume is the parsed resume target.
 type Resume struct {
 	Kind  ResumeKind
@@ -3726,6 +3763,16 @@ func ParseResume(args []string) harness.Resume
 // launches (D32, HA12): idleCompaction=false, awaySummaryEnabled=false,
 // precomputeCompactionEnabled=false.
 func SettingsJSON(p config.Policy) string
+
+// TmpBase is where Claude Code keeps its temporary files for env when
+// CLAUDE_CODE_TMPDIR does not say: <temp>/claude-<uid>, with <temp> /tmp
+// on darwin (realpath'd to /private/tmp) and, elsewhere, what Node's and
+// Bun's os.tmpdir() return: the first non-empty of TMPDIR, TMP and TEMP,
+// else /tmp (Claude Code's documentation of CLAUDE_CODE_TMPDIR: "Default:
+// /tmp on macOS, os.tmpdir() on Linux"). It is "" when that variable is
+// not an absolute path, which Claude would resolve against its own working
+// directory: precinto then knows no tmp base (nothing is scanned there).
+func TmpBase(e paths.Env, goos string, uid int) string
 
 // HistoryLine is the content-free view of one history.jsonl line; Raw is
 // kept only in memory while rotating and is sealed, never logged.
@@ -5391,6 +5438,12 @@ type TerminateOptions struct {
 > variables. Unit tests do not need the tag: they build a Layout
 > explicitly with LayoutAt.
 >
+> It also tells whether precinto runs under WSL (DetectWSL: the WSL
+> generation, interop and the drives' mount root, read from the kernel
+> and WSL's own files) and refuses, there, locations on a Windows drive
+> (CheckDrive), precinto's own included (NewLayout): the lowest layer
+> every caller of those checks imports (D155, D156).
+>
 > The scaffold implements the leaf helpers every group needs from day one
 > (Env, UserHome, DefaultBase, LayoutAt, Within, Clean, Tilde and the
 > Layout path helpers); NewLayout, AgentMarkers, OverridesAllowed and
@@ -5441,6 +5494,10 @@ const (
 	ClaudePluginID = "precinto@precinto"
 )
 
+// DefaultWSLMountRoot is where WSL mounts the Windows drives unless
+// /etc/wsl.conf says otherwise.
+const DefaultWSLMountRoot = "/mnt/"
+
 // MaxSocketPath is the exclusive upper bound on the socket path length
 // (darwin sun_path is 104 bytes; linux allows 108, precinto uses the
 // stricter bound everywhere).
@@ -5449,12 +5506,30 @@ const MaxSocketPath = 104
 // ErrSocketPath is returned when the socket path would be too long.
 var ErrSocketPath = errors.New("paths: socket path too long (use a shorter PRECINTO_RUNTIME_DIR)")
 
+// ErrWindowsDrive marks a location precinto refuses under WSL because it
+// lies on a Windows drive mounted into the distribution, or because
+// precinto could not tell which file system holds it (D156): Windows
+// programs write such files without precinto seeing them, so it never
+// seals, restores or keeps its own files there.
+var ErrWindowsDrive = errors.New("paths: on a Windows drive")
+
 // AgentMarkers returns the names of environment variables that indicate an
 // AI-agent context (CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SESSION_ID,
 // CLAUDE_PID, CODEX_THREAD_ID-like markers, KIMI_*, GEMINI_SESSION_ID,
 // PRECINTO_ACTIVE). Process ancestry and a missing controlling TTY are
 // checked separately by ui.AgentContext and the daemon (D7, D28, D59).
 func AgentMarkers(e Env) []string
+
+// CheckDrive refuses a location on a Windows drive under WSL (D156): it
+// returns nil outside WSL, without reading anything, and under WSL when p,
+// with every symlink resolved (a link into a drive is the drive), lies on
+// a Linux file system. Otherwise it returns a *DriveError: p is on a
+// Windows drive (DrvFs: a 9p, drvfs or virtiofs mount, which under WSL
+// only Windows shares use), or the mount table, the path or the file
+// system of p could not be read (Unknown: fail closed). A p that does not
+// exist yet is judged by its deepest existing parent. Callers check
+// protected folders, harness homes and precinto's own directories with it.
+func CheckDrive(p string) error
 
 // Clean returns filepath.Clean of an absolute path and reports whether the
 // input was already clean and absolute.
@@ -5507,6 +5582,20 @@ func UserHome(e Env) (string, error)
 // Prefer fsx.Contains when both paths exist (it also handles Unicode
 // normalization and case-insensitive volumes through (dev, ino)).
 func Within(root, p string) bool
+
+// DriveError is CheckDrive's refusal of one location.
+type DriveError struct {
+	Path    string // the location, as the caller named it
+	Unknown bool   // precinto could not tell (Err says why); refused all the same
+	Err     error
+}
+
+func (e *DriveError) Error() string
+
+// Is makes errors.Is(err, ErrWindowsDrive) hold for every DriveError.
+func (e *DriveError) Is(target error) bool
+
+func (e *DriveError) Unwrap() error
 
 // Env is an immutable snapshot of the environment. No package other than
 // paths calls os.Getenv/os.Environ (enforced by internal/archtest).
@@ -5587,7 +5676,9 @@ type Layout struct {
 
 // HookLayout returns the default base and run dir for e, never honouring
 // PRECINTO_* overrides (hook mode, D6/D56), in every build; it fails like
-// NewLayout when the socket path is too long (ErrSocketPath).
+// NewLayout when the socket path is too long (ErrSocketPath). It does not
+// check drives: on a layout NewLayout refuses, the daemon does not start,
+// so a hook's gates fail closed in the protected folders (D156).
 func HookLayout(e Env) (Layout, error)
 
 // LayoutAt derives a Layout for an explicit base and run directory (tests,
@@ -5598,6 +5689,10 @@ func LayoutAt(base, runDir string) (Layout, error)
 
 // NewLayout derives the Layout for e, honouring overrides only when
 // OverridesAllowed(e). It fails if the socket path is 104 bytes or longer.
+// Under WSL it also refuses a base or run directory on a Windows drive
+// (CheckDrive, D156): the error is then a *DriveError and the Layout is
+// returned complete, so that status and doctor can still report where it
+// lies; every other caller stops on the error.
 func NewLayout(e Env) (Layout, error)
 
 // CodexHome returns <base>/homes/codex/<rootID> (D31).
@@ -5616,6 +5711,35 @@ func (l Layout) UnitCapsuleDir(harness, unitKey string) string
 
 // VaultDir returns <base>/vaults/<vaultID>.
 func (l Layout) VaultDir(vaultID string) string
+
+// WSL is what precinto knows about the Windows Subsystem for Linux
+// instance it runs in (D155). The zero value means "not WSL".
+type WSL struct {
+	// Version is 0 outside WSL, 1 under WSL 1 and 2 under WSL 2, from the
+	// kernel's release and version strings and /run/WSL.
+	Version int
+	// Interop reports whether programs of this distribution can start
+	// Windows programs: binfmt_misc holds an enabled WSLInterop entry.
+	// InteropKnown is false when binfmt_misc could not be read.
+	Interop      bool
+	InteropKnown bool
+	// MountRoot is the directory under which WSL mounts the Windows drives
+	// ([automount] root of /etc/wsl.conf, default /mnt/); it ends in "/".
+	MountRoot string
+}
+
+// DetectWSL returns the WSL facts of this system, read once per process
+// (D155): on linux from /proc/sys/kernel/osrelease, /proc/version, /run/WSL,
+// /proc/sys/fs/binfmt_misc and /etc/wsl.conf; elsewhere the zero WSL.
+func DetectWSL() WSL
+
+// UsersFolder reports whether p lies in the Users folder of a Windows drive
+// mounted into WSL: <MountRoot><drive letter>/Users or below, compared
+// without case as the drives compare names. OneDrive, and its Known Folder
+// Move of Desktop and Documents, sync files there (D156). It is always
+// false outside WSL and for a relative p. The path is compared as given:
+// callers pass a resolved path.
+func (w WSL) UsersFolder(p string) bool
 ```
 
 ### `internal/config`
@@ -6126,6 +6250,10 @@ const (
 	MsgAgentDownAll       MsgID = "E.agentdown"        // the precinto agent isn't running, so every folder is locked. Unlock with: precinto unlock
 	MsgNeedTerminal       MsgID = "E.needtty"          // {command} needs your own terminal (stdin and stdout must be a terminal). Run it yourself in a terminal.
 	MsgHomeUnregistered   MsgID = "E.unregistered"     // precinto: {n} sealed unit(s) come from a Claude config folder (~/.claude or CLAUDE_CONFIG_DIR) that precinto has not registered, so they stay sealed. Register it with: precinto integrate claude-code
+	MsgWSL1               MsgID = "E.wsl1"             // precinto: this Linux distribution runs under WSL 1, where precinto can't protect folders: it needs WSL 2. Convert the distribution in Windows with: {command}
+	MsgWindowsDrive       MsgID = "E.windrive"         // precinto: {folder} is on a Windows drive, where Windows programs change files without precinto seeing them, so precinto won't seal, restore or keep files there. Use a folder in the Linux file system of this WSL distribution (for example under /home), then try again.
+	MsgWindowsDriveUnsure MsgID = "E.windrive.unsure"  // precinto: precinto could not tell whether {folder} is on a Windows drive, so it won't seal, restore or keep files there. Check that /proc/self/mountinfo can be read, then try again.
+	MsgWindowsProgram     MsgID = "E.winprogram"       // precinto: {file} would run as a Windows program ({cause}), which precinto can't see or seal from WSL. Install {harness} inside this WSL distribution, then try again.
 	MsgShimFailed         MsgID = "D.shim"             // precinto: precinto could not run, so this protected folder stays locked. Reinstall precinto, then run: precinto doctor
 )
 
@@ -6299,6 +6427,24 @@ const (
 	// CheckExperimentalVersion: an installed harness version outside an
 	// experimental inventory's verified_versions (SPEC §7.3).
 	CheckExperimentalVersion = "experimental-version"
+	// CheckWSL: precinto runs under WSL 1, which it refuses (fail), or
+	// under WSL 2; no finding outside WSL (D155, D156).
+	CheckWSL = "wsl"
+	// CheckWSLInterop: under WSL, Windows interoperability is on, so a
+	// program of the distribution can become its superuser through
+	// wsl.exe and read the agent's memory (warn, D155).
+	CheckWSLInterop = "wsl-interop"
+	// CheckWSLIdle: under WSL 2, the distribution stops after
+	// instanceIdleTimeout, and the agent with it, so sealing waits for the
+	// next precinto start (info, D155).
+	CheckWSLIdle = "wsl-idle-shutdown"
+	// CheckWindowsDrive: under WSL, a protected folder, a harness folder or
+	// a folder of precinto is on a Windows drive, or precinto cannot tell
+	// (fail, D156).
+	CheckWindowsDrive = "windows-drive"
+	// CheckWindowsHarnessData (--leaks): Claude Code or Codex data of a
+	// Windows account in <mount root><drive>/Users/<name> (warn, D156).
+	CheckWindowsHarnessData = "windows-harness-data"
 )
 
 // Codes lists every check code in display order.

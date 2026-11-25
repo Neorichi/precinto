@@ -146,6 +146,12 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	}
 
 	h, registered := launchHome(e)
+	// D156: the session will write its transcripts and task files there;
+	// under WSL a home on a Windows drive is one precinto could neither
+	// seal nor restore into, so a managed launch with it is refused.
+	if err := checkHomeDrives(h); err != nil {
+		return harness.LaunchPlan{}, err
+	}
 	maxAge := retention(h)
 	// Selectors match Manifest.ProjectDir exactly: the session's realpath'd
 	// start cwd (D73); cwd is realpath'd above.
@@ -245,8 +251,21 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 
 // resolveExe makes argv[0] absolute: an absolute argv[0] is kept, then the
 // configured [harness.claude-code].bin, then PATH of the invoking
-// environment.
+// environment. Under WSL an executable that would run as a Windows
+// program is refused (harness.CheckProgram, D156): WSL appends the
+// Windows PATH, so `claude` can be a Windows install precinto cannot see.
 func (a *adapter) resolveExe(e harness.Env, name string) (string, error) {
+	exe, err := lookExe(e, name)
+	if err != nil {
+		return "", err
+	}
+	if err := checkProgram(e.Host, harness.ClaudeCode, exe); err != nil {
+		return "", err
+	}
+	return exe, nil
+}
+
+func lookExe(e harness.Env, name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return filepath.Clean(name), nil
 	}

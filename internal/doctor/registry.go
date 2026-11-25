@@ -28,6 +28,10 @@ func registry() []check {
 	claudeH, codexH := harness.ClaudeCode, harness.Codex
 	return []check{
 		{code: CheckConfig, run: checkConfig},
+		{code: CheckWSL, run: checkWSL},
+		{code: CheckWSLInterop, run: checkWSLInterop},
+		{code: CheckWSLIdle, run: checkWSLIdle},
+		{code: CheckWindowsDrive, folders: true, run: checkWindowsDrive},
 		{code: CheckDiskEncryption, run: checkDiskEncryption},
 		{code: CheckUnhardenedBuild, run: checkUnhardenedBuild},
 		{code: CheckLoaderEnv, run: checkLoaderEnv},
@@ -56,6 +60,7 @@ func registry() []check {
 		{code: CheckPermissions, run: checkPermissions},
 		{code: CheckServiceTCC, folders: true, run: checkServiceTCC},
 		{code: CheckTerminalResidue, leaks: true, run: checkTerminalResidue},
+		{code: CheckWindowsHarnessData, leaks: true, run: checkWindowsHarnessData},
 		{code: CheckQuarantine, run: checkQuarantine},
 		{code: CheckUnsealed, folders: true, run: checkUnsealed},
 		{code: CheckInterrupted, run: checkInterrupted},

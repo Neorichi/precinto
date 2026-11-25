@@ -16,6 +16,7 @@ import (
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/fsx"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/hook"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
@@ -58,8 +59,11 @@ func productionSystem() *system {
 		uiContext: func(e paths.Env) platform.UIContext {
 			return platform.DetectUIContext(e, os.Stdin, os.Stdout)
 		},
-		cloudSynced: platform.CloudSynced,
-		realpath:    fsx.Realpath,
+		cloudSynced:  platform.CloudSynced,
+		realpath:     fsx.Realpath,
+		wsl:          paths.DetectWSL,
+		checkDrive:   paths.CheckDrive,
+		checkProgram: harness.CheckProgram,
 
 		exec:      runExternal,
 		launchctl: runLaunchctl,

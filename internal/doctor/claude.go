@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/harness/claude"
 	"github.com/precinto/precinto/internal/ui"
 )
 
@@ -540,11 +541,9 @@ func (e *env) claudeTmpDirs() []string {
 	if d := e.o.Env.Get("CLAUDE_CODE_TMPDIR"); filepath.IsAbs(d) {
 		cands = append(cands, filepath.Clean(d))
 	} else if e.d.EUID >= 0 {
-		base := "/tmp"
-		if e.d.GOOS == "darwin" {
-			base = "/private/tmp"
-		}
-		cands = append(cands, filepath.Join(base, fmt.Sprintf("claude-%d", e.d.EUID)))
+		// Claude's default: /private/tmp/claude-<uid> on darwin, else
+		// <os.tmpdir()>/claude-<uid> (TMPDIR, TMP, TEMP, else /tmp).
+		cands = append(cands, claude.TmpBase(e.o.Env, e.d.GOOS, e.d.EUID))
 	}
 	var out []string
 	seen := map[string]bool{}

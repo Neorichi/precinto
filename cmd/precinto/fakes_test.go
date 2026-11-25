@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +80,14 @@ type env struct {
 	agentOpts []agent.Options
 	agentErr  error
 	doctorOut []doctor.Finding
+
+	// WSL (D155, D156): the facts the seams report, the folders that are
+	// Windows drives (or that cannot be placed), and the executables that
+	// are Windows programs. The zero value is "not WSL".
+	wsl          paths.WSL
+	drives       []string
+	unsureDrives []string
+	winPrograms  []string
 }
 
 func newEnv(t *testing.T) *env {
@@ -129,6 +138,29 @@ func (e *env) app() *app {
 		uiContext:    func(paths.Env) platform.UIContext { return e.uictx },
 		cloudSynced:  func(p string) bool { return strings.Contains(p, "CloudStorage") },
 		realpath:     filepath.EvalSymlinks,
+		wsl:          func() paths.WSL { return e.wsl },
+		checkDrive: func(p string) error {
+			if e.wsl.Version == 0 {
+				return nil
+			}
+			for _, d := range e.drives {
+				if paths.Within(d, p) {
+					return &paths.DriveError{Path: p}
+				}
+			}
+			for _, d := range e.unsureDrives {
+				if paths.Within(d, p) {
+					return &paths.DriveError{Path: p, Unknown: true, Err: errors.New("unreadable mount table")}
+				}
+			}
+			return nil
+		},
+		checkProgram: func(_ paths.Env, h harness.ID, exe string) error {
+			if e.wsl.Version != 0 && slices.Contains(e.winPrograms, exe) {
+				return &harness.ProgramError{Harness: h, Exe: exe, Why: "is a Windows executable"}
+			}
+			return nil
+		},
 		exec: func(ctx context.Context, c execSpec) ([]byte, error) {
 			e.execs = append(e.execs, c)
 			key := ""

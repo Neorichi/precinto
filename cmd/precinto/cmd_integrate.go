@@ -51,6 +51,9 @@ func cmdIntegrate(a *app, args []string) int {
 	if len(pos) != 1 {
 		return a.usageFail(f, "integrate needs one harness (claude-code, codex, or an experimental one)")
 	}
+	if a.refuseWSL1() {
+		return exitError
+	}
 	h := pos[0]
 	switch h {
 	case "claude", string(harness.ClaudeCode):
@@ -86,6 +89,16 @@ func (a *app) integrateBuiltin(id harness.ID, exeName string, printOnly bool) in
 			a.say(textNoHarnessBin, exeName)
 			return exitError
 		}
+	}
+	// D156: under WSL the Windows PATH is appended to the Linux one, so the
+	// harness found may be a Windows install: never run it (its --version,
+	// its plugin commands) nor install precinto's plugin into it. Its homes
+	// must not be on a Windows drive either.
+	if err := a.sys.checkProgram(a.env, id, bin); err != nil {
+		return a.fail("integrate", err)
+	}
+	if err := a.checkHarnessDrives([]string{string(id)}); err != nil {
+		return a.fail("integrate", err)
 	}
 	ctx := context.Background()
 	min := hc.MinVersion

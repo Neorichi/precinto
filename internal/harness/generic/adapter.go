@@ -606,6 +606,10 @@ func (a *adapter) Targets(ctx context.Context, e harness.Env, ref harness.UnitRe
 	}, nil
 }
 
+// checkProgram refuses a Windows program under WSL (D156); tests stand in
+// for WSL through it.
+var checkProgram = harness.CheckProgram
+
 // PlanLaunch runs the harness through the wrapper (gated by the lock
 // screen only: experimental harnesses have no hooks) with nothing restored
 // and nothing sealed automatically (SPEC §7.3).
@@ -630,6 +634,11 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 			}
 			exe = p
 		}
+	}
+	// D156: under WSL a Windows install of the harness (the Windows PATH
+	// WSL appends) runs as a process precinto cannot see.
+	if err := checkProgram(e.Host, a.ID(), filepath.Clean(exe)); err != nil {
+		return harness.LaunchPlan{}, err
 	}
 	args := argv[1:]
 	return harness.LaunchPlan{

@@ -57,6 +57,19 @@ func newLayout(e Env, goos string, overrides bool) (Layout, error) {
 	return LayoutAt(base, runDir)
 }
 
+// checkLayoutDrives applies check (CheckDrive) to the base and to a run
+// directory outside it (D156): precinto keeps its vaults, capsules,
+// staging, per-folder Codex homes and socket only off Windows drives.
+func checkLayoutDrives(l Layout, check func(string) error) error {
+	if err := check(l.Base); err != nil {
+		return err
+	}
+	if l.RunDir != "" && !Within(l.Base, l.RunDir) {
+		return check(l.RunDir)
+	}
+	return nil
+}
+
 // overridePath returns the value of an override variable, "" when it is
 // unset or empty, and an error when it is not an absolute clean path.
 func overridePath(e Env, key string) (string, error) {

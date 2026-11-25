@@ -36,6 +36,9 @@ func cmdRun(a *app, args []string) int {
 // runHarness runs argv through the wrapper (SPEC §15.1) and returns the
 // child's exit code.
 func (a *app) runHarness(h harness.ID, argv []string, noPTY bool) int {
+	if a.refuseWSL1() {
+		return exitError
+	}
 	if err := a.sys.harden(); err != nil {
 		return a.fail("run", err)
 	}

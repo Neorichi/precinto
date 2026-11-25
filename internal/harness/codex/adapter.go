@@ -482,6 +482,12 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 		return harness.LaunchPlan{}, err
 	}
 	home := e.Layout.CodexHome(root.ID)
+	// D156: under WSL neither the folder's sealed home nor the Codex home
+	// it is seeded from may be on a Windows drive (a CODEX_HOME shared with
+	// a Windows Codex, as OpenAI documents, is one).
+	if err := checkHomes(home, user); err != nil {
+		return harness.LaunchPlan{}, err
+	}
 	if filepath.Clean(user) == filepath.Clean(home) {
 		user = "" // running inside the sealed home already: nothing to seed from
 	}
@@ -561,6 +567,20 @@ func homeExists(home string) bool {
 }
 
 func (a *adapter) resolveExe(e harness.Env, name string) (string, error) {
+	exe, err := lookExe(e, name)
+	if err != nil {
+		return "", err
+	}
+	// D156: under WSL, `codex` can resolve to a Windows install (WSL
+	// appends the Windows PATH), whose processes and files precinto can
+	// neither see nor seal.
+	if err := checkProgram(e.Host, harness.Codex, exe); err != nil {
+		return "", err
+	}
+	return exe, nil
+}
+
+func lookExe(e harness.Env, name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return filepath.Clean(name), nil
 	}
