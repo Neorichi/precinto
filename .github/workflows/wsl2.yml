@@ -105,9 +105,13 @@ jobs:
             ;;
           esac
           # The checkout lives on a Windows drive and is owned by another
-          # user here: trust it for this one clone only.
+          # user here. A local clone reads it through git-upload-pack, which
+          # does not see a one-off -c safe.directory, so trust exactly this
+          # path in the throwaway distribution's global config.
+          git config --global --add safe.directory "$src"
+          git config --global --add safe.directory "$src/.git"
           rm -rf "$HOME/precinto"
-          git -c safe.directory='*' clone --quiet --no-hardlinks "$src" "$HOME/precinto"
+          git clone --quiet --no-hardlinks "$src" "$HOME/precinto"
           git -C "$HOME/precinto" log -1 --format='commit %H'
           fs=$(stat -f -c %T "$HOME/precinto")
           echo "$HOME/precinto is on $fs; /tmp is on $(stat -f -c %T /tmp)"

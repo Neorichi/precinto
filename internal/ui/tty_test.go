@@ -184,9 +184,9 @@ func TestReadLineOverPTY(t *testing.T) {
 	if line != "prune" {
 		t.Errorf("ReadLine = %q, want %q", line, "prune")
 	}
-	if !strings.Contains(p.output(), "prx\b \bune\r\n") {
-		t.Errorf("typed text not echoed as edited: %q", p.output())
-	}
+	// ReadLine returns once it has written the echo to the slave; the
+	// reader of the master may not have collected it yet, so wait for it.
+	p.waitOutput("prx\b \bune\r\n")
 	p.checkRestored(before)
 
 	ch = async(func() (string, error) { return tty.ReadLine(prompt) })
