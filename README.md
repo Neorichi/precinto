@@ -316,7 +316,7 @@ Pre-release archives are on the [Releases](https://github.com/Neorichi/precinto/
 ```sh
 shasum -a 256 -c SHA256SUMS --ignore-missing   # on Linux: sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf precinto_*_darwin_universal.tar.gz      # or the linux_amd64 / linux_arm64 archive
-sudo install -m 0755 precinto /usr/local/bin/precinto
+sudo install -m 0755 precinto_*_darwin_universal/precinto /usr/local/bin/precinto
 precinto version
 ```
 

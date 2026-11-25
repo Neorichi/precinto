@@ -316,7 +316,7 @@ En la página de [Releases](https://github.com/Neorichi/precinto/releases) está
 ```sh
 shasum -a 256 -c SHA256SUMS --ignore-missing   # en Linux: sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf precinto_*_darwin_universal.tar.gz      # o el archivo linux_amd64 / linux_arm64
-sudo install -m 0755 precinto /usr/local/bin/precinto
+sudo install -m 0755 precinto_*_darwin_universal/precinto /usr/local/bin/precinto
 precinto version
 ```
 
