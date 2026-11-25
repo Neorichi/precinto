@@ -22,7 +22,7 @@ const (
 	textRecoveryUsers  = "it is inside the Users folder of a Windows drive, which OneDrive can sync"
 	// textRecoveryDriveUnsure: a reason of textRecoveryOutBad (D156).
 	textRecoveryDriveUnsure = "precinto could not tell whether it is on a Windows drive"
-	textRecoveryOnDrive     = "note: %s is on a Windows drive: Windows programs, and backups or sync of that drive, can read it. Move the recovery key offline as soon as you can."
+	textRecoveryOnDrive     = "it is on a Windows drive, which Windows may sync or back up and Windows programs can read"
 	// Status under WSL (D155, D156): attention details and fixes, and the
 	// summary line.
 	textWSL1Detail        = "this distribution runs under WSL 1, where precinto does not protect folders"

@@ -584,28 +584,27 @@ func (a *app) createRecoveryOut(p string) (*os.File, error) {
 	if l, err := a.layout(); err == nil && paths.Within(l.Base, target) {
 		return nil, bad("it is inside precinto's data folder")
 	}
-	// D156: under WSL the Users folder of a Windows drive is synced by
-	// OneDrive and its Known Folder Move: refused like any synced folder.
-	// Another Windows drive is only a warning (Windows programs, and the
-	// backups and sync of that drive, can read the file); one precinto
-	// cannot place is refused.
-	onDrive := false
+	// D156: under WSL no Windows drive receives the key (SPEC §4.7):
+	// precinto cannot tell which folder of a drive Windows syncs (OneDrive
+	// and its Known Folder Move in the Users folder, but also OneDrive,
+	// Dropbox or Google Drive's virtual drive elsewhere), and Windows
+	// programs and the drive's backups read it unseen. The mount table
+	// decides, so a drive mounted outside the automount root counts too;
+	// one precinto cannot place is refused. The user can still move the
+	// file there afterwards.
 	if a.sys.wsl().Version != 0 {
-		if a.sys.wsl().UsersFolder(target) {
-			return nil, bad(textRecoveryUsers)
-		}
 		var de *paths.DriveError
-		if err := a.sys.checkDrive(target); errors.As(err, &de) && de.Unknown {
+		switch err := a.sys.checkDrive(target); {
+		case errors.As(err, &de) && de.Unknown:
 			return nil, bad(textRecoveryDriveUnsure)
-		} else if err != nil {
-			onDrive = true
+		case a.sys.wsl().UsersFolder(target):
+			return nil, bad(textRecoveryUsers)
+		case err != nil:
+			return nil, bad(textRecoveryOnDrive)
 		}
 	}
 	if a.sys.cloudSynced(target) {
 		return nil, bad("it is inside a cloud-synced folder")
-	}
-	if onDrive {
-		a.say(textRecoveryOnDrive, a.display(target))
 	}
 	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL|fsx.ONoFollow, 0o600)
 	if err != nil {

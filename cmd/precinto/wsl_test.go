@@ -200,9 +200,10 @@ func TestRunReportsWSLRefusals(t *testing.T) {
 	}
 }
 
-// D156: under WSL --recovery-out refuses the Users folder of a Windows
-// drive (OneDrive and Known Folder Move sync it) and a folder precinto
-// cannot place; another Windows drive only gets a note.
+// D156: under WSL --recovery-out refuses every Windows drive (the Users
+// folder, which OneDrive and Known Folder Move sync, with its own reason;
+// any other drive, which precinto cannot tell synced or not, even one
+// mounted outside the automount root) and a folder precinto cannot place.
 func TestInitRecoveryOutUnderWSL(t *testing.T) {
 	setup := func() *env {
 		e := newEnv(t)
@@ -224,15 +225,20 @@ func TestInitRecoveryOutUnderWSL(t *testing.T) {
 		t.Fatal("the key was written to a Users folder")
 	}
 
-	e = setup()
-	other := mkdir(t, filepath.Join(e.h.Dir, "drives", "d", "keys"))
-	e.wsl = paths.WSL{Version: 2, MountRoot: filepath.Join(e.h.Dir, "drives") + "/"}
-	e.drives = []string{filepath.Join(e.h.Dir, "drives")}
-	if code := e.run("init", "--recovery-out", filepath.Join(other, "key.txt")); code != exitOK {
-		t.Fatalf("another drive: exit %d (%s)", code, e.stderr())
-	}
-	if !strings.Contains(e.stderr(), "is on a Windows drive: Windows programs") {
-		t.Fatalf("no note for another drive: %q", e.stderr())
+	for _, rel := range []string{
+		filepath.Join("drives", "g", "My Drive"), // Google Drive's virtual drive
+		filepath.Join("win", "c", "Users", "u"),  // a drive mounted outside the automount root (fstab)
+	} {
+		e = setup()
+		other := mkdir(t, filepath.Join(e.h.Dir, rel))
+		e.wsl = paths.WSL{Version: 2, MountRoot: filepath.Join(e.h.Dir, "drives") + "/"}
+		e.drives = []string{filepath.Join(e.h.Dir, "drives"), filepath.Join(e.h.Dir, "win")}
+		if code := e.run("init", "--recovery-out", filepath.Join(other, "key.txt")); code != exitLocked || !strings.Contains(e.stderr(), textRecoveryOnDrive) {
+			t.Fatalf("%s: exit %d (%s)", other, code, e.stderr())
+		}
+		if _, err := os.Stat(filepath.Join(other, "key.txt")); !errors.Is(err, os.ErrNotExist) || len(e.vaults.initOpts) != 0 {
+			t.Fatalf("the key was written to %s", other)
+		}
 	}
 
 	e = setup()
