@@ -143,12 +143,21 @@ func resolveBase(b harness.BaseSpec, e harness.Env) (dir string, relocated bool,
 	return resolve(d), false, nil
 }
 
+// home resolves the harness's one home. Under WSL a base on a Windows
+// drive, or one precinto cannot place, fails it with the base's
+// *paths.DriveError (D156): Windows programs write there unseen (a home
+// shared with the harness's Windows install), so nothing of the home is
+// scanned, sealed or restored into, and the error reports it (Homes,
+// Scan, Targets).
 func (a *adapter) home(e harness.Env) (harness.Home, error) {
 	bases := map[capsule.BaseID]string{}
 	h := harness.Home{Harness: a.ID(), Default: true}
 	for i, b := range a.inv.Bases {
 		dir, relocated, err := resolveBase(b, e)
 		if err != nil {
+			return harness.Home{}, err
+		}
+		if err := checkDrive(dir); err != nil {
 			return harness.Home{}, err
 		}
 		if relocated {
@@ -606,9 +615,12 @@ func (a *adapter) Targets(ctx context.Context, e harness.Env, ref harness.UnitRe
 	}, nil
 }
 
-// checkProgram refuses a Windows program under WSL (D156); tests stand in
-// for WSL through it.
-var checkProgram = harness.CheckProgram
+// checkProgram refuses a Windows program, and checkDrive a home on a
+// Windows drive, under WSL (D156); tests stand in for WSL through them.
+var (
+	checkProgram = harness.CheckProgram
+	checkDrive   = paths.CheckDrive
+)
 
 // PlanLaunch runs the harness through the wrapper (gated by the lock
 // screen only: experimental harnesses have no hooks) with nothing restored

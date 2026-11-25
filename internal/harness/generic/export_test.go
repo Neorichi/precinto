@@ -15,3 +15,12 @@ func StandInForWSL(program func(paths.Env, harness.ID, string) error) (restore f
 	checkProgram = program
 	return func() { checkProgram = old }
 }
+
+// StandInDrivesForWSL makes the WSL drive check (D156) of the home's bases
+// answer with drive until restore is called. Tests that use it never run
+// in parallel.
+func StandInDrivesForWSL(drive func(string) error) (restore func()) {
+	old := checkDrive
+	checkDrive = drive
+	return func() { checkDrive = old }
+}
