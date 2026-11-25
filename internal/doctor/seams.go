@@ -60,7 +60,11 @@ type deps struct {
 	// under WSL (paths.DetectWSL, paths.CheckDrive; D155, D156).
 	WSL        func() paths.WSL
 	CheckDrive func(p string) error
-	Executable func() (string, error)
+	// CheckProgram refuses, under WSL, a harness executable that would
+	// run as a Windows program (harness.CheckProgram; D156): doctor finds
+	// harnesses through PATH, to which WSL appends the Windows PATH.
+	CheckProgram func(e paths.Env, h harness.ID, exe string) error
+	Executable   func() (string, error)
 	// SystemBins are directories searched for harness executables after
 	// PATH and the per-user install locations.
 	SystemBins []string
@@ -126,6 +130,7 @@ func defaultDeps(o Options) *deps {
 		VolumeRoot:       volumeRoot,
 		WSL:              paths.DetectWSL,
 		CheckDrive:       paths.CheckDrive,
+		CheckProgram:     harness.CheckProgram,
 		Executable:       os.Executable,
 		SystemBins:       []string{"/opt/homebrew/bin", "/usr/local/bin"},
 		RunShell:         runLoginShell,

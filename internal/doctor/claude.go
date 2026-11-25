@@ -34,7 +34,7 @@ func (e *env) claude() *install {
 	}
 	in := &install{}
 	in.exe = e.findExecutable("claude", e.o.Cfg.Harness[string(harness.ClaudeCode)].Bin)
-	if in.exe != "" {
+	if in.exe != "" && e.checkInstalled(in, harness.ClaudeCode) {
 		in.version, in.versionOK = versionOfExecutable(in.exe, claudeNPMPackage)
 	}
 	in.running = e.runningOf(isClaudeProcess, claudeProcessVersion)
@@ -60,6 +60,8 @@ func checkClaudeVersion(e *env) []Finding {
 	switch {
 	case in.exe == "":
 		out = append(out, info(CheckClaudeVersion, "the claude executable was not found, so its version was not checked", ""))
+	case in.winProgram != nil:
+		out = append(out, e.winProgramFinding(CheckClaudeVersion, "Claude Code", "claude", in.winProgram))
 	case !in.versionOK:
 		out = append(out, info(CheckClaudeVersion, "could not tell the version of Claude Code at "+e.show(in.exe), "claude --version"))
 	case in.version.compare(min) < 0:

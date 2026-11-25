@@ -34,7 +34,7 @@ func (e *env) codex() *install {
 	}
 	in := &install{}
 	in.exe = e.findExecutable("codex", e.o.Cfg.Harness[string(harness.Codex)].Bin)
-	if in.exe != "" {
+	if in.exe != "" && e.checkInstalled(in, harness.Codex) {
 		in.version, in.versionOK = versionOfExecutable(in.exe, codexNPMPackage)
 	}
 	// Running Codex processes carry no readable version (only Claude's
@@ -108,6 +108,8 @@ func checkCodexVersion(e *env) []Finding {
 	switch {
 	case in.exe == "":
 		out = append(out, info(CheckCodexVersion, "the codex executable was not found, so its version was not checked", ""))
+	case in.winProgram != nil:
+		out = append(out, e.winProgramFinding(CheckCodexVersion, "Codex", "codex", in.winProgram))
 	case !in.versionOK:
 		out = append(out, info(CheckCodexVersion, "could not tell the version of Codex at "+e.show(in.exe), "codex --version"))
 	default:

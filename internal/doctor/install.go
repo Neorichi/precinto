@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +28,40 @@ type install struct {
 	version   version
 	versionOK bool
 	running   []runningHarness // live processes of the harness
+	// winProgram is, under WSL, why exe would run as a Windows program,
+	// or why doctor could not tell (D156): precinto run and integrate
+	// refuse it, and its version is not read.
+	winProgram *harness.ProgramError
+}
+
+// checkInstalled applies D156 to the executable doctor found for h: under
+// WSL a Windows install (WSL appends the Windows PATH) is recorded as such
+// instead of being read for a version.
+func (e *env) checkInstalled(in *install, h harness.ID) bool {
+	if in.exe == "" || e.d.CheckProgram == nil {
+		return true
+	}
+	var pe *harness.ProgramError
+	if errors.As(e.d.CheckProgram(e.o.Env, h, in.exe), &pe) {
+		in.winProgram = pe
+		return false
+	}
+	return true
+}
+
+// winProgramFinding is the finding of an executable that would run as a
+// Windows program, or that doctor could not check (D156); name is the
+// harness's name, cmd its command.
+func (e *env) winProgramFinding(code, name, cmd string, pe *harness.ProgramError) Finding {
+	cause := pe.Why
+	if pe.Runs != "" {
+		cause = "it runs " + e.show(pe.Runs) + ", which " + pe.Why
+	}
+	fix := "install " + name + " inside this WSL distribution, ahead of the Windows PATH that WSL appends to PATH"
+	if pe.Unknown {
+		return fail(code, "could not check that the "+cmd+" precinto would run, "+e.show(pe.Exe)+", is not a Windows program ("+cause+"), so precinto run and integrate refuse it", fix)
+	}
+	return fail(code, "the "+cmd+" precinto would run, "+e.show(pe.Exe)+", is a Windows program ("+cause+"): precinto run and integrate refuse it, and precinto can neither see nor seal what a Windows "+name+" writes", fix)
 }
 
 type runningHarness struct {

@@ -158,3 +158,41 @@ func TestWindowsHarnessData(t *testing.T) {
 	f.d.WSL = func() paths.WSL { return paths.WSL{Version: 2, MountRoot: filepath.Join(f.h.Dir, "nodrives") + "/"} }
 	want(t, f.run(), doctor.CheckWindowsHarnessData, doctor.OK, "no Claude Code or Codex data")
 }
+
+// D156 (F10): under WSL doctor finds claude and codex through the PATH,
+// to which WSL appends the Windows PATH; a Windows install found there is
+// reported as such (precinto run and integrate refuse it), its version is
+// not read, and a program doctor could not check says so.
+func TestHarnessInstalledAsAWindowsProgram(t *testing.T) {
+	f := newFixture(t)
+	exe := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(f.nativeClaude("2.1.329"))))), "bin", "claude")
+	f.d.WSL = func() paths.WSL { return paths.WSL{Version: 2, InteropKnown: true, MountRoot: "/mnt/"} }
+	var asked []string
+	f.d.CheckProgram = func(_ paths.Env, h harness.ID, p string) error {
+		asked = append(asked, string(h)+" "+p)
+		if p == exe {
+			return &harness.ProgramError{Harness: h, Exe: p, Runs: "/mnt/c/Program Files/nodejs/node.exe", Why: "is on a Windows drive"}
+		}
+		return nil
+	}
+	fs := f.run()
+	x := want(t, fs, doctor.CheckClaudeVersion, doctor.Fail, "is a Windows program", "runs /mnt/c/Program Files/nodejs/node.exe, which is on a Windows drive", "refuse it")
+	if !strings.Contains(x.Fix, "inside this WSL distribution") {
+		t.Errorf("fix %q", x.Fix)
+	}
+	none(t, fs, doctor.CheckClaudeVersion, doctor.OK)
+	if len(asked) == 0 || asked[0] != "claude-code "+exe {
+		t.Fatalf("CheckProgram asked %v", asked)
+	}
+	f = newFixture(t)
+	f.nativeClaude("2.1.329")
+	f.d.CheckProgram = func(_ paths.Env, h harness.ID, p string) error {
+		return &harness.ProgramError{Harness: h, Exe: p, Why: "can't be read to check that it is not a Windows program", Unknown: true}
+	}
+	want(t, f.run(), doctor.CheckClaudeVersion, doctor.Fail, "could not check that the claude precinto would run", "is not a Windows program")
+	// A Linux install is read for its version as before.
+	f = newFixture(t)
+	f.nativeClaude("2.1.329")
+	f.d.CheckProgram = func(paths.Env, harness.ID, string) error { return nil }
+	want(t, f.run(), doctor.CheckClaudeVersion, doctor.OK, "2.1.329")
+}
