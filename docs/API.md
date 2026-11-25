@@ -2177,6 +2177,13 @@ type GateReq struct {
 	Trigger    string   `json:"trigger,omitempty"` // PreCompact manual|auto
 	PID        int      `json:"pid,omitempty"`     // harness pid (CLAUDE_PID, or the nearest codex ancestor); measured again by the daemon
 	CodexHome  string   `json:"codex_home,omitempty"`
+	// ConfigDir and TmpDir are, for Claude Code, the session's config
+	// folder (from transcript_path) and temporary folder (from the
+	// scratchpad path): under WSL the daemon blocks the session in a
+	// folder that manages Claude when one is on a Windows drive (D156).
+	// Advisory: they can only make the gate stricter.
+	ConfigDir string `json:"config_dir,omitempty"`
+	TmpDir    string `json:"tmp_dir,omitempty"`
 }
 
 // GateResp is the daemon's decision; texts come from the ui catalog and are
@@ -3813,6 +3820,18 @@ type UnitRef struct {
 // CleanupPeriodDays returns Claude's effective cleanupPeriodDays from the
 // user settings of configDir (default 30) for the retention rules of D14.
 func CleanupPeriodDays(configDir string) (int, error)
+
+// EnvDirs returns Claude's config, temporary and cache folders as Claude
+// uses them in env (SPEC §7.0), clean, unresolved and whether or not they
+// exist: CLAUDE_CONFIG_DIR or <home>/.claude, CLAUDE_CODE_TMPDIR or
+// TmpBase, and the MCP-log cache (darwin: <home>/Library/Caches/
+// claude-cli-nodejs; elsewhere $XDG_CACHE_HOME/claude-cli-nodejs or
+// <home>/.cache/claude-cli-nodejs). home is the user's home ("" unknown),
+// uid the user's (TmpBase; a negative uid names no temporary folder). def
+// reports the default config folder; a folder precinto cannot name is "".
+// The CLI and doctor list the folders to keep off Windows drives with it
+// (D156).
+func EnvDirs(e paths.Env, goos string, uid int, home string) (dir, tmp, cache string, def bool)
 
 // New returns the adapter.
 func New() harness.Adapter
@@ -6256,6 +6275,7 @@ const (
 	MsgStartLockedModel   MsgID = "C3.start.model"     // precinto: this project is locked. If precinto denies a tool, stop and ask the user to run "precinto unlock".
 	MsgStartLockedUser    MsgID = "C3.start.user"      // precinto: {folder} is locked. Your first message will ask you to unlock.
 	MsgCodexWrongHome     MsgID = "C3.codexhome"       // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
+	MsgClaudeOnDrive      MsgID = "C3.windrive"        // precinto: this Claude Code session keeps its files on a Windows drive, where precinto can't seal them, so {folder} stays locked to it. Keep Claude's folders in the Linux file system of this WSL distribution, then start Claude again.
 	MsgOverlayTitle       MsgID = "C4.title"           // Locked by precinto
 	MsgOverlayLine        MsgID = "C4.line"            // {folder} · {reason}
 	MsgOverlayPaused      MsgID = "C4.paused"          // Your session is paused, not closed. It continues where it was.

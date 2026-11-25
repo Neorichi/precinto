@@ -222,6 +222,13 @@ type GateReq struct {
 	Trigger    string   `json:"trigger,omitempty"` // PreCompact manual|auto
 	PID        int      `json:"pid,omitempty"`     // harness pid (CLAUDE_PID, or the nearest codex ancestor); measured again by the daemon
 	CodexHome  string   `json:"codex_home,omitempty"`
+	// ConfigDir and TmpDir are, for Claude Code, the session's config
+	// folder (from transcript_path) and temporary folder (from the
+	// scratchpad path): under WSL the daemon blocks the session in a
+	// folder that manages Claude when one is on a Windows drive (D156).
+	// Advisory: they can only make the gate stricter.
+	ConfigDir string `json:"config_dir,omitempty"`
+	TmpDir    string `json:"tmp_dir,omitempty"`
 }
 
 // GateResp is the daemon's decision; texts come from the ui catalog and are

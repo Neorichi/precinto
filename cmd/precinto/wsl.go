@@ -11,6 +11,7 @@ import (
 	"github.com/precinto/precinto/internal/harness/claude"
 	"github.com/precinto/precinto/internal/harness/codex"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/ui"
 )
@@ -64,36 +65,7 @@ func plainName(s string) bool {
 // claude.TmpBase, and the cache. def reports the default config folder.
 // An entry precinto cannot name is "".
 func (a *app) claudeEnvDirs() (dir, tmp, cache string, def bool) {
-	home := a.home()
-	dir = a.env.Get(paths.EnvClaudeConfigDir)
-	def = dir == ""
-	if def && home != "" {
-		dir = filepath.Join(home, ".claude")
-	}
-	if !filepath.IsAbs(dir) {
-		dir = ""
-	}
-	tmp = a.env.Get(paths.EnvClaudeTmpDir)
-	if !filepath.IsAbs(tmp) {
-		tmp = claude.TmpBase(a.env, a.sys.goos, a.sys.uid())
-	}
-	if a.sys.goos == "darwin" {
-		if home != "" {
-			cache = filepath.Join(home, "Library", "Caches", "claude-cli-nodejs")
-		}
-	} else if x := a.env.Get("XDG_CACHE_HOME"); filepath.IsAbs(x) {
-		cache = filepath.Join(filepath.Clean(x), "claude-cli-nodejs")
-	} else if home != "" {
-		cache = filepath.Join(home, ".cache", "claude-cli-nodejs")
-	}
-	return cleanOrEmpty(dir), cleanOrEmpty(tmp), cleanOrEmpty(cache), def
-}
-
-func cleanOrEmpty(p string) string {
-	if p == "" {
-		return ""
-	}
-	return filepath.Clean(p)
+	return claude.EnvDirs(a.env, a.sys.goos, a.sys.uid(), a.home())
 }
 
 // harnessDriveDirs lists the harness homes of this environment that the
@@ -203,13 +175,15 @@ func (a *app) sayProgram(pe *harness.ProgramError) {
 // --json and the human summary, and attention items, with doctor's codes,
 // for WSL 1, Windows interoperability on and every location of precinto,
 // of a protected folder or of a harness on a Windows drive (doctor
-// explains each). Outside WSL it adds nothing.
-func (a *app) wslStatus(cfg config.Config, l paths.Layout, local []ipc.Attention) (*statusWSL, []ipc.Attention) {
+// explains each). claudeGap reports a Claude folder among them: its
+// sessions' files are never scanned, so status cannot count them and
+// --check cannot pass. Outside WSL it adds nothing.
+func (a *app) wslStatus(cfg config.Config, l paths.Layout, local []ipc.Attention) (st *statusWSL, out []ipc.Attention, claudeGap bool) {
 	w := a.sys.wsl()
 	if w.Version == 0 {
-		return nil, local
+		return nil, local, false
 	}
-	st := &statusWSL{Version: w.Version, Interop: "unknown", MountRoot: w.MountRoot}
+	st = &statusWSL{Version: w.Version, Interop: "unknown", MountRoot: w.MountRoot}
 	switch {
 	case w.Interop:
 		st.Interop = "on"
@@ -222,6 +196,10 @@ func (a *app) wslStatus(cfg config.Config, l paths.Layout, local []ipc.Attention
 	if w.Interop {
 		local = append(local, ipc.Attention{Code: doctor.CheckWSLInterop, Detail: textInteropDetail, Fix: textInteropFix})
 	}
+	claudeDirs := map[string]bool{}
+	for _, p := range a.claudeDriveDirs(cfg, l) {
+		claudeDirs[p] = true
+	}
 	for _, p := range a.driveLocations(cfg, l) {
 		err := a.sys.checkDrive(p)
 		if err == nil {
@@ -232,9 +210,10 @@ func (a *app) wslStatus(cfg config.Config, l paths.Layout, local []ipc.Attention
 		if errors.As(err, &de) && de.Unknown {
 			detail = textDriveUnsure
 		}
+		claudeGap = claudeGap || claudeDirs[p]
 		local = append(local, ipc.Attention{Code: doctor.CheckWindowsDrive, Folder: a.display(p), Detail: detail, Fix: "precinto doctor"})
 	}
-	return st, local
+	return st, local, claudeGap
 }
 
 // driveLocations lists what must not lie on a Windows drive (D156), as
@@ -269,14 +248,40 @@ func (a *app) driveLocations(cfg config.Config, l paths.Layout) []string {
 		}
 	}
 	if slices.Contains(protects, string(harness.ClaudeCode)) {
-		for _, h := range cfg.Harness[string(harness.ClaudeCode)].Homes {
-			add(h.Dir)
-			add(h.Tmp)
-			add(h.Cache)
+		for _, d := range a.claudeDriveDirs(cfg, l) {
+			add(d)
 		}
 	}
 	for _, d := range a.harnessDriveDirs(protects) {
 		add(d)
 	}
 	return out
+}
+
+// claudeDriveDirs lists the Claude folders that must not lie on a Windows
+// drive (D156), as doctor's windows-drive check does: the registered ones,
+// this environment's, and the config and temporary folders hooks reported
+// for Claude sessions (the ledger), which Claude really used.
+func (a *app) claudeDriveDirs(cfg config.Config, l paths.Layout) []string {
+	var out []string
+	for _, h := range cfg.Harness[string(harness.ClaudeCode)].Homes {
+		out = append(out, h.Dir, h.Tmp, h.Cache)
+	}
+	dir, tmp, cache, _ := a.claudeEnvDirs()
+	out = append(out, dir, tmp, cache)
+	if l.SessionsDir != "" {
+		if ss, err := ledger.Open(l.SessionsDir).List(string(harness.ClaudeCode)); err == nil {
+			for _, s := range ss {
+				out = append(out, s.ConfigDirs...)
+				out = append(out, s.TmpDirs...)
+			}
+		}
+	}
+	var clean []string
+	for _, d := range out {
+		if d != "" && filepath.IsAbs(d) {
+			clean = append(clean, filepath.Clean(d))
+		}
+	}
+	return clean
 }

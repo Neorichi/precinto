@@ -97,7 +97,9 @@
           "roots": [
             "root-acme"
           ],
-          "pid": 4242
+          "pid": 4242,
+          "config_dir": "/u/.claude",
+          "tmp_dir": "/tmp/claude-501"
         }
       },
       {
@@ -126,7 +128,9 @@
           "roots": [
             "root-acme"
           ],
-          "pid": 4242
+          "pid": 4242,
+          "config_dir": "/u/.claude",
+          "tmp_dir": "/tmp/claude-501"
         }
       },
       {

@@ -92,6 +92,10 @@ type deps struct {
 	scrub    func(tty string, o platform.ScrubOptions) error
 	notify   func(tty, text string) error
 	peer     func(c *ipc.Conn) (platform.Peer, bool)
+
+	// checkDrive is paths.CheckDrive (D156): under WSL a gate blocks a
+	// Claude session whose folders are on a Windows drive.
+	checkDrive func(p string) error
 }
 
 // newDeps returns the production seams. real is false when the process
@@ -145,7 +149,8 @@ func newDeps(l paths.Layout, procs platform.ProcTable, clock platform.Clock, rea
 			}
 			return claude.ReadJobs(dir)
 		},
-		peer: func(c *ipc.Conn) (platform.Peer, bool) { return c.Peer(), c.PeerSameExecutable() },
+		peer:       func(c *ipc.Conn) (platform.Peer, bool) { return c.Peer(), c.PeerSameExecutable() },
+		checkDrive: paths.CheckDrive,
 	}
 	if real {
 		d.signal, d.waitExit, d.scrub, d.notify = platform.Signal, platform.WaitExit, platform.ScrubTTY, notifyTTY

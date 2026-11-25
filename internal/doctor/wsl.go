@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/harness/claude"
 	"github.com/precinto/precinto/internal/paths"
 )
 
@@ -101,8 +102,11 @@ func checkWindowsDrive(e *env) []Finding {
 
 // driveLocations lists what must not lie on a Windows drive (D156):
 // precinto's data and run folders, the protected folders, Claude's
-// registered folders and the Claude config folder of this environment,
-// and the Codex home a folder's sealed Codex home is seeded from.
+// folders (registered; this environment's config, temporary and cache
+// folders, as protect and integrate refuse them; and the config and
+// temporary folders hooks reported for Claude sessions, which Claude
+// really used), and the Codex home a folder's sealed Codex home is seeded
+// from.
 func (e *env) driveLocations() []driveLocation {
 	l := e.o.Layout
 	out := []driveLocation{{"precinto's data folder", l.Base, fixDriveBase}}
@@ -118,10 +122,21 @@ func (e *env) driveLocations() []driveLocation {
 				driveLocation{"Claude's temporary folder", h.Tmp, fixDriveClaude},
 				driveLocation{"Claude's cache folder", h.Cache, fixDriveClaude})
 		}
-		if d := e.o.Env.Get(paths.EnvClaudeConfigDir); filepath.IsAbs(d) {
-			out = append(out, driveLocation{"Claude's config folder", filepath.Clean(d), fixDriveClaude})
-		} else if e.home != "" {
-			out = append(out, driveLocation{"Claude's config folder", filepath.Join(e.home, ".claude"), fixDriveClaude})
+		dir, tmp, cache, _ := claude.EnvDirs(e.o.Env, e.d.GOOS, e.d.EUID, e.home)
+		out = append(out, driveLocation{"Claude's config folder", dir, fixDriveClaude},
+			driveLocation{"Claude's temporary folder", tmp, fixDriveClaude},
+			driveLocation{"Claude's cache folder", cache, fixDriveClaude})
+		if e.d.Sessions != nil {
+			if ss, err := e.d.Sessions(harness.ClaudeCode); err == nil {
+				for _, s := range ss {
+					for _, d := range s.ConfigDirs {
+						out = append(out, driveLocation{"Claude's config folder", cleanAbs(d), fixDriveClaude})
+					}
+					for _, d := range s.TmpDirs {
+						out = append(out, driveLocation{"Claude's temporary folder", cleanAbs(d), fixDriveClaude})
+					}
+				}
+			}
 		}
 	}
 	if e.protectsHarness(harness.Codex) {
@@ -181,6 +196,14 @@ func checkWindowsHarnessData(e *env) []Finding {
 }
 
 func isLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
+
+// cleanAbs is p cleaned, or "" when it is not absolute (a ledger value).
+func cleanAbs(p string) string {
+	if !filepath.IsAbs(p) {
+		return ""
+	}
+	return filepath.Clean(p)
+}
 
 // wslDiskFix is the disk-encryption fix under WSL: the distribution's disk
 // is a virtual disk file on a Windows drive (D156).

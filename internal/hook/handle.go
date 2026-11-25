@@ -363,7 +363,7 @@ func dialDaemon(ctx context.Context, d Deps) (Daemon, error) {
 
 // gateRequest is the daemon gate query for p.
 func gateRequest(p Payload, s *session) ipc.GateReq {
-	return ipc.GateReq{
+	q := ipc.GateReq{
 		Harness:    s.harness,
 		Host:       string(p.Host),
 		Event:      string(p.Event),
@@ -379,6 +379,12 @@ func gateRequest(p Payload, s *session) ipc.GateReq {
 		PID:        p.HarnessPID,
 		CodexHome:  p.CodexHome,
 	}
+	if p.Host == HostClaude {
+		// D156: the folders the session writes, for the daemon's drive
+		// check under WSL.
+		q.ConfigDir, q.TmpDir = p.ConfigDir, tmpBase(p)
+	}
+	return q
 }
 
 // gate asks the daemon for a gate event of a managed session (SPEC §13.4)

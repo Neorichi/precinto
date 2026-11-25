@@ -281,6 +281,7 @@ const (
 	MsgStartLockedModel   MsgID = "C3.start.model"     // precinto: this project is locked. If precinto denies a tool, stop and ask the user to run "precinto unlock".
 	MsgStartLockedUser    MsgID = "C3.start.user"      // precinto: {folder} is locked. Your first message will ask you to unlock.
 	MsgCodexWrongHome     MsgID = "C3.codexhome"       // precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.
+	MsgClaudeOnDrive      MsgID = "C3.windrive"        // precinto: this Claude Code session keeps its files on a Windows drive, where precinto can't seal them, so {folder} stays locked to it. Keep Claude's folders in the Linux file system of this WSL distribution, then start Claude again.
 	MsgOverlayTitle       MsgID = "C4.title"           // Locked by precinto
 	MsgOverlayLine        MsgID = "C4.line"            // {folder} · {reason}
 	MsgOverlayPaused      MsgID = "C4.paused"          // Your session is paused, not closed. It continues where it was.
@@ -389,6 +390,7 @@ var catalog = map[MsgID]string{
 	MsgStartLockedModel:   "precinto: this project is locked. If precinto denies a tool, stop and ask the user to run \"precinto unlock\".",
 	MsgStartLockedUser:    "precinto: {folder} is locked. Your first message will ask you to unlock.",
 	MsgCodexWrongHome:     "precinto: Codex in {folder} must be started with precinto run codex (or the shell integration) so its history stays in the folder's sealed home.",
+	MsgClaudeOnDrive:      "precinto: this Claude Code session keeps its files on a Windows drive, where precinto can't seal them, so {folder} stays locked to it. Keep Claude's folders in the Linux file system of this WSL distribution, then start Claude again.",
 	MsgOverlayTitle:       "Locked by precinto",
 	MsgOverlayLine:        "{folder} · {reason}",
 	MsgOverlayPaused:      "Your session is paused, not closed. It continues where it was.",

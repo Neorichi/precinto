@@ -9,6 +9,8 @@ import (
 
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
+	"github.com/precinto/precinto/internal/harness"
+	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/paths"
 )
 
@@ -99,6 +101,32 @@ func TestWindowsDrive(t *testing.T) {
 	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "could not tell whether Claude's temporary folder", "(it or a folder above it can't be read)")
 	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Codex's folder "+f.tilde(codexHome))
 	none(t, fs, doctor.CheckWindowsDrive, doctor.OK)
+
+	// F3: this environment's temporary and cache folders, and the folders
+	// hooks reported for Claude sessions (the ledger), are checked too.
+	envTmp := filepath.Join(f.h.Dir, "wintmp")
+	cacheHome := filepath.Join(f.h.Dir, "wincache")
+	hookCfg := filepath.Join(f.h.Dir, "hooked", ".claude")
+	hookTmp := filepath.Join(f.h.Dir, "hooked-tmp")
+	f.d.GOOS = "linux" // WSL: the cache follows XDG_CACHE_HOME
+	f.setEnv("CLAUDE_CODE_TMPDIR", envTmp)
+	f.setEnv("XDG_CACHE_HOME", cacheHome)
+	f.d.Sessions = func(h harness.ID) ([]ledger.Session, error) {
+		if h != harness.ClaudeCode {
+			return nil, nil
+		}
+		return []ledger.Session{{Harness: string(h), SID: "00000000-0000-4000-8000-0000000000d1", ConfigDirs: []string{hookCfg}, TmpDirs: []string{hookTmp, "relative"}}}, nil
+	}
+	onDrive = []string{envTmp, cacheHome, hookCfg, hookTmp}
+	unsure = nil
+	fs = f.run()
+	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Claude's temporary folder "+f.tilde(envTmp))
+	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Claude's cache folder "+f.tilde(filepath.Join(cacheHome, "claude-cli-nodejs")))
+	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Claude's config folder "+f.tilde(hookCfg))
+	want(t, fs, doctor.CheckWindowsDrive, doctor.Fail, "Claude's temporary folder "+f.tilde(hookTmp))
+	none(t, fs, doctor.CheckWindowsDrive, doctor.OK)
+	onDrive = nil
+	want(t, f.run(), doctor.CheckWindowsDrive, doctor.OK, "no protected folder")
 
 	// A folder that protects no Codex does not make the Codex home matter.
 	f.o.Cfg.Roots = []config.Root{{ID: "root-acme", Path: f.h.Root, Harnesses: []string{"claude-code"}}}

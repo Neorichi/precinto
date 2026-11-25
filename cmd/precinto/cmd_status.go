@@ -16,6 +16,7 @@ import (
 	"github.com/precinto/precinto/internal/capsule"
 	"github.com/precinto/precinto/internal/config"
 	"github.com/precinto/precinto/internal/doctor"
+	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/shellinit"
@@ -447,7 +448,21 @@ func (a *app) gatherStatus(ctx context.Context) (statusV1, error) {
 		s.Harnesses = append(s.Harnesses, sh)
 	}
 
-	s.WSL, local = a.wslStatus(cfg, l, local)
+	var claudeGap bool
+	s.WSL, local, claudeGap = a.wslStatus(cfg, l, local)
+	if claudeGap {
+		// D156: a Claude folder on a Windows drive is never scanned, so
+		// the plaintext of the folders that protect Claude cannot be
+		// counted whole: --check never passes on them.
+		for i := range s.Folders {
+			if hs := s.Folders[i].Harnesses; len(hs) == 0 || slices.Contains(hs, string(harness.ClaudeCode)) {
+				s.Folders[i].Unencrypted.Incomplete = true
+			}
+		}
+		if s.plainNote == "" {
+			s.plainNote = textPlainClaudeOnDrive
+		}
+	}
 	s.Attention = mergeAttention(stAttention(st), local)
 	return s, nil
 }

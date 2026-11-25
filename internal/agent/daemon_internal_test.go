@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/precinto/precinto/internal/harness/claude"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/platform"
 	"github.com/precinto/precinto/internal/vault"
 )
@@ -814,3 +816,57 @@ func TestIdleExit(t *testing.T) {
 }
 
 func toString(v any) string { return fmt.Sprintf("%+v", v) }
+
+// D156: under WSL a Claude session in a folder that manages Claude, whose
+// config folder (from its transcript path) or temporary folder (from its
+// scratchpad) is on a Windows drive, is blocked even while the folder is
+// unlocked (C3.windrive): its files would hold the folder's content where
+// Windows programs write unseen and no sweep seals. SessionStart is not
+// gated by it; a folder that manages only Codex is not concerned.
+func TestGateBlocksAClaudeSessionOnAWindowsDrive(t *testing.T) {
+	x := startTD(t)
+	c := x.dial()
+	ctx := context.Background()
+	root := x.h.Root
+	if _, err := x.unlockTTY(c, nil, "root-acme"); err != nil {
+		t.Fatal(err)
+	}
+	winCfg := filepath.Join(x.h.Dir, "mnt-c", ".claude")
+	winTmp := filepath.Join(x.h.Dir, "mnt-c", "tmp")
+	x.mu.Lock()
+	x.drive = func(p string) error {
+		if paths.Within(filepath.Join(x.h.Dir, "mnt-c"), p) {
+			return &paths.DriveError{Path: p}
+		}
+		return nil
+	}
+	x.mu.Unlock()
+	req := func(ev, cfg, tmp string) ipc.GateReq {
+		return ipc.GateReq{Harness: "claude-code", Host: "claude-code", Event: ev, SID: sidA, Cwd: root, ConfigDir: cfg, TmpDir: tmp}
+	}
+	if g, err := c.Gate(ctx, req("UserPromptSubmit", x.h.ClaudeConfig, x.h.ClaudeTmp)); err != nil || g.Verdict != ipc.VerdictAllow {
+		t.Fatalf("folders off the drive = %+v %v", g, err)
+	}
+	for _, tc := range []struct{ ev, cfg, tmp string }{
+		{"UserPromptSubmit", winCfg, x.h.ClaudeTmp},
+		{"PreToolUse", x.h.ClaudeConfig, winTmp},
+		{"PermissionRequest", winCfg, ""},
+	} {
+		g, err := c.Gate(ctx, req(tc.ev, tc.cfg, tc.tmp))
+		want := ipc.VerdictBlock
+		if tc.ev != "UserPromptSubmit" {
+			want = ipc.VerdictDeny
+		}
+		if err != nil || g.Verdict != want || g.Reason != "windows-drive" || !strings.Contains(g.UserMessage, "Windows drive") || !strings.Contains(g.UserMessage, "~/work/acme") {
+			t.Fatalf("%s with a folder on a drive = %+v %v", tc.ev, g, err)
+		}
+	}
+	if g, _ := c.Gate(ctx, req("SessionStart", winCfg, winTmp)); g.Reason == "windows-drive" {
+		t.Fatalf("SessionStart gated by the drive check: %+v", g)
+	}
+	// Outside every protected folder nothing is managed.
+	g, _ := c.Gate(ctx, ipc.GateReq{Harness: "claude-code", Host: "claude-code", Event: "PreToolUse", SID: "00000000-0000-4000-8000-000000000c09", Cwd: x.h.HomeDir, ConfigDir: winCfg})
+	if g.Verdict != ipc.VerdictAllow {
+		t.Fatalf("unmanaged session = %+v", g)
+	}
+}

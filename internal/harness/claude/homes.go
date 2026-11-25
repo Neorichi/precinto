@@ -86,6 +86,50 @@ func TmpBase(e paths.Env, goos string, uid int) string {
 	return filepath.Join(filepath.Clean(tmp), suffix)
 }
 
+// EnvDirs returns Claude's config, temporary and cache folders as Claude
+// uses them in env (SPEC §7.0), clean, unresolved and whether or not they
+// exist: CLAUDE_CONFIG_DIR or <home>/.claude, CLAUDE_CODE_TMPDIR or
+// TmpBase, and the MCP-log cache (darwin: <home>/Library/Caches/
+// claude-cli-nodejs; elsewhere $XDG_CACHE_HOME/claude-cli-nodejs or
+// <home>/.cache/claude-cli-nodejs). home is the user's home ("" unknown),
+// uid the user's (TmpBase; a negative uid names no temporary folder). def
+// reports the default config folder; a folder precinto cannot name is "".
+// The CLI and doctor list the folders to keep off Windows drives with it
+// (D156).
+func EnvDirs(e paths.Env, goos string, uid int, home string) (dir, tmp, cache string, def bool) {
+	dir = e.Get(paths.EnvClaudeConfigDir)
+	def = dir == ""
+	if def && home != "" {
+		dir = filepath.Join(home, ".claude")
+	}
+	if !filepath.IsAbs(dir) {
+		dir = ""
+	}
+	tmp = e.Get(paths.EnvClaudeTmpDir)
+	if !filepath.IsAbs(tmp) {
+		tmp = ""
+		if uid >= 0 {
+			tmp = TmpBase(e, goos, uid)
+		}
+	}
+	if goos == "darwin" {
+		if home != "" {
+			cache = filepath.Join(home, "Library", "Caches", "claude-cli-nodejs")
+		}
+	} else if x := e.Get("XDG_CACHE_HOME"); filepath.IsAbs(x) {
+		cache = filepath.Join(filepath.Clean(x), "claude-cli-nodejs")
+	} else if home != "" {
+		cache = filepath.Join(home, ".cache", "claude-cli-nodejs")
+	}
+	clean := func(p string) string {
+		if p == "" || !filepath.IsAbs(p) {
+			return ""
+		}
+		return filepath.Clean(p)
+	}
+	return clean(dir), clean(tmp), clean(cache), def
+}
+
 // defaultCache is Claude's MCP-log cache base for env.
 func defaultCache(e paths.Env) string {
 	h, err := paths.UserHome(e)

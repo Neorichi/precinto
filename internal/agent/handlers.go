@@ -219,6 +219,12 @@ func (d *daemon) gate(ctx context.Context, cs *connState, q ipc.GateReq) ipc.Gat
 			return resp
 		}
 	}
+	if host == string(harness.ClaudeCode) && ev != GateStart {
+		if resp, refused := d.claudeOnDrive(q, harnessRoots(eff, roots, harness.ClaudeCode)); refused {
+			d.afterGate(q, roots)
+			return resp
+		}
+	}
 	var origin ipc.PromptOrigin
 	if ev == GatePrompt {
 		origin = d.origin(ctx, q, now)
@@ -251,14 +257,47 @@ func promptID(prompt, turn string) string {
 // harness list names codex, an empty list being the default of both
 // built-ins (config's effective harnesses, doctor's rootProtects).
 func codexRoots(eff config.Config, roots []string) []string {
+	return harnessRoots(eff, roots, harness.Codex)
+}
+
+// harnessRoots are the roots of the gate that manage harness h: their
+// harness list names it, an empty list being the default of both
+// built-ins.
+func harnessRoots(eff config.Config, roots []string, h harness.ID) []string {
 	var out []string
 	for _, id := range roots {
 		r, ok := eff.RootByID(id)
-		if ok && (len(r.Harnesses) == 0 || slices.Contains(r.Harnesses, string(harness.Codex))) {
+		if ok && (len(r.Harnesses) == 0 || slices.Contains(r.Harnesses, string(h))) {
 			out = append(out, id)
 		}
 	}
 	return out
+}
+
+// claudeOnDrive blocks, under WSL, a Claude session in a folder that
+// manages Claude when its config folder (from its transcript path) or its
+// temporary folder (from its scratchpad) is on a Windows drive, or one
+// precinto cannot place (D156, C3.windrive): its transcripts and task
+// files would hold the folder's content where Windows programs write
+// unseen and no sweep seals; roots are the gate's roots that manage
+// Claude. With none, or outside WSL (checkDrive returns nil at once),
+// the session is answered by the lock state alone.
+func (d *daemon) claudeOnDrive(q ipc.GateReq, roots []string) (ipc.GateResp, bool) {
+	if len(roots) == 0 || d.deps.checkDrive == nil {
+		return ipc.GateResp{}, false
+	}
+	for _, p := range []string{q.ConfigDir, q.TmpDir} {
+		if p == "" || !filepath.IsAbs(p) || d.deps.checkDrive(filepath.Clean(p)) == nil {
+			continue
+		}
+		msg := ui.Format(ui.MsgClaudeOnDrive, ui.Vars{Folder: d.folder(roots[0])})
+		resp := ipc.GateResp{Verdict: ipc.VerdictBlock, Reason: "windows-drive", UserMessage: msg, ModelMessage: msg, State: gateStateLocked, RootIDs: roots}
+		if ev := gateEvent(q.Event); ev == GateTool || ev == GatePermission {
+			resp.Verdict = ipc.VerdictDeny
+		}
+		return resp, true
+	}
+	return ipc.GateResp{}, false
 }
 
 // codexHome blocks a Codex session in a folder that manages Codex whose

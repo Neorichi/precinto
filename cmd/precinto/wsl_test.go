@@ -13,6 +13,7 @@ import (
 	"github.com/precinto/precinto/internal/doctor"
 	"github.com/precinto/precinto/internal/harness"
 	"github.com/precinto/precinto/internal/ipc"
+	"github.com/precinto/precinto/internal/ledger"
 	"github.com/precinto/precinto/internal/paths"
 	"github.com/precinto/precinto/internal/sweep"
 	"github.com/precinto/precinto/internal/ui"
@@ -350,8 +351,48 @@ func TestStatusUnderWSL(t *testing.T) {
 	}
 }
 
-// D156: doctor runs when precinto's own folder is on a Windows drive (the
-// windows-drive check reports it); other commands stop.
+// D156: status lists the Claude folders hooks reported for sessions (the
+// ledger: what Claude really used) on a Windows drive too, and a Claude
+// folder on a drive, never scanned, keeps status --check from passing for
+// the folders that protect Claude.
+func TestStatusCheckWithAClaudeFolderOnADrive(t *testing.T) {
+	e := newEnv(t)
+	if code := e.run("status", "--check"); code != exitOK {
+		t.Fatalf("baseline: exit %d (%s)", code, e.stderr())
+	}
+	e = newEnv(t)
+	e.wsl = wsl2
+	hookTmp := filepath.Join(e.h.Dir, "wintmp")
+	if err := ledger.Open(e.h.Layout.SessionsDir).Append(ledger.Event{Type: ledger.TypeStart, Harness: "claude-code",
+		SID: "00000000-0000-4000-8000-0000000000d2", Cwd: e.h.Root, ConfigDir: e.h.ClaudeConfig, TmpDir: hookTmp}); err != nil {
+		t.Fatal(err)
+	}
+	e.drives = []string{hookTmp}
+	if code := e.run("status", "--json"); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	var s statusV1
+	if err := json.Unmarshal(e.out.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, at := range s.Attention {
+		found = found || (at.Code == doctor.CheckWindowsDrive && at.Folder == e.app().display(hookTmp))
+	}
+	if !found {
+		t.Fatalf("no windows-drive item for the hook-reported tmp folder: %+v", s.Attention)
+	}
+	for _, f := range s.Folders {
+		if !f.Unencrypted.Incomplete {
+			t.Fatalf("folder %s counted whole although a Claude folder is on a drive", f.ID)
+		}
+	}
+	e.out.Reset()
+	if code := e.run("status", "--check"); code != exitError || !strings.Contains(e.stderr(), textPlainClaudeOnDrive) {
+		t.Fatalf("--check: exit %d (%s), want 1", code, e.stderr())
+	}
+}
+
 // D156 (F1): a restore that met capsules of a registered Claude home now
 // on a Windows drive names that folder (E.windrive, once) and exits 1, a
 // configuration gap, never 5 (a capsule that looks forged); it does not
@@ -436,6 +477,8 @@ func TestLockAndStopWithAWindowsDriveLayout(t *testing.T) {
 	}
 }
 
+// D156: doctor runs when precinto's own folder is on a Windows drive (the
+// windows-drive check reports it); other commands stop.
 func TestDoctorRunsWithAWindowsDriveLayout(t *testing.T) {
 	e := newEnv(t)
 	lay := e.h.Layout

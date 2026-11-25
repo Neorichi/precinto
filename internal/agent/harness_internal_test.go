@@ -374,6 +374,8 @@ type td struct {
 	jobs     []claude.Job
 	signal   func(id platform.ProcID, sig syscall.Signal)
 	waitExit func(ctx context.Context, id platform.ProcID) error
+	// drive stands in for paths.CheckDrive (D156); nil: no drive.
+	drive func(p string) error
 }
 
 type tdOpt func(*td, *Options)
@@ -445,6 +447,15 @@ func (x *td) start(o Options) {
 	}
 	if x.waitExit != nil {
 		dp.waitExit = x.waitExit
+	}
+	dp.checkDrive = func(p string) error {
+		x.mu.Lock()
+		f := x.drive
+		x.mu.Unlock()
+		if f == nil {
+			return nil
+		}
+		return f(p)
 	}
 	x.d = newDaemon(o, dp, ln)
 	x.d.rec = x.rec

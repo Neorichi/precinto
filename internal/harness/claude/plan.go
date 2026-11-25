@@ -148,9 +148,20 @@ func (a *adapter) PlanLaunch(ctx context.Context, e harness.Env, cwd string, arg
 	h, registered := launchHome(e)
 	// D156: the session will write its transcripts and task files there;
 	// under WSL a home on a Windows drive is one precinto could neither
-	// seal nor restore into, so a managed launch with it is refused.
+	// seal nor restore into, so a managed launch with it is refused. The
+	// child's own temporary and cache folders count too: its environment
+	// (TMPDIR, CLAUDE_CODE_TMPDIR, XDG_CACHE_HOME) can name others than
+	// those registered for the home, and those are where it writes.
 	if err := checkHomeDrives(h); err != nil {
 		return harness.LaunchPlan{}, err
+	}
+	for _, d := range []string{defaultTmp(e.Host), defaultCache(e.Host)} {
+		if d == "" {
+			continue
+		}
+		if err := checkDrive(d); err != nil {
+			return harness.LaunchPlan{}, err
+		}
 	}
 	maxAge := retention(h)
 	// Selectors match Manifest.ProjectDir exactly: the session's realpath'd

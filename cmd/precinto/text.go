@@ -78,6 +78,7 @@ const (
 	textPlainUnscanned     = "the folders could not be scanned"
 	textPlainNotSetUp      = "precinto is not set up"
 	textPlainOnDrive       = "precinto's data folder is on a Windows drive"
+	textPlainClaudeOnDrive = "a Claude folder is on a Windows drive, where precinto does not look"
 	textStandInPinned      = "the settings confirmed last"
 	textStandInDefaults    = "the default settings"
 	textLockedNone         = "every folder is locked."

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/precinto/precinto/internal/capsule"
@@ -157,6 +158,27 @@ func TestPlanLaunchUnderWSL(t *testing.T) {
 	if _, err := f.a.PlanLaunch(ctx, f.e, f.h.HomeDir, []string{"claude"}); err != nil {
 		t.Fatalf("unmanaged launch: %v", err)
 	}
+	restore()
+
+	// The child's own temporary folder (its CLAUDE_CODE_TMPDIR or
+	// TMPDIR), not only the one registered for the home, is checked.
+	winTmp := filepath.Join(f.h.Dir, "wintmp")
+	restore = claude.StandInForWSL(onDrives(winTmp), noProgram)
+	if _, err := f.a.PlanLaunch(ctx, f.e, f.h.Root, []string{"claude"}); err != nil {
+		t.Fatalf("registered folders off the drive: %v", err)
+	}
+	child := f.e
+	child.Host = f.e.Host.With(paths.EnvClaudeTmpDir, winTmp)
+	if _, err := f.a.PlanLaunch(ctx, child, f.h.Root, []string{"claude"}); !errors.Is(err, paths.ErrWindowsDrive) {
+		t.Fatalf("the child's CLAUDE_CODE_TMPDIR on a drive: %v", err)
+	}
+	child.Host = f.e.Host.Without(paths.EnvClaudeTmpDir).With("TMPDIR", winTmp).With("XDG_CACHE_HOME", filepath.Join(f.h.Dir, "xdg"))
+	if runtime.GOOS != "darwin" { // darwin's Claude keeps /tmp whatever TMPDIR says
+		if _, err := f.a.PlanLaunch(ctx, child, f.h.Root, []string{"claude"}); !errors.Is(err, paths.ErrWindowsDrive) {
+			t.Fatalf("the child's TMPDIR on a drive: %v", err)
+		}
+	}
+	restore()
 }
 
 // D156 item 9: Claude Code's temporary folder off darwin is os.tmpdir()
