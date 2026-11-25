@@ -321,6 +321,45 @@ func TestStatusUnderWSL(t *testing.T) {
 
 // D156: doctor runs when precinto's own folder is on a Windows drive (the
 // windows-drive check reports it); other commands stop.
+// D155, D156: lock and agent --stop only wipe keys, so a folder of
+// precinto on a Windows drive (an agent an earlier build started there, or
+// a drive check that turned unknown) never stops them: they reach the
+// agent; unlock still refuses (TestDoctorRunsWithAWindowsDriveLayout).
+func TestLockAndStopWithAWindowsDriveLayout(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		onDrive := func(e *env) {
+			lay := e.h.Layout
+			e.sys.newLayout = func(paths.Env) (paths.Layout, error) {
+				return lay, &paths.DriveError{Path: lay.Base, Unknown: unknown, Err: errors.New("no mount holds the path")}
+			}
+		}
+		for _, args := range [][]string{{"lock"}, {"lock", "--end"}} {
+			e := newEnv(t)
+			e.app()
+			onDrive(e)
+			a := newApp(stdio{in: e.in, out: &e.out, err: &e.err}, e.h.Env, e.sys)
+			if code := a.run(args); code != exitOK || len(e.daemon.locks) != 1 || strings.Contains(e.stderr(), "Windows drive") {
+				t.Errorf("%v (unknown %v): exit %d, %d locks (%s)", args, unknown, code, len(e.daemon.locks), e.stderr())
+			}
+		}
+		e := newEnv(t)
+		e.app()
+		onDrive(e)
+		calls := 0
+		inner := e.sys.dial
+		e.sys.dial = func(ctx context.Context, o ipc.DialOptions) (daemonClient, error) {
+			if calls++; calls > 1 {
+				return nil, ipc.ErrNoDaemon // stopped
+			}
+			return inner(ctx, o)
+		}
+		a := newApp(stdio{in: e.in, out: &e.out, err: &e.err}, e.h.Env, e.sys)
+		if code := a.run([]string{"agent", "--stop"}); code != exitOK || e.daemon.shutdowns != 1 {
+			t.Errorf("agent --stop (unknown %v): exit %d, %d shutdowns (%s)", unknown, code, e.daemon.shutdowns, e.stderr())
+		}
+	}
+}
+
 func TestDoctorRunsWithAWindowsDriveLayout(t *testing.T) {
 	e := newEnv(t)
 	lay := e.h.Layout

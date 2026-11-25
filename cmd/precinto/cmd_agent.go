@@ -35,7 +35,9 @@ func cmdAgent(a *app, args []string) int {
 	}
 	if *stop {
 		// D129: like `precinto lock` it only locks (the keys are wiped),
-		// so an agent context may run it too.
+		// so an agent context may run it too, and like lock it takes a
+		// layout on a Windows drive (D156).
+		a.reportLayout()
 		stopped, err := a.stopAgent()
 		if err != nil {
 			return a.fail("agent", err)

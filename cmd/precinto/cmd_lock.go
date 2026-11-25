@@ -338,7 +338,11 @@ func cmdLock(a *app, args []string) int {
 	}
 	// D50: no flag locks every folder. Locking everything needs no
 	// configuration, so a config.toml that does not load never stops it
-	// (UX-09); only --root reads it, to find the folder.
+	// (UX-09); only --root reads it, to find the folder. Locking only
+	// wipes keys, so a folder of precinto on a Windows drive, or one
+	// precinto cannot place (D156), never stops it either: the layout
+	// comes with its DriveError, and only the agent's socket is used.
+	a.reportLayout()
 	req := ipc.LockReq{All: true, End: *end || *hard, Force: *force, LetFinish: *letFinish}
 	cfg, cfgErr := a.config()
 	if l, err := a.layout(); err == nil && cfgErr == nil {
