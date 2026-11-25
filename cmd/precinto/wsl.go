@@ -139,23 +139,31 @@ func (a *app) sayDrive(de *paths.DriveError) {
 	a.line(ui.MsgWindowsDrive, ui.Vars{Folder: a.display(de.Path)})
 }
 
-// sayClaudeHomesOnDrive prints E.windrive (or E.windrive.unsure) for every
-// registered Claude config folder on a Windows drive, whose capsules a
-// restore leaves sealed (D156), and reports whether it printed one.
-func (a *app) sayClaudeHomesOnDrive() bool {
+// sayOnDrive prints E.windrive (or E.windrive.unsure) for every protected
+// folder and every registered Claude config folder on a Windows drive
+// (D156): a seal leaves the folder's notes in plaintext, a restore leaves
+// their capsules sealed. It reports whether it printed one.
+func (a *app) sayOnDrive() bool {
 	cfg, err := a.config()
 	if err != nil {
 		return false
 	}
+	var dirs []string
+	for _, r := range cfg.Roots {
+		dirs = append(dirs, r.Path)
+	}
+	for _, h := range cfg.Harness[string(harness.ClaudeCode)].Homes {
+		dirs = append(dirs, h.Dir)
+	}
 	printed := false
 	seen := map[string]bool{}
-	for _, h := range cfg.Harness[string(harness.ClaudeCode)].Homes {
-		if !filepath.IsAbs(h.Dir) || seen[h.Dir] {
+	for _, d := range dirs {
+		if !filepath.IsAbs(d) || seen[d] {
 			continue
 		}
-		seen[h.Dir] = true
+		seen[d] = true
 		var de *paths.DriveError
-		if errors.As(a.sys.checkDrive(h.Dir), &de) {
+		if errors.As(a.sys.checkDrive(d), &de) {
 			a.sayDrive(de)
 			printed = true
 		}

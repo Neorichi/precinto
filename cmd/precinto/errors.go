@@ -186,14 +186,14 @@ func (a *app) sayErr(name string, err error) {
 		a.line(ui.MsgAgentDownAll, ui.Vars{})
 		return
 	}
-	// D156: a location on a Windows drive, a Windows program; a restore
-	// that met a home on a drive names the registered Claude folders there.
+	// D156: a location on a Windows drive, a Windows program; a seal or
+	// restore that met one names the folders on a drive.
 	var de *paths.DriveError
 	if errors.As(err, &de) {
 		a.sayDrive(de)
 		return
 	}
-	if errors.Is(err, paths.ErrWindowsDrive) && a.sayClaudeHomesOnDrive() {
+	if errors.Is(err, paths.ErrWindowsDrive) && a.sayOnDrive() {
 		return
 	}
 	var pe *harness.ProgramError

@@ -270,6 +270,9 @@ func TestDriveVerdict(t *testing.T) {
 		{"fuse", fuseMagic, true, false, true},
 		{"fuseblk", fuseMagic, true, false, true},
 		{"overlay", 0x794c7630, true, false, true},
+		// A Windows share mounted with mount.cifs (SMB): Windows writes it.
+		{"cifs", 0xff534d42, true, true, true},
+		{"smb3", 0xfe534d42, true, true, true},
 	} {
 		w, k := driveVerdict(c.fstype, c.magic, c.haveMagic)
 		if w != c.windows || k != c.known {

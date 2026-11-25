@@ -70,3 +70,45 @@ func TestRestoreOfAHomeOnAWindowsDrive(t *testing.T) {
 		t.Fatalf("without RegisteredHomes: %+v", res)
 	}
 }
+
+// D156 (F2): under WSL a protected folder on a Windows drive (protected
+// with an earlier build, or config.toml edited) keeps its notes in
+// plaintext: no seal, no marker, a windows-drive failure that says why;
+// and nothing is restored into it once it is (or is found) on a drive.
+func TestNotesOfAFolderOnAWindowsDrive(t *testing.T) {
+	te := newTestEnv(t)
+	p := te.note("docs/notes.md", "# notes\n")
+	key := te.noteKey("docs/notes.md")
+	onDrive := func(err error) { te.p.drive = func(q string) error { return err } }
+	for _, de := range []error{&paths.DriveError{Path: te.h.Root}, &paths.DriveError{Path: te.h.Root, Unknown: true, Why: "the mount table can't be read"}} {
+		onDrive(de)
+		rep := te.sealNotes()
+		if len(rep.Units) != 1 || rep.Units[0].Outcome != OutFailed || !strings.HasPrefix(rep.Units[0].Detail, codeWindowsDrive+": ") {
+			t.Fatalf("seal on a drive: %+v", rep.Units)
+		}
+		if !exists(p) || exists(p+".precinto") || len(te.logged(key)) != 0 {
+			t.Fatal("a note of a folder on a Windows drive was sealed")
+		}
+		if err := rep.Err(); !errors.Is(err, paths.ErrWindowsDrive) {
+			t.Fatalf("report error %v", err)
+		}
+	}
+	// Sealed while the folder was on the Linux disk, then found on a
+	// drive: the restore refuses, the marker and the capsule stay.
+	onDrive(nil)
+	if res := outcome(t, te.sealNotes(), key); res.Outcome != OutSealed {
+		t.Fatalf("seal off the drive %+v", res)
+	}
+	onDrive(&paths.DriveError{Path: te.h.Root})
+	rep := te.restoreNotes()
+	if res := outcome(t, rep, key); res.Outcome != OutFailed || !strings.HasPrefix(res.Detail, codeWindowsDrive+": ") {
+		t.Fatalf("restore on a drive %+v", res)
+	}
+	if exists(p) || !exists(p+".precinto") {
+		t.Fatal("a note was restored into a folder on a Windows drive")
+	}
+	onDrive(nil)
+	if res := outcome(t, te.restoreNotes(), key); res.Outcome != OutRestored {
+		t.Fatalf("restore off the drive %+v", res)
+	}
+}

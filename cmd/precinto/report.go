@@ -124,6 +124,11 @@ func (a *app) printSeal(r *sweep.Report, dryRun bool) []error {
 		a.say(textSealNoSpace, noSpace, ui.HumanBytes(need), a.minFreeText())
 		shown = append(shown, sweep.ErrNoSpace)
 	}
+	// D156: the notes of a protected folder on a Windows drive stay in
+	// plaintext; the folder is named once.
+	if countDetail(r, detailWindowsDrive) > 0 && a.sayOnDrive() {
+		shown = append(shown, paths.ErrWindowsDrive)
+	}
 	return shown
 }
 
@@ -152,7 +157,7 @@ func (a *app) printRestore(r *sweep.Report) []error {
 	}
 	// D156: once for every registered Claude folder on a Windows drive,
 	// whose capsules stay sealed (exit 1, a configuration gap).
-	if countDetail(r, detailWindowsDrive) > 0 && a.sayClaudeHomesOnDrive() {
+	if countDetail(r, detailWindowsDrive) > 0 && a.sayOnDrive() {
 		shown = append(shown, paths.ErrWindowsDrive)
 	}
 	return shown

@@ -189,11 +189,16 @@ type ports struct {
 	// capsule.Seal reports its commit rename (the SEAL-6 point): the
 	// power-loss mode stops a run there and images the disk.
 	point func(name string)
+	// drive is paths.CheckDrive (D156): under WSL, notes of a protected
+	// folder on a Windows drive, or under one mounted below it, are
+	// neither sealed nor restored. nil checks nothing (tests).
+	drive func(p string) error
 }
 
 // prodPorts wires the real implementations.
 func prodPorts(e Env) ports {
 	return ports{
+		drive:       paths.CheckDrive,
 		fs:          fsxFS{},
 		codec:       capsuleCodec{},
 		live:        engineLive{eng: e.Live},

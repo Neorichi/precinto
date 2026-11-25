@@ -380,6 +380,23 @@ func TestRestoreFromAHomeOnAWindowsDrive(t *testing.T) {
 	}
 }
 
+// D156 (F2): a seal that left the notes of a protected folder on a
+// Windows drive in plaintext names that folder once and exits 1.
+func TestSealOfAFolderOnAWindowsDrive(t *testing.T) {
+	e := newEnv(t)
+	e.wsl = wsl2
+	e.drives = []string{e.h.Root}
+	rep := &sweep.Report{Units: []sweep.UnitResult{{Harness: "md", Kind: capsule.KindMarkdown, Outcome: sweep.OutFailed, Detail: "windows-drive: paths: on a Windows drive"}}}
+	e.eng.sealRep, e.eng.sealErr = rep, rep.Err()
+	if code := e.run("seal"); code != exitError {
+		t.Fatalf("exit %d (%s)", code, e.stderr())
+	}
+	want := ui.Format(ui.MsgWindowsDrive, ui.Vars{Folder: e.app().display(e.h.Root)})
+	if got := e.stderr(); got != want+"\n" {
+		t.Fatalf("stderr %q, want only %q", got, want)
+	}
+}
+
 // D155, D156: lock and agent --stop only wipe keys, so a folder of
 // precinto on a Windows drive (an agent an earlier build started there, or
 // a drive check that turned unknown) never stops them: they reach the

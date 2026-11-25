@@ -66,14 +66,9 @@ func readSmallFile(p string) []byte {
 var driveProbe = probe{
 	resolve: resolveExisting,
 	exists:  existingDir,
-	mountinfo: func() ([]byte, error) {
-		f, err := os.Open("/proc/self/mountinfo")
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		return io.ReadAll(io.LimitReader(f, 8<<20))
-	},
+	// A mount table longer than 8 MiB is not read at all: the mount that
+	// holds a path may be in the part left out (unknown, fail closed).
+	mountinfo: func() ([]byte, error) { return readWhole("/proc/self/mountinfo", 8<<20) },
 	statfs: func(p string) (uint32, error) {
 		var st syscall.Statfs_t
 		if err := syscall.Statfs(p, &st); err != nil {

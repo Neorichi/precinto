@@ -498,9 +498,58 @@ func (r *run) walkNotes(root config.Root, fn func(rel string)) {
 	})
 }
 
+// rootDrive is a protected folder's drive check (err) and its device.
+type rootDrive struct {
+	err error
+	dev uint64
+	ok  bool // dev is known
+}
+
+// noteDrive refuses, under WSL, a note of root that lies on a Windows
+// drive (D156): the protected folder is on one (protected with an earlier
+// build, or config.toml edited), or a drive is mounted below it, where
+// the note's directory is on another device than the folder's. Windows
+// programs write such a note without precinto seeing them, so it is
+// neither sealed nor restored: its plaintext stays, and the failure says
+// windows-drive. The folder's check runs once per run.
+func (r *run) noteDrive(root config.Root, rel string) error {
+	if r.p.drive == nil {
+		return nil
+	}
+	r.mu.Lock()
+	rd, ok := r.rootDrives[root.ID]
+	r.mu.Unlock()
+	if !ok {
+		rd.err = r.p.drive(root.Path)
+		if st, err := fsx.Lstat(root.Path); err == nil {
+			rd.dev, rd.ok = st.Dev, true
+		}
+		r.mu.Lock()
+		if r.rootDrives == nil {
+			r.rootDrives = map[string]rootDrive{}
+		}
+		r.rootDrives[root.ID] = rd
+		r.mu.Unlock()
+	}
+	if rd.err != nil || rel == "" {
+		return rd.err
+	}
+	abs := filepath.Join(root.Path, filepath.FromSlash(rel))
+	if st, err := fsx.Lstat(filepath.Dir(abs)); err == nil && rd.ok && st.Dev == rd.dev {
+		return nil // the folder's own file system, checked above
+	}
+	return r.p.drive(abs)
+}
+
 // sealMarkdown seals the sealable candidates of one root.
 func (r *run) sealMarkdown(ctx context.Context, root config.Root, o Options, cands map[string]*noteCand) {
 	if root.MD == config.MDOff || len(cands) == 0 {
+		return
+	}
+	// D156: a folder on a Windows drive keeps its notes in plaintext, and
+	// the run says why (windows-drive); status still counts them.
+	if err := r.noteDrive(root, ""); err != nil {
+		r.add(failed(UnitResult{Harness: string(mdHarness), Kind: capsule.KindMarkdown}, err))
 		return
 	}
 	if busy, err := r.rootBusy(ctx, root); busy || err != nil {
@@ -543,6 +592,10 @@ func (r *run) sealMarkdown(ctx context.Context, root config.Root, o Options, can
 			continue
 		}
 		res = resultOf(u)
+		if err := r.noteDrive(root, rel); err != nil {
+			r.add(failed(res, err)) // D156: a Windows drive mounted below the folder
+			continue
+		}
 		abs := filepath.Join(root.Path, filepath.FromSlash(rel))
 		switch {
 		case !st.IsRegular() || st.Nlink > 1:
@@ -882,6 +935,14 @@ func (r *run) restoreNote(ctx, actx context.Context, p *restoreUnitPlan, a authe
 		target, marker = relpath, ""
 		if r.tracked(ctx, gc, filepath.Join(root.Path, filepath.FromSlash(target))) {
 			return failed(res, fmt.Errorf("%w: note target is git-tracked", capsule.ErrUnsafe))
+		}
+	}
+	// D156: nothing is restored into a folder on a Windows drive, nor
+	// under a Windows drive mounted below it (the note's original path,
+	// its marker's, and their conflict copies next to the target).
+	for _, rel := range []string{relpath, target} {
+		if err := r.noteDrive(root, rel); err != nil {
+			return failed(res, err)
 		}
 	}
 	a.rules = harness.TargetRules{

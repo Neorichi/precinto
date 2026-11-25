@@ -360,12 +360,13 @@ const (
 
 // windowsFS reports whether a mount of fstype holds Windows files under
 // WSL: drvfs (WSL 1), 9p (WSL 2's DrvFs, aname=drvfs; WSL's other 9p
-// shares come from the Windows host too) and virtiofs (WSL 2's DrvFs when
-// virtiofs is on). Only meaningful under WSL: on plain linux these file
-// systems are ordinary.
+// shares come from the Windows host too), virtiofs (WSL 2's DrvFs when
+// virtiofs is on) and SMB (cifs, smb3: a Windows share mounted with
+// mount.cifs, which Windows programs write too). Only meaningful under
+// WSL: on plain linux these file systems are ordinary.
 func windowsFS(fstype string) bool {
 	switch fstype {
-	case "drvfs", "9p", "virtiofs":
+	case "drvfs", "9p", "virtiofs", "cifs", "smb3", "smbfs":
 		return true
 	}
 	return false

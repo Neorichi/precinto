@@ -43,6 +43,9 @@ type run struct {
 	forced map[string]string
 	// markers caches each root's markers by unit key (one scan per run).
 	markers map[string]map[string][]string
+	// rootDrives caches, by root id, the drive check of each protected
+	// folder and the device of its directory (noteDrive, D156).
+	rootDrives map[string]rootDrive
 
 	// quietMu serializes the D63 quiet-window wait; quietTried makes it
 	// happen at most once per run, quietDone records that it completed.
