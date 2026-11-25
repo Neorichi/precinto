@@ -1,0 +1,150 @@
+# The Linux suites inside WSL 2 on a GitHub Windows runner, weekly and on
+# demand: this is how Precinto runs on Windows (Tier 1). A Windows minute
+# costs about 1.7 Linux minutes, so it never runs on push or pull request.
+# Owner: G7.
+#
+# Vampire/setup-wsl installs Ubuntu 24.04 as a WSL 2 distribution (its
+# README documents WSL 2 on windows-2022). The tests run as a normal user,
+# because Precinto refuses root, from a clone on the distribution's own
+# ext4 disk, because Precinto refuses folders on Windows drives (/mnt/*);
+# the checkout under D:\ is only the source of that clone. Ubuntu's
+# golang-go is only a bootstrap: with GOTOOLCHAIN=auto it fetches the
+# toolchain that go.mod names.
+name: wsl2
+
+on:
+  schedule:
+    - cron: "41 4 * * 3" # Wednesdays, 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wsl2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: auto
+  GOFLAGS: -mod=readonly
+  # What wsl.exe passes from Windows into the distribution: /u as is, /p
+  # as a path translated to its /mnt/<drive>/... form. CI=true makes the
+  # shell tests require fish and shellcheck, as on ubuntu.
+  WSLENV: CI/u:CGO_ENABLED/u:GOTOOLCHAIN/u:GOFLAGS/u:GITHUB_WORKSPACE/p
+
+jobs:
+  wsl2:
+    name: test, crossgroup and test-crash in WSL 2 (Ubuntu 24.04)
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        # bash --noprofile --norc -euo pipefail inside the distribution,
+        # as the wsl-shell-user below.
+        shell: wsl-bash {0}
+    steps:
+      # Only the source of the clone below, which takes the objects, not
+      # this working tree (CRLF line ends, no executable bits on D:\).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # a complete repository to clone, and tags for git describe
+          persist-credentials: false
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        timeout-minutes: 20
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          # Created by the action when missing (useradd -m), not root.
+          wsl-shell-user: ci
+          additional-packages: ca-certificates fish git golang-go make shellcheck zsh
+      - name: WSL version (Windows side)
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          wsl.exe --version
+          wsl.exe --list --verbose
+      - name: Kernel, WSL 2 and interop, for the record
+        timeout-minutes: 2
+        run: |
+          uname -a
+          osrelease=$(cat /proc/sys/kernel/osrelease)
+          echo "osrelease: $osrelease"
+          interop=
+          for f in /proc/sys/fs/binfmt_misc/WSLInterop*; do
+            [ -e "$f" ] || continue
+            echo "${f##*/}: $(head -n 1 "$f")"
+            interop=yes
+          done
+          [ -n "$interop" ] || echo "WSLInterop: not registered (interop off)"
+          echo "pid 1: $(ps -o comm= -p 1)"
+          echo "user: $(id)"
+          case "$osrelease" in
+          *WSL2*) ;;
+          *)
+            echo "::error::not a WSL 2 kernel: $osrelease"
+            exit 1
+            ;;
+          esac
+      - name: Clone the checkout into the distribution's ext4 home
+        timeout-minutes: 5
+        run: |
+          src=${GITHUB_WORKSPACE:-$PWD}
+          case "$src" in
+          /mnt/*) ;;
+          *)
+            echo "::error::unexpected checkout path: $src"
+            exit 1
+            ;;
+          esac
+          # The checkout lives on a Windows drive and is owned by another
+          # user here: trust it for this one clone only.
+          rm -rf "$HOME/precinto"
+          git -c safe.directory='*' clone --quiet --no-hardlinks "$src" "$HOME/precinto"
+          git -C "$HOME/precinto" log -1 --format='commit %H'
+          fs=$(stat -f -c %T "$HOME/precinto")
+          echo "$HOME/precinto is on $fs; /tmp is on $(stat -f -c %T /tmp)"
+          case "$fs" in
+          ext2/ext3) ;; # ext4 reports as ext2/ext3
+          *)
+            echo "::error::$HOME/precinto is not on the distribution's ext4 disk"
+            exit 1
+            ;;
+          esac
+      - name: Go toolchain from go.mod
+        id: go
+        timeout-minutes: 10
+        run: |
+          cd "$HOME/precinto"
+          echo "bootstrap: $(command -v go)"
+          go version
+          go env GOROOT GOMODCACHE GOCACHE
+          want=$(sed -n 's/^toolchain //p' go.mod)
+          have=$(go env GOVERSION)
+          if [ -n "$want" ] && [ "$have" != "$want" ]; then
+            echo "::error::go is $have, go.mod names $want"
+            exit 1
+          fi
+          go mod download
+      # Each run is bounded inside the distribution too, so a hang ends
+      # there and the next step starts clean.
+      - name: make test
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 45
+        run: |
+          cd "$HOME/precinto"
+          timeout --kill-after=1m 40m make test
+      - name: make crossgroup
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 35
+        run: |
+          cd "$HOME/precinto"
+          timeout --kill-after=1m 30m make crossgroup
+      - name: make test-crash
+        if: ${{ !cancelled() && steps.go.outcome == 'success' }}
+        timeout-minutes: 25
+        run: |
+          cd "$HOME/precinto"
+          timeout --kill-after=1m 20m make test-crash
