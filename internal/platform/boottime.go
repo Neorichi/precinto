@@ -28,11 +28,14 @@ import (
 // registry entry of a live Claude session. EarliestStartTime adds instead
 // the earliest btime seen for this boot: this process's own readings and
 // the one recorded in the run directory, which the daemon notes at start
-// and at every tick (NoteBootTime). That start is never later than the
-// real one, so
-// liveness errs toward alive; StartTime keeps the current btime, which
-// only ever gives a later start, for decisions that must not err that way
-// (endsess.go: which process may be signalled).
+// and at every tick (NoteBootTime). That start is never later than
+// StartTime's, and is the real one when a precinto process read btime
+// before the jump (a sleep while no agent ran is not undone), so liveness
+// errs toward alive; StartTime keeps the current btime, which only ever
+// gives a later start, for decisions that must not err that way
+// (endsess.go: which process may be signalled), and the wrapper measures
+// its child's start once, right after the spawn, for what it records
+// (ChildSessions).
 
 // bootTimeName is the file below the run directory that records the
 // earliest btime of the current boot: "<boot id> <µs since the epoch>".

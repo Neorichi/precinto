@@ -593,12 +593,14 @@ type fakeEngine struct {
 	ledgerEvs []ledger.Event
 	hooksSeen bool
 	childSIDs []string // ChildSessions
-	childAsks int
-	latest    []string // LatestSessions
-	enqueued  []queue.Request
-	prepared  []string
-	header    []byte
-	wrongHome map[string]int
+	// childStarted records the start each ChildSessions call was given.
+	childStarted []time.Time
+	childAsks    int
+	latest       []string // LatestSessions
+	enqueued     []queue.Request
+	prepared     []string
+	header       []byte
+	wrongHome    map[string]int
 }
 
 func newFakeEngine() *fakeEngine {
@@ -840,10 +842,11 @@ func (f *fakeEngine) LatestSessions(h harness.ID, child platform.ProcID) ([]stri
 	return append([]string(nil), f.latest...), nil
 }
 
-func (f *fakeEngine) ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID) ([]string, error) {
+func (f *fakeEngine) ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID, started time.Time) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.childAsks++
+	f.childStarted = append(f.childStarted, started)
 	return append([]string(nil), f.childSIDs...), nil
 }
 

@@ -52,12 +52,17 @@ func StartTime(id ProcID) time.Time { return startTime(id) }
 // NoteBootTime recorded in runDir/boottime (read only, and only while
 // runDir is a private directory; runDir "" uses this process's readings
 // alone). It never writes, so read-only commands may call it.
-// The result is never later than the real start, so a comparison with a
-// harness's wall time (D18: start ≤ registry startedAt + 2 s) errs toward
-// "alive": use it for liveness evidence, never to decide a signal. A
-// recorded value later than the current btime is ignored; an earlier one,
-// even a forged one, only makes more registry entries match, which keeps
-// more units live. darwin's start is wall time already: StartTime.
+// The result is never later than StartTime's, and it is the real start
+// when a precinto process read btime before every forward jump since id
+// started (the agent notes it at every tick); a jump no precinto process
+// saw coming (no agent ran then) still makes it later than the real one.
+// So a comparison with a harness's wall time (D18: start ≤ registry
+// startedAt + 2 s) errs toward "alive" next to StartTime: use it for
+// liveness evidence, never to decide a signal or to record anything
+// that stays (a session's owner). A recorded value later than the current
+// btime is ignored; an earlier one, even a forged one, only makes more
+// registry entries match, which keeps more units live. darwin's start is
+// wall time already: StartTime.
 func EarliestStartTime(id ProcID, runDir string) time.Time { return earliestStartTime(id, runDir) }
 
 // NoteBootTime records the current btime in runDir/boottime when it is the

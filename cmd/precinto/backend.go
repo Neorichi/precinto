@@ -44,6 +44,10 @@ type backend struct {
 	// the last one recorded: the session the child runs now (D107).
 	recorded []string
 	current  string
+	// startedOf is the child whose wall-clock start started holds,
+	// measured once, right after its spawn (childStarted, D157).
+	startedOf platform.ProcID
+	started   time.Time
 }
 
 // watchEvery is how often WatchSessions reads the child's registry entry.
@@ -259,6 +263,7 @@ func (b *backend) Daemon(ctx context.Context) (wrapper.Daemon, error) {
 // child's and managed even when no hook ever runs (the seal after exit
 // finds it by Scope.Procs). Liveness evidence only (SPEC §9.1).
 func (b *backend) RecordLaunch(ctx context.Context, plan harness.LaunchPlan, child platform.ProcID) error {
+	b.childStarted(child)
 	sid := launchSID(plan)
 	if sid == "" {
 		return nil
@@ -317,10 +322,11 @@ func (b *backend) WatchSessions(ctx context.Context, plan harness.LaunchPlan, ch
 		return
 	}
 	home := b.homeOf(plan)
+	started := b.childStarted(child)
 	t := time.NewTicker(watchEvery)
 	defer t.Stop()
 	for {
-		if sids, err := b.eng.ChildSessions(ctx, plan.Harness, home, child); err == nil {
+		if sids, err := b.eng.ChildSessions(ctx, plan.Harness, home, child, started); err == nil {
 			for _, sid := range sids {
 				b.mu.Lock()
 				now := b.current == sid
@@ -336,6 +342,23 @@ func (b *backend) WatchSessions(ctx context.Context, plan harness.LaunchPlan, ch
 		case <-t.C:
 		}
 	}
+}
+
+// childStarted returns the wall-clock start of child, measured the first
+// time it is asked for, which RecordLaunch does right after the spawn
+// (D157): btime cannot have moved between the spawn and then, so the start
+// is exact for the whole run, even after a WSL 2 host sleep moved btime
+// forward (the current btime would then make the start later than the
+// real one), and a child started after such a sleep gets no earlier start
+// either (the earliest btime of the boot would): WatchSessions compares
+// registry entries with it, and what it records stays in the ledger.
+func (b *backend) childStarted(child platform.ProcID) time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.startedOf != child || b.started.IsZero() {
+		b.startedOf, b.started = child, platform.StartTime(child)
+	}
+	return b.started
 }
 
 // SealAfterExit seals the session's units once the child was reaped (the

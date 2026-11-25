@@ -85,8 +85,9 @@ type engine interface {
 	// ChildSessions returns the session ids the harness's live-session
 	// registry in configDir names for the running process child (Claude:
 	// sessions/<pid>.json written by that process, D107); nil for harnesses
-	// without one.
-	ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID) ([]string, error)
+	// without one. started is the child's wall-clock start as the wrapper
+	// measured it right after the spawn (zero: measured now).
+	ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID, started time.Time) ([]string, error)
 	EnqueueSeal(r queue.Request) error
 
 	// Codex per-folder homes (D31).
@@ -583,7 +584,7 @@ const registryStartSlack = 2 * time.Second
 // sidRE matches a session id as ChildSessions returns it (a lowercase UUID).
 var sidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-func (e *sweepEngine) ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID) ([]string, error) {
+func (e *sweepEngine) ChildSessions(ctx context.Context, h harness.ID, configDir string, child platform.ProcID, started time.Time) ([]string, error) {
 	if h != harness.ClaudeCode || !filepath.IsAbs(configDir) || child.IsZero() {
 		return nil, nil
 	}
@@ -594,13 +595,18 @@ func (e *sweepEngine) ChildSessions(ctx context.Context, h harness.ID, configDir
 	if err != nil {
 		return nil, err
 	}
-	// D157: the child's start with the earliest btime of this boot, never
-	// later than the real one: inside WSL 2 the current btime has moved
-	// forward by every host sleep since the child started, and its own
-	// entry would look written before it. Erring toward "the child's"
-	// only records sessions as the child's, which keeps them live while it
-	// runs; the seal after its exit checks liveness again.
-	start := platform.EarliestStartTime(child, e.layout.RunDir)
+	// D157: the child's start as the wrapper measured it right after the
+	// spawn, when btime could not have moved since: inside WSL 2 the
+	// current btime moves forward by every host sleep after that, and the
+	// child's own entry would look written before it; the earliest btime of
+	// the boot would err the other way for a child started after a sleep,
+	// and take a stale entry of a reused pid for the child's. What this
+	// returns is written to the ledger for good (the session's owner and
+	// folders), so it is never liveness evidence only: an exact start.
+	start := started
+	if start.IsZero() {
+		start = platform.StartTime(child)
+	}
 	var out []string
 	for _, r := range entries {
 		if r.PID != child.PID || !r.Valid {

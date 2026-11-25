@@ -127,6 +127,40 @@ func TestBackendWatchSessionsWidensTheSeal(t *testing.T) {
 	}
 }
 
+// D157: the wrapper measures the child's start once, right after the
+// spawn (RecordLaunch), and compares every registry entry with that
+// start, so a btime that moves later (a WSL 2 host sleep) or a floor from
+// before the child (the earliest btime of the boot) changes nothing; a
+// watch of another child measures that one.
+func TestBackendWatchSessionsUsesTheStartAtLaunch(t *testing.T) {
+	e, b := testBackend(t)
+	ctx := context.Background()
+	child := platform.ProcID{PID: 1234, StartUS: 99}
+	plan := harness.LaunchPlan{Harness: harness.ClaudeCode, Roots: []config.Root{{ID: "root-acme", Path: e.h.Root}},
+		SealScope: harness.Scope{RootIDs: []string{"root-acme"}}}
+	want := platform.StartTime(child)
+	if err := b.RecordLaunch(ctx, plan, child); err != nil {
+		t.Fatal(err)
+	}
+	done, cancel := context.WithCancel(ctx)
+	cancel() // one look per call
+	b.WatchSessions(done, plan, child)
+	b.WatchSessions(done, plan, child)
+	if len(e.eng.childStarted) != 2 {
+		t.Fatalf("asked the registry %d times, want twice", len(e.eng.childStarted))
+	}
+	for _, got := range e.eng.childStarted {
+		if got.IsZero() || !got.Equal(want) {
+			t.Fatalf("compared with a start of %v, want the one measured at launch, %v", got, want)
+		}
+	}
+	other := platform.ProcID{PID: 4321, StartUS: 7}
+	b.WatchSessions(done, plan, other)
+	if got := e.eng.childStarted[2]; !got.Equal(platform.StartTime(other)) {
+		t.Fatalf("another child compared with %v", got)
+	}
+}
+
 // D107: the exit lines name, and C5 resumes, the newest session of the
 // child that the seal found a unit of — the ledger's newest (hooks or
 // launch events), then those this run recorded from the last back: after
