@@ -55,9 +55,9 @@ Eight groups implement Precinto in parallel against the frozen contract in `docs
 | `internal/archtest/imports_test.go`, `internal/archtest/apidoc/` | **G7** | contract enforcement and API doc generator (`allowlist.go` is lead-only) |
 | `Makefile`, `go.mod`, `go.sum` | **G7** | lead approval for dependency or target changes |
 | `test/integration/` (to create), `test/e2e/flows/` (to create) | **G7** | cross-package flows |
-| `.github/` (to create), `.goreleaser.yaml` (later) | **G7** | CI per TESTPLAN §10 |
+| `.github/` (to create), `.gitleaks.toml`, `.goreleaser.yaml` (later) | **G7** | CI per TESTPLAN §10, and the secret scan's rules and fixture exceptions |
 | `README.md`, `README.es.md` (to create) | **G8** | user docs (English and Spanish) |
-| `docs/THREAT_MODEL.md`, `docs/HARNESSES.md`, `docs/COMPACTION.md` (to create) | **G8** | threat model (SPEC §2, §19), per-harness guide, compaction behaviour |
+| `docs/THREAT_MODEL.md`, `docs/HARNESSES.md`, `docs/COMPACTION.md` (to create), `docs/WINDOWS.md` | **G8** | threat model (SPEC §2, §19), per-harness guide, compaction behaviour, Windows through WSL 2 |
 | `SECURITY.md`, `CONTRIBUTING.md` (DCO), `TRADEMARKS.md` (to create) | **G8** | |
 | `docs/SPEC.md`, `docs/API.md`, `docs/HOOKS-IO.md`, `docs/TESTPLAN.md`, `docs/DECISIONS.md`, `docs/OWNERSHIP.md`, `internal/archtest/allowlist.go`, `LICENSE`, `NOTICE`, `.gitignore` | **Lead** | contract files |
 

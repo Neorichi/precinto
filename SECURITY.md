@@ -20,12 +20,14 @@ Precinto is pre-release (specification v0.2) and has no stable release yet. Only
 
 Please include:
 
-- the version or commit (`precinto version`), your operating system and its version, and the harness and its version (for example Claude Code 2.1.329 or Codex 0.154.0);
+- the version or commit (`precinto version`), your operating system and its version (on Windows, also the output of `wsl --version` and the distribution), and the harness and its version (for example Claude Code 2.1.329 or Codex 0.154.0);
 - what you expected and what happened instead;
 - the smallest reproduction you can make, **with synthetic data only**: a throwaway `HOME`, a test folder, made-up prompts. Never send real transcripts, prompts, capsules of real data, recovery keys, passphrases, tokens or credentials. If something like that reaches us by accident, we delete it;
 - the impact as you understand it, and whether you plan to publish.
 
 ## Scope
+
+**Platforms**: macOS, Linux, and Windows through WSL 2, where Precinto runs as its Linux build inside a WSL 2 distribution and the Windows account is the trust boundary ([docs/THREAT_MODEL.md §3.6](docs/THREAT_MODEL.md#36-windows-programs-of-the-same-account-wsl-2)). Native Windows is out of scope: `precinto.exe` builds, but every platform primitive refuses there, so it fails closed.
 
 **In scope**: anything that breaks a guarantee described in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) or an invariant of [docs/SPEC.md §18](docs/SPEC.md#18-invariants-tests-must-enforce-see-testplanmd-for-the-mapping). For example:
 
@@ -43,7 +45,7 @@ Please include:
 
 - the limitations listed in [docs/SPEC.md §19](docs/SPEC.md#19-known-limitations) and in the residual risks of [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md#7-residual-risks), such as what persistent malware running as you can do after you unlock a folder, sessions that run without hooks, or metadata that is visible by design;
 - vulnerabilities in a harness, in age or its plugins, or in the operating system: please report them to their maintainers, and tell us too if Precinto's use of them is affected;
-- attacks that need administrator (root) or kernel access;
+- attacks that need administrator (root) or kernel access, including root in a WSL 2 distribution, which every Windows program of your account can get;
 - social engineering of maintainers or users.
 
 When in doubt, report it: we would rather triage a report than miss one.
