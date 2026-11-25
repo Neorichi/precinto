@@ -28,9 +28,15 @@ id_rsa*
 id_ed25519*
 .netrc
 .npmrc
+# ...except an example file and the synthetic keys and certificates of
+# tests, which gitleaks scans like any other file
+!.env.example
+!**/testdata/**/*.pem
+!**/testdata/**/*.key
 
-# local agent settings and notes
-.claude/
+# local agent settings and notes (the root's .claude/ only: test fixtures
+# imitate Claude homes, .claude/ folders included)
+/.claude/
 CLAUDE.local.md
 
 # local Go workspaces
