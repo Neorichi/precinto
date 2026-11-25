@@ -20,6 +20,25 @@ minVersion = "v8.25.0"
 [extend]
 useDefault = true
 
+# Rules the defaults lack. The defaults know Anthropic secrets only as
+# sk-ant-api03-… and sk-ant-admin01-… keys ending in AA; every other
+# sk-ant- value falls to generic-api-key, whose stopword "ant-" drops it.
+[[rules]]
+id = "anthropic-token"
+description = "Anthropic token of any kind (sk-ant-<kind><NN>-…): Claude Code's OAuth access and refresh tokens (~/.claude/.credentials.json on Linux and WSL, CLAUDE_CODE_OAUTH_TOKEN), claude.ai session keys, API and admin keys"
+regex = '''\bsk-ant-[a-z]{3,5}\d{2}-[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-ant-"]
+
+# The default age-secret-key rule needs 58 contiguous uppercase bech32
+# characters; precinto shows its recovery key as "AGE-SECRET-KEY-1 XXXXXX
+# XXXXXX … XXXX" (vault.FormatRecoveryKey) and accepts it in any case with
+# spaces, tabs, newlines or dashes anywhere (normalizeRecoveryKey).
+[[rules]]
+id = "precinto-recovery-key"
+description = "precinto recovery key as shown (AGE-SECRET-KEY-1 then groups of six) or as accepted (any case; spaces, tabs, newlines or dashes between characters)"
+regex = '''(?i)\bAGE[ \t\r\n-]*SECRET[ \t\r\n-]*KEY[ \t\r\n-]*1(?:[ \t\r\n-]*[qpzry9x8gf2tvdw0s3jn54khce6mua7l]){58}'''
+keywords = ["secret"]
+
 [[allowlists]]
 description = "Sequential-hex unit and lease keys in the capsule and live unit tests"
 targetRules = ["generic-api-key"]
@@ -29,7 +48,7 @@ regexes = ['''^0123456789abcdef0123456789abcdef$''']
 
 [[allowlists]]
 description = "All-Q fake age identity that the vault contract tests must reject"
-targetRules = ["age-secret-key"]
+targetRules = ["age-secret-key", "precinto-recovery-key"]
 condition = "AND"
 paths = ['''^internal/vault/contract_test\.go$''']
 regexes = ['''^AGE-SECRET-KEY-1Q{58}$''']
