@@ -1,0 +1,57 @@
+# gitleaks configuration: the default rules plus narrow exceptions for
+# synthetic test fixtures. CI runs it over the full history and over the
+# working tree (.github/workflows/ci.yml, job "secrets"). Owner: G7.
+#
+# Every exception names one rule, one set of files and the exact fixture
+# value, and needs all three to match (condition = "AND"): the same file
+# can still leak any other value, and the same value is still reported
+# anywhere else. A new fixture gets its own entry here, never a wider
+# pattern. Paths are relative to the repository root, so run gitleaks
+# from there:
+#
+#   gitleaks git . --config .gitleaks.toml --redact
+#   gitleaks dir . --config .gitleaks.toml --redact
+
+title = "precinto"
+
+# [[allowlists]] with targetRules needs gitleaks 8.25.0 or later.
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Sequential-hex unit and lease keys in the capsule and live unit tests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/(?:capsule|live)/[^/]+_test\.go$''']
+regexes = ['''^0123456789abcdef0123456789abcdef$''']
+
+[[allowlists]]
+description = "All-Q fake age identity that the vault contract tests must reject"
+targetRules = ["age-secret-key"]
+condition = "AND"
+paths = ['''^internal/vault/contract_test\.go$''']
+regexes = ['''^AGE-SECRET-KEY-1Q{58}$''']
+
+[[allowlists]]
+description = "Placeholder API key that testkit.Hygiene must not report"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/testkit/hygiene(?:_[a-z]+)?_test\.go$''', '''^internal/testkit/hygiene\.go$''']
+regexes = ['''^PLACEHOLDER-key-0123456789abcd$''']
+
+[[allowlists]]
+description = "Synthetic passphrase of the ui TTY tests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/ui/tty_test\.go$''']
+regexes = ['''^synthetic-passphrase-0001$''']
+
+[[allowlists]]
+description = "i18n message id MsgOverlayKeysPlain and its generated API listing"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/ui/ui\.go$''', '''^docs/API\.md$''']
+regexTarget = "match"
+regexes = ['''^MsgOverlayKeysPlain[ \t]+MsgID = "C4\.keys\.plain"$''']
