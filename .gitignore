@@ -2,6 +2,7 @@
 /dist/
 /bin/
 /precinto
+/precinto.exe
 *.test
 *.out
 coverage.*
@@ -15,8 +16,33 @@ coverage.*
 *.precinto
 *.age
 
+# never commit credentials or keys (gitleaks also scans every change in CI)
+.env
+.env.*
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.netrc
+.npmrc
+
+# local agent settings and notes
+.claude/
+CLAUDE.local.md
+
+# local Go workspaces
+go.work
+go.work.sum
+
 # editors / OS
 .DS_Store
+Thumbs.db
+desktop.ini
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
