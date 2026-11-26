@@ -256,7 +256,15 @@ func createExclusive(dir, name string, data []byte) error {
 			return err
 		}
 	}
-	defer os.Remove(tmp)
+	// The temporary is this call's own until the removal below. From then on
+	// another writer of this process may take the same name at once (an
+	// Update of this request: fsx.WriteFileAtomic builds it the same way),
+	// so nothing removes it again.
+	defer func() {
+		if tmp != "" {
+			os.Remove(tmp)
+		}
+	}()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
@@ -277,5 +285,6 @@ func createExclusive(dir, name string, data []byte) error {
 	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	tmp = ""
 	return fsx.SyncDir(dir)
 }

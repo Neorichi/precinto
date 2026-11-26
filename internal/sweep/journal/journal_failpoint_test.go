@@ -9,6 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -46,6 +49,54 @@ func TestAdvanceFailureKeepsThePreviousMilestone(t *testing.T) {
 	}
 	if failpoint.Hits("journal.save") != 3 {
 		t.Fatalf("journal.save hits = %d, want one per record write", failpoint.Hits("journal.save"))
+	}
+}
+
+// TestBeginLeavesItsFreedTemporaryNameAlone: once Begin has removed its
+// temporary, another writer of the process may take the same name at once
+// (a Save of the record: fsx.WriteFileAtomic builds it the same way); Begin
+// must not remove that name again after its directory sync (as Enqueue,
+// TestEnqueueLeavesItsFreedTemporaryNameAlone).
+func TestBeginLeavesItsFreedTemporaryNameAlone(t *testing.T) {
+	j := newJournal(t)
+	var once sync.Once
+	other := ""
+	stop := failpoint.ObserveFS(func(op failpoint.FSOp) {
+		if op.Kind != failpoint.FSDirSync || op.Path != j.Dir {
+			return
+		}
+		ents, err := os.ReadDir(j.Dir)
+		if err != nil {
+			return
+		}
+		for _, e := range ents {
+			if !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			once.Do(func() {
+				// The other writer takes the freed name (plain os: an
+				// observer must not call into fsx).
+				name := filepath.Join(j.Dir, "."+e.Name()+".tmp-"+strconv.Itoa(os.Getpid())+"-0")
+				f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+				if err != nil {
+					t.Errorf("the temporary name was not free at the directory sync: %v", err)
+					return
+				}
+				f.Close()
+				other = name
+			})
+		}
+	})
+	defer stop()
+	if _, err := j.Begin(journal.KindSeal, "claude-code", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if other == "" {
+		t.Fatal("no directory sync of the journal after the record was linked")
+	}
+	if _, err := os.Lstat(other); err != nil {
+		t.Fatalf("Begin removed the temporary name after it had freed it: %v", err)
 	}
 }
 
