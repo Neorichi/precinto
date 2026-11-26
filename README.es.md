@@ -338,6 +338,8 @@ sudo install -m 0755 bin/precinto /usr/local/bin/precinto   # o cualquier direct
 precinto version
 ```
 
+Con Go instalado, `go install github.com/Neorichi/precinto/cmd/precinto@latest` también compila e instala la última etiqueta en `$(go env GOPATH)/bin`.
+
 Cada vez que sustituyas el binario, ejecuta `precinto agent --restart`: los clientes se niegan a hablar con un daemon que ejecuta otro binario. Detiene el agente en marcha, arranca el nuevo en segundo plano y te devuelve la terminal. `precinto agent --stop` detiene el agente: se borran sus claves, así que todas las carpetas quedan bloqueadas hasta que algo lo vuelva a arrancar (cualquier desbloqueo lo hace).
 
 <details>

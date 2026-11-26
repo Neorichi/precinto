@@ -338,6 +338,8 @@ sudo install -m 0755 bin/precinto /usr/local/bin/precinto   # or any directory o
 precinto version
 ```
 
+With Go installed, `go install github.com/Neorichi/precinto/cmd/precinto@latest` also builds and installs the newest tag into `$(go env GOPATH)/bin`.
+
 After you replace the binary, run `precinto agent --restart`: clients refuse to talk to a daemon that runs a different executable. It stops the running agent, starts the new one in the background and gives you your prompt back. `precinto agent --stop` stops the agent: its keys are wiped, so every folder locks until something starts it again (any unlock does).
 
 <details>
