@@ -101,6 +101,12 @@ func startHolder(t *testing.T, hq *heldQuiet, fn func(ctx context.Context) (*Rep
 }
 
 // until polls cond for up to d of real time.
+// reapedWait bounds the waits for something the quiet wait does in the
+// background. It returns as soon as that happens, so a generous bound costs
+// nothing on a fast machine; under WSL 2 on a CI runner the package runs
+// about eight times slower than on ubuntu, and 5 s was not always enough.
+const reapedWait = 30 * time.Second
+
 func until(d time.Duration, cond func() bool) bool {
 	limit := time.Now().Add(d)
 	for time.Now().Before(limit) {
@@ -134,11 +140,11 @@ func TestD131QueuedSessionTheSweepWaitsOnIsSealedDuringTheWait(t *testing.T) {
 	})
 	defer cancel()
 	enqueueEnd(t, te, sid1, gonePID)
-	if !until(5*time.Second, func() bool { return !exists(transcriptOf(u)) }) {
+	if !until(reapedWait, func() bool { return !exists(transcriptOf(u)) }) {
 		t.Fatal("the queued session whose writer exited stayed plaintext during the other run's quiet wait")
 	}
 	// The wait resumes after the drain, for what is left of the window.
-	if !until(5*time.Second, func() bool { w, _ := hq.counts(); return w == 2 }) {
+	if !until(reapedWait, func() bool { w, _ := hq.counts(); return w == 2 }) {
 		w, k := hq.counts()
 		t.Fatalf("quiet waits %d (woken %d), want the wait resumed once after the drain", w, k)
 	}
@@ -191,7 +197,7 @@ func TestD131WriterExitingDuringTheWaitIsSealedThen(t *testing.T) {
 		t.Fatal("sealed while its writer was still running")
 	}
 	te.h.Procs.Exit(writer.PID, false)
-	if !until(5*time.Second, func() bool { return !exists(transcriptOf(u2)) }) {
+	if !until(reapedWait, func() bool { return !exists(transcriptOf(u2)) }) {
 		t.Fatal("the session stayed plaintext after its writer exited, during the other run's quiet wait")
 	}
 	if !exists(transcriptOf(u1)) {
@@ -246,7 +252,7 @@ func TestD131HeldRequestIsTriedOnce(t *testing.T) {
 	u2 := te.scanSession(sid2)
 	te.claude.probe[u2.Key] = []live.Evidence{{Reason: live.ReasonLease, Detail: "lease held"}}
 	enqueueEnd(t, te, sid2, gonePID)
-	if !until(5*time.Second, func() bool {
+	if !until(reapedWait, func() bool {
 		reqs, _ := queue.List(te.h.Layout.QueueDir)
 		return len(reqs) == 1 && reqs[0].Attempts == 1
 	}) {
@@ -276,7 +282,7 @@ func TestD131QueueWorkerWaitDrainsReapedRequests(t *testing.T) {
 	te.writeSession(sid2, "", nil)
 	u2 := te.scanSession(sid2)
 	enqueueEnd(t, te, sid2, gonePID)
-	if !until(5*time.Second, func() bool { return !exists(transcriptOf(u2)) }) {
+	if !until(reapedWait, func() bool { return !exists(transcriptOf(u2)) }) {
 		t.Fatal("the reaped-writer request waited for the queue worker's own quiet window")
 	}
 	close(hq.release)

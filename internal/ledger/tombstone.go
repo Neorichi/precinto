@@ -30,6 +30,25 @@ type tombstone struct {
 	N   int64  `json:"n"`   // archived snapshot length
 	Dev uint64 `json:"dev"` // identity of the removed file
 	Ino uint64 `json:"ino"`
+	// The removed file's times. Linux reuses a freed inode number at once,
+	// so a new ledger of the same session can get the number of the one
+	// Archive removed; the times tell the two apart. Zero in tombstones
+	// written before they were recorded.
+	MtimeNS int64 `json:"mtime,omitempty"`
+	CtimeNS int64 `json:"ctime,omitempty"`
+}
+
+// names reports whether st is the file t was written for: the same device
+// and inode and, when t recorded them, the same modification and change
+// times (an inode number alone may already name a newer file).
+func (t tombstone) names(st fsx.Stat) bool {
+	if t.Dev != st.Dev || t.Ino != st.Ino {
+		return false
+	}
+	if t.MtimeNS == 0 && t.CtimeNS == 0 {
+		return true
+	}
+	return t.MtimeNS == st.MtimeNS && t.CtimeNS == st.CtimeNS
 }
 
 func sidHash(sid string) string {
@@ -77,7 +96,7 @@ func readTombstones(dir string) ([]byte, error) {
 // addTombstone records that the file st of (sid, n) is about to be
 // removed; it is durable before the unlink.
 func addTombstone(dir, sid string, n int64, st fsx.Stat) error {
-	line, err := json.Marshal(tombstone{H: sidHash(sid), N: n, Dev: st.Dev, Ino: st.Ino})
+	line, err := json.Marshal(tombstone{H: sidHash(sid), N: n, Dev: st.Dev, Ino: st.Ino, MtimeNS: st.MtimeNS, CtimeNS: st.CtimeNS})
 	if err != nil {
 		return err
 	}

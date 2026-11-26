@@ -480,7 +480,7 @@ func (l *Ledger) archive(harness, sid string, n int64) error {
 	dir := filepath.Dir(path)
 	if t, ok, err := findTombstone(dir, sid, n); err != nil {
 		return err
-	} else if ok && !(t.Dev == st.Dev && t.Ino == st.Ino) {
+	} else if ok && !t.names(st) {
 		return nil // the snapshot's file was removed; this is a newer ledger
 	}
 	if st.Size < n {
