@@ -2,6 +2,7 @@ package sweep
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -256,7 +257,15 @@ func TestD131HeldRequestIsTriedOnce(t *testing.T) {
 		reqs, _ := queue.List(te.h.Layout.QueueDir)
 		return len(reqs) == 1 && reqs[0].Attempts == 1
 	}) {
-		t.Fatal("the held request was not tried during the wait")
+		reqs, err := queue.List(te.h.Layout.QueueDir)
+		waits, woken := hq.counts()
+		var state []string
+		for _, q := range reqs {
+			state = append(state, fmt.Sprintf("{attempts %d at %s not_before %s deadline %s wait_for %v}",
+				q.Attempts, q.At.Format(time.RFC3339Nano), q.NotBefore.Format(time.RFC3339Nano), q.Deadline.Format(time.RFC3339Nano), q.WaitFor))
+		}
+		t.Fatalf("the held request was not tried during the wait: queue %v (err %v), quiet waits %d (woken %d), transcript kept %v, run now %s",
+			state, err, waits, woken, exists(transcriptOf(u2)), te.run().now().Format(time.RFC3339Nano))
 	}
 	time.Sleep(200 * time.Millisecond)
 	if waits, woken := hq.counts(); woken != 1 || waits != 2 {
